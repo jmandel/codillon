@@ -1062,7 +1062,11 @@ pub fn parse_annotation(line: &str) -> Result<Annotation, String> {
         ));
     }
     if !p.at_end() {
-        return Err("one annotation per line".to_string());
+        return Err(if p.is_p("(") {
+            "one annotation per line".to_string()
+        } else {
+            format!("unexpected {} after the annotation", p.describe_next())
+        });
     }
     Ok(ann)
 }
@@ -1756,13 +1760,14 @@ fn substituted(e: &Expr, ev: &mut Evaluator) -> String {
     }
 }
 
-// "subst = value" for a compound side, or just the value for a simple one
+// "subst = value" for an arithmetic side, or just the value for a simple one (or one
+// whose substitution would read ambiguously, like a conditional)
 fn side(e: &Expr, ev: &mut Evaluator) -> String {
     let v = match ev.eval(e) {
         Ok(v) => v.to_string(),
         Err(_) => "?".to_string(),
     };
-    if is_simple(e) {
+    if is_simple(e) || e.prec() <= PREC_CMP {
         v
     } else {
         let s = substituted(e, ev);
@@ -1832,12 +1837,46 @@ fn false_part(e: &Expr, ev: &mut Evaluator) -> (String, String) {
 
 /// Explain why `e` is false: `conjunct : substituted values ✗`.
 pub fn explain_false(e: &Expr, env: &dyn Env) -> String {
+    const LONG: usize = 56;
     let mut ev = Evaluator::new(env);
     let (src, why) = false_part(e, &mut ev);
+    let whole = src == e.to_string();
     if why.is_empty() || why == src {
-        format!("{src} \u{2717}")
+        return format!("{src} \u{2717}");
+    }
+    let (ls, lw) = (src.chars().count(), why.chars().count());
+    if ls + lw <= LONG + 16 {
+        return format!("{src} : {why} \u{2717}");
+    }
+    if whole && lw <= LONG {
+        // the predicate itself is on the line: show only its values
+        return format!("{why} \u{2717}");
+    }
+    // too long to substitute in full: name the values instead
+    let part = if whole {
+        e
     } else {
-        format!("{src} : {why} \u{2717}")
+        &parse_expr(&src).unwrap_or(e.clone())
+    };
+    let mut vars = vec![];
+    part.vars(&mut vars);
+    let values: Vec<String> = vars
+        .iter()
+        .filter_map(|v| {
+            ev.eval(&Expr::Var(v.clone()))
+                .ok()
+                .map(|x| format!("${v} = {x}"))
+        })
+        .collect();
+    let values = if values.is_empty() {
+        "false".to_string()
+    } else {
+        values.join(", ")
+    };
+    if whole {
+        format!("false with {values} \u{2717}")
+    } else {
+        format!("{src} : false with {values} \u{2717}")
     }
 }
 

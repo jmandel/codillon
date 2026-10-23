@@ -108,6 +108,8 @@ pub struct SpecPlan {
     pub errors: Vec<(usize, String)>, // line -> semantic problem
     pub notes: Vec<(usize, String)>,  // line -> status note (e.g. not checked yet)
     pub spec_lines: Vec<usize>,       // lines carrying checkable specs
+    pub uses_memory: bool,            // some predicate reads memory: record stores
+    store_ops: Vec<(u64, u32)>,       // (offset, width) of each store, in module order
     slot_owner: HashMap<u32, (usize, usize)>, // slot -> (func, var index)
     global_of_slot: HashMap<u32, usize>,
     call_output: HashMap<u32, (usize, usize)>, // slot -> (caller func, result position)
@@ -732,6 +734,39 @@ pub fn build_plan(lines: &impl LineInfos, module: &ValidModule, types: &TypedMod
     }
 
     plan.spec_lines.sort();
+
+    // does any predicate read memory? then the run must record stores
+    let mut uses_memory = false;
+    let mut look = |e: &Expr| {
+        e.walk(&mut |x| {
+            if matches!(x, Expr::Call(n, _) if n == "load" || n == "load8") {
+                uses_memory = true;
+            }
+        })
+    };
+    for d in &plan.defines {
+        look(&d.body);
+    }
+    for f in &plan.funcs {
+        for c in f
+            .entry_checks
+            .iter()
+            .chain(&f.exit_checks)
+            .chain(f.local_checks.values().flatten())
+            .chain(
+                f.loops
+                    .iter()
+                    .flat_map(|l| l.invariants.iter().chain(&l.decreases)),
+            )
+            .chain(f.asserts.values().flatten())
+        {
+            look(&c.expr);
+        }
+    }
+    plan.uses_memory = uses_memory && !module.memory.is_empty();
+    if plan.uses_memory {
+        plan.store_ops = crate::utils::store_ops(module);
+    }
     plan
 }
 
@@ -802,6 +837,7 @@ struct FrameEnv<'a> {
     frame: &'a Frame,
     globals: &'a [Option<i128>],
     results: Option<&'a [Option<i128>]>,
+    memory: &'a HashMap<u64, u8>,
 }
 
 impl Env for FrameEnv<'_> {
@@ -854,8 +890,32 @@ impl Env for FrameEnv<'_> {
         32
     }
 
+    fn load(&self, addr: i128, bytes: u32) -> Result<u64, spec::EvalError> {
+        if !self.plan.uses_memory {
+            return Err(spec::EvalError("memory is not recorded".to_string()));
+        }
+        if addr < 0 || addr > u32::MAX as i128 {
+            return Err(spec::EvalError(format!("address {addr} is out of range")));
+        }
+        let mut v = 0u64;
+        for i in 0..bytes as u64 {
+            let b = *self.memory.get(&(addr as u64 + i)).unwrap_or(&0);
+            v |= (b as u64) << (8 * i);
+        }
+        Ok(v)
+    }
+
     fn define(&self, name: &str) -> Option<&Define> {
         self.plan.defines.iter().find(|d| d.name == name)
+    }
+}
+
+fn bits_of(v: &WasmValue) -> u64 {
+    match v {
+        WasmValue::I32(x) => *x as u32 as u64,
+        WasmValue::I64(x) => *x as u64,
+        WasmValue::F32(x) => x.to_bits() as u64,
+        WasmValue::F64(x) => x.to_bits(),
     }
 }
 
@@ -870,6 +930,7 @@ fn int_of(v: &WasmValue) -> Option<i128> {
 struct Replay<'a> {
     plan: &'a SpecPlan,
     results: CheckResults,
+    memory: HashMap<u64, u8>, // linear memory as written so far (it starts all zero)
 }
 
 impl Replay<'_> {
@@ -896,6 +957,7 @@ impl Replay<'_> {
             frame,
             globals,
             results,
+            memory: &self.memory,
         };
         let (outcome, message) = match spec::eval_bool(&check.expr, &env) {
             Ok(true) => (Outcome::Held, String::new()),
@@ -946,6 +1008,7 @@ impl Replay<'_> {
             frame,
             globals,
             results: None,
+            memory: &self.memory,
         };
         let value = spec::eval_int(&check.expr, &env);
         let previous = frame.measures.get(&loop_idx).copied();
@@ -993,7 +1056,9 @@ pub fn check_run(plan: &SpecPlan, log: &RunLog) -> CheckResults {
     let mut replay = Replay {
         plan,
         results: CheckResults::default(),
+        memory: HashMap::new(),
     };
+    let mut store_addr: HashMap<u32, u64> = HashMap::new();
     if !plan.has_checks() {
         return replay.results;
     }
@@ -1055,6 +1120,28 @@ pub fn check_run(plan: &SpecPlan, log: &RunLog) -> CheckResults {
         let mut call_results: Vec<(usize, i128)> = vec![];
         let mut local_sets: Vec<usize> = vec![]; // var indices of the top frame
         for (slot, value) in &assignments {
+            use crate::utils::{STORE_ADDR_TAG, STORE_SEQ_MASK, STORE_VALUE_TAG};
+            if *slot & STORE_VALUE_TAG == STORE_VALUE_TAG {
+                let seq = *slot & STORE_SEQ_MASK;
+                if let (Some(addr), Some((_, width))) =
+                    (store_addr.remove(&seq), plan.store_ops.get(seq as usize))
+                {
+                    let bits = bits_of(value);
+                    for i in 0..*width as u64 {
+                        replay.memory.insert(addr + i, (bits >> (8 * i)) as u8);
+                    }
+                }
+                continue;
+            }
+            if *slot & STORE_VALUE_TAG == STORE_ADDR_TAG {
+                let seq = *slot & STORE_SEQ_MASK;
+                if let (WasmValue::I32(base), Some((offset, _))) =
+                    (value, plan.store_ops.get(seq as usize))
+                {
+                    store_addr.insert(seq, *base as u32 as u64 + offset);
+                }
+                continue;
+            }
             if let Some(&g) = plan.global_of_slot.get(slot) {
                 globals[g] = int_of(value);
             } else if let Some(&(f, var)) = plan.slot_owner.get(slot) {
@@ -1223,4 +1310,157 @@ pub fn status_at(
         }
     }
     (spec, at)
+}
+
+/// A slot whose value is drawn as a refined number line.
+#[derive(Debug, Clone)]
+pub struct RefinedSlot {
+    pub slot: usize,
+    pub func: usize,
+    pub subject: String, // the name the predicate uses for this value
+    pub pred: Expr,
+    pub is_input: bool, // drawn as an input cup (else as an output)
+    pub coord: crate::utils::Coordinate,
+}
+
+/// The slots to draw as refined number lines: refined params (header), refined locals
+/// (declaration), refined results (the function's closing line), and the values read and
+/// written by `local.get` / `local.set` / `local.tee` of refined params and locals.
+pub fn refined_slots(
+    plan: &SpecPlan,
+    module: &ValidModule,
+    types: &TypedModule,
+    cx: &crate::utils::SlotConnections,
+) -> Vec<RefinedSlot> {
+    use crate::utils::{ConnectionSource, LocalAccess};
+    let mut out = vec![];
+    let i32_slot = |slot: usize| {
+        matches!(
+            types.slots.get(slot).and_then(|s| s.ty()),
+            Some(wasmparser::ValType::I32)
+        )
+    };
+    let read_at = |slot: usize| cx.connections.get(slot).and_then(|c| c.read.clone());
+    let written_at = |slot: usize| match cx.connections.get(slot).map(|c| &c.written) {
+        Some(ConnectionSource::Written(c)) => Some(c.clone()),
+        _ => None,
+    };
+    for (f, (fp, (func, tys))) in plan
+        .funcs
+        .iter()
+        .zip(module.functions.iter().zip(&types.funcs))
+        .enumerate()
+    {
+        // the refinement of each var (params and locals), by var index
+        let mut var_pred: HashMap<usize, (String, Expr)> = HashMap::new();
+        for c in &fp.entry_checks {
+            if c.kind == CheckKind::ParamRefinement
+                && let Some(name) = &c.subject
+                && let Some(i) = fp.vars.iter().position(|v| v.name.as_ref() == Some(name))
+            {
+                var_pred.insert(i, (name.clone(), c.expr.clone()));
+            }
+        }
+        for (var, cs) in &fp.local_checks {
+            if let Some(c) = cs.first()
+                && let Some(name) = &c.subject
+            {
+                var_pred.insert(*var, (name.clone(), c.expr.clone()));
+            }
+        }
+        let mut push = |slot: usize, is_input: bool, subject: &str, pred: &Expr| {
+            let coord = if is_input {
+                read_at(slot)
+            } else {
+                written_at(slot)
+            };
+            if let Some(coord) = coord
+                && i32_slot(slot)
+            {
+                out.push(RefinedSlot {
+                    slot,
+                    func: f,
+                    subject: subject.to_string(),
+                    pred: pred.clone(),
+                    is_input,
+                    coord,
+                });
+            }
+        };
+        for (var, (name, pred)) in &var_pred {
+            let slot = fp.vars[*var].slot as usize;
+            push(slot, *var < fp.nparams, name, pred);
+        }
+        // results, at the function's end
+        if let (Some(end_op), Some(end_ty)) = (func.operators.last(), tys.ops.last()) {
+            let _ = end_op;
+            for c in &fp.exit_checks {
+                if c.kind == CheckKind::ResultRefinement
+                    && let Some(name) = &c.subject
+                    && let Some(j) = fp
+                        .results
+                        .iter()
+                        .position(|(n, _)| n.as_ref() == Some(name))
+                    && let Some(slot) = end_ty.inputs.get(j)
+                {
+                    push(slot.usize(), true, name, &c.expr);
+                }
+            }
+        }
+        // reads and writes of refined vars
+        for (op, ty) in func.operators.iter().zip(&tys.ops) {
+            let Some((idx, access)) = op.inner.local_access() else {
+                continue;
+            };
+            let Some((name, pred)) = var_pred.get(&(idx as usize)) else {
+                continue;
+            };
+            let is_param = (idx as usize) < fp.nparams;
+            match access {
+                LocalAccess::Get => {
+                    if let Some(s) = ty.outputs.first() {
+                        push(s.usize(), false, name, pred);
+                    }
+                }
+                LocalAccess::Set | LocalAccess::Tee if !is_param => {
+                    if let Some(s) = ty.inputs.first() {
+                        push(s.usize(), true, name, pred);
+                    }
+                    if access == LocalAccess::Tee
+                        && let Some(s) = ty.outputs.first()
+                    {
+                        push(s.usize(), false, name, pred);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    out
+}
+
+/// Program values at the current step, for drawing refined slots.
+pub struct SlotEnv<'a> {
+    pub plan: &'a SpecPlan,
+    pub func: usize,
+    pub value_of_slot: &'a dyn Fn(usize) -> Option<i128>,
+}
+
+impl Env for SlotEnv<'_> {
+    fn var(&self, name: &str) -> Option<Val> {
+        let fp = self.plan.funcs.get(self.func)?;
+        if let Some(v) = fp.vars.iter().find(|v| v.name.as_deref() == Some(name)) {
+            return (self.value_of_slot)(v.slot as usize).map(Val::Int);
+        }
+        let g = self
+            .plan
+            .global_names
+            .iter()
+            .position(|n| n.as_deref() == Some(name))?;
+        (self.value_of_slot)(self.plan.global_slots[g] as usize).map(Val::Int)
+    }
+
+    fn define(&self, name: &str) -> Option<&Define> {
+        self.plan.defines.iter().find(|d| d.name == name)
+    }
 }

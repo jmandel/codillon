@@ -8,7 +8,7 @@
   drop
 )
 (func $isqrt (param $n (i32 | 0 <= $n)) (result $root (i32 | 0 <= $root))
-  (@ensures $root * $root <= $n && $n < ($root + 1) * ($root + 1))
+  (@ensures $root * $root <= $n < ($root + 1) * ($root + 1))
   (local $r i32)
   i32.const 0
   local.set $r

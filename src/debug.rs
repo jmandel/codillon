@@ -426,7 +426,12 @@ impl ExecutionState {
                 }
 
                 for (slot_idx, value) in &s.slot_assignments {
-                    *self.slots[*slot_idx as usize].last_mut().unwrap() = Some(SlotContents {
+                    // (memory stores recorded for specification checks use slot numbers
+                    // beyond the module's slots; they are not drawn)
+                    let Some(slot) = self.slots.get_mut(*slot_idx as usize) else {
+                        continue;
+                    };
+                    *slot.last_mut().unwrap() = Some(SlotContents {
                         val: *value,
                         old: false,
                     });

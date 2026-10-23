@@ -3,7 +3,10 @@
 use crate::{
     action_history::{ActionHistory, Edit},
     autocomplete::Autocomplete,
-    checker::{SpecPlan, build_plan},
+    checker::{
+        CheckKind, CheckResults, Outcome, RefinedSlot, SlotEnv, SpecPlan, build_plan, check_run,
+        refined_slots,
+    },
     debug::{ExecutionState, ExecutionStatus, RUN_LOG, TerminationType, run_binary},
     dom_canvas::DomCanvas,
     dom_struct::DomStruct,
@@ -14,8 +17,9 @@ use crate::{
         NodeRef, RangeLike, ReactiveComponent, StorageHandle, WebOffset, WindowHandle, WithElement,
         compare_document_position, fetch_text, get_selection, now_ms, set_selection_range,
     },
-    line::{Activity, CodeLine, LineInfo, Position, PositionRange},
+    line::{Activity, CodeLine, LineInfo, Position, PositionRange, SpecMark},
     link::{LinkParams, ProgramSource, StepRequest, decode_program, share_fragment},
+    refine::refined_draw,
     save_status::SaveStatus,
     share::ShareButton,
     slider::Slider,
@@ -140,6 +144,8 @@ struct Editor {
     function_identity_cache: FunctionIdCache,
     link: LinkState,
     spec_plan: Rc<SpecPlan>,
+    spec_results: Rc<CheckResults>,
+    refined_slots: Vec<RefinedSlot>,
 }
 
 // State derived from the URL fragment (see link.rs).
@@ -324,10 +330,12 @@ impl Editor {
         let current_step = current_step.unwrap_or(self.current_step());
         if step_count > 1 {
             self.slider_mut().inner_mut().show();
+            let failures = self.spec_results.failure_steps();
             self.slider_mut().inner_mut().build_ticks(
                 step_count - 1,
                 current_step,
                 &RUN_LOG.with(|r| r.termination_type()),
+                &failures,
             )
         } else {
             self.slider_mut().inner_mut().hide();
@@ -373,6 +381,8 @@ impl Editor {
             }
         }
 
+        self.draw_refined_slots();
+
         let mut loops_taken = HashSet::new();
         for (block_idx, block) in self.slot_connections.blocks.iter().enumerate() {
             if let Some(taken) = self
@@ -406,6 +416,8 @@ impl Editor {
             self.animations.arrow = get_mut!(self.component, image).set_arrow_location(false, None);
         }
 
+        self.apply_spec_marks(current_step);
+
         // display runtime error (and HitBadImport)
         let Self {
             execution_state,
@@ -418,6 +430,105 @@ impl Editor {
         }
 
         self.schedule_animation_if_needed();
+    }
+
+    // Draw each refined slot's number line for the current step: the admitted region
+    // (with bounds evaluated at this step), and the value, spilling if it is outside.
+    fn draw_refined_slots(&mut self) {
+        if self.refined_slots.is_empty() {
+            return;
+        }
+        let plan = self.spec_plan.clone();
+        let refined = std::mem::take(&mut self.refined_slots);
+        {
+            let state = &self.execution_state;
+            let value_of_slot = |slot: usize| -> Option<i128> {
+                let contents = state.slots.get(slot)?.last().copied().flatten()?;
+                match contents.val {
+                    crate::debug::WasmValue::I32(v) => Some(v as i128),
+                    crate::debug::WasmValue::I64(v) => Some(v as i128),
+                    _ => None,
+                }
+            };
+            for r in &refined {
+                let env = SlotEnv {
+                    plan: &plan,
+                    func: r.func,
+                    value_of_slot: &value_of_slot,
+                };
+                let draw = refined_draw(&r.pred, &r.subject, value_of_slot(r.slot), &env);
+                get_mut!(self.component, image).set_refined_slot(&r.coord, r.is_input, Some(&draw));
+            }
+        }
+        self.refined_slots = refined;
+    }
+
+    // Re-evaluate the specification checks along the current run log.
+    fn recheck_specs(&mut self) {
+        let plan = self.spec_plan.clone();
+        self.spec_results = Rc::new(RUN_LOG.with(|log| check_run(&plan, log)));
+    }
+
+    // Show what the checks say as of `step`: ⚖ on failed spec lines (with the predicate,
+    // values substituted, as commentary) and on the instructions where they were checked,
+    // and a slategray count of the checks that held so far.
+    fn apply_spec_marks(&mut self, step: usize) {
+        let results = self.spec_results.clone();
+        let plan = self.spec_plan.clone();
+        let mut marks: HashMap<usize, SpecMark> = HashMap::new();
+        let mut at_labels: HashMap<usize, Vec<String>> = HashMap::new();
+        for e in results.events.iter().take_while(|e| e.step <= step) {
+            let m = marks.entry(e.spec_line).or_default();
+            if e.kind == CheckKind::Assume {
+                m.assumed = true;
+            }
+            match e.outcome {
+                Outcome::Held => m.held += 1,
+                Outcome::Unknown => m.unknown = Some(e.message.clone()),
+                Outcome::Failed => {
+                    m.failed = Some(e.message.clone());
+                    if e.at_line != e.spec_line {
+                        let f = plan
+                            .funcs
+                            .get(e.func)
+                            .map(|f| f.display_name())
+                            .unwrap_or_default();
+                        let label = match e.kind {
+                            CheckKind::Requires | CheckKind::ParamRefinement => {
+                                format!("precondition of {f} fails at this call")
+                            }
+                            CheckKind::Ensures | CheckKind::ResultRefinement => {
+                                format!("postcondition of {f} fails at this return")
+                            }
+                            CheckKind::LocalRefinement => {
+                                "a refined local is set to a value outside its type".to_string()
+                            }
+                            CheckKind::Invariant => "loop invariant fails here".to_string(),
+                            CheckKind::Decreases => "loop measure fails here".to_string(),
+                            CheckKind::Assert | CheckKind::Assume => {
+                                format!("@{} above fails here", e.kind.label())
+                            }
+                        };
+                        let labels = at_labels.entry(e.at_line).or_default();
+                        if !labels.contains(&label) {
+                            labels.push(label);
+                        }
+                    }
+                }
+            }
+        }
+        for (line, labels) in at_labels {
+            let m = marks.entry(line).or_default();
+            if m.failed.is_none() {
+                m.failed = Some(labels.join("; "));
+            }
+        }
+        for idx in 0..self.text().len() {
+            let mark = marks.remove(&idx).unwrap_or_default();
+            if *self.line(idx).spec_mark() != mark {
+                self.line_mut(idx).set_spec_mark(mark);
+            }
+        }
     }
 
     fn current_step(&self) -> usize {
@@ -449,6 +560,7 @@ impl Editor {
 
                 let mut slider_step = ed.current_step();
                 let step_count = RUN_LOG.with(|r| r.step_count());
+                ed.recheck_specs();
                 // Move slider to the end if binary changed and it's in the middle
                 if step_count == 0 {
                     ed.slider_mut().inner_mut().hide();
@@ -880,7 +992,6 @@ impl Editor {
         // update visual types of params, locals, and operators
         self.scroll_on_next_input = false; // edit to text buffer -> don't scroll to arrow
         self.slot_connections = find_connections(&validized, &types);
-        self.update_displayed_types(&validized, &types)?;
 
         // specifications: where each predicate is checked (and what is wrong with them)
         let plan = build_plan(self, &validized, &types);
@@ -889,10 +1000,14 @@ impl Editor {
                 self.line_mut(*line).set_invalid(Some(msg.clone()));
             }
         }
+        self.refined_slots = refined_slots(&plan, &validized, &types, &self.slot_connections);
         self.spec_plan = Rc::new(plan);
 
+        self.update_displayed_types(&validized, &types)?;
+
         // instrumentation
-        let instrumented_binary = &validized.build_instrumented_binary(&types)?;
+        let instrumented_binary =
+            &validized.build_instrumented_binary_with(&types, self.spec_plan.uses_memory)?;
         let instrumented_binary_hash = Self::hash_binary(instrumented_binary);
         let step_count = RUN_LOG.with(|r| r.step_count());
         if self.previous_instrumented_binary_hash != instrumented_binary_hash {
@@ -900,6 +1015,8 @@ impl Editor {
             self.execute(instrumented_binary, self.version);
             self.previous_instrumented_binary_hash = instrumented_binary_hash;
         } else if step_count > 0 {
+            // same binary (e.g. only a spec changed): re-evaluate the checks on the same run
+            self.recheck_specs();
             self.update_live_info(step_count, None, false);
         } else {
             self.animations.arrow = self.image_mut().set_arrow_location(false, None);
@@ -980,6 +1097,12 @@ impl Editor {
                 .map(|f| f.locals.len() + f.ops.len())
                 .sum::<usize>();
         let mut tagged_types = HashMap::with_capacity(type_count);
+        // (slot, drawn as an input) pairs to draw as refined number lines
+        let refined_set: HashSet<(usize, bool)> = self
+            .refined_slots
+            .iter()
+            .map(|r| (r.slot, r.is_input))
+            .collect();
 
         // set types of globals
         for (global, global_type) in zip_eq(&validized.globals, &types.globals) {
@@ -993,6 +1116,7 @@ impl Editor {
                         outputs: vec![SlotInfo {
                             slot: types.slots[global_type.usize()].clone(),
                             used: true,
+                            refined: false,
                         }],
                     },
                 },
@@ -1008,6 +1132,7 @@ impl Editor {
                     .map(|x| SlotInfo {
                         slot: types.slots[x.usize()].clone(),
                         used: true,
+                        refined: refined_set.contains(&(x.usize(), true)),
                     })
                     .collect();
                 tagged_types.insert(
@@ -1050,6 +1175,7 @@ impl Editor {
                                             .map(|x| SlotInfo {
                                                 slot: types.slots[x.usize()].clone(),
                                                 used: true,
+                                                refined: refined_set.contains(&(x.usize(), false)),
                                             })
                                             .collect(),
                                     },
@@ -1077,6 +1203,7 @@ impl Editor {
                                     .map(|x| SlotInfo {
                                         slot: types.slots[x.usize()].clone(),
                                         used: true,
+                                        refined: refined_set.contains(&(x.usize(), false)),
                                     })
                                     .collect(),
                             },
@@ -1097,6 +1224,7 @@ impl Editor {
                             self.slot_connections.connections[x.usize()].written,
                             ConnectionSource::Written(_)
                         ),
+                        refined: refined_set.contains(&(x.usize(), true)),
                     })
                     .collect();
                 let mut all_used = true;
@@ -1110,6 +1238,7 @@ impl Editor {
                             all_used &= is_used;
                             is_used
                         },
+                        refined: refined_set.contains(&(x.usize(), false)),
                     })
                     .collect();
 
@@ -1358,6 +1487,8 @@ impl Editor {
             function_identity_cache: Default::default(),
             link: Default::default(),
             spec_plan: Default::default(),
+            spec_results: Default::default(),
+            refined_slots: vec![],
         };
 
         let text = ret.textbox_mut();
@@ -1531,10 +1662,13 @@ impl Editor {
         }
     }
 
-    // The step to show for `step=fail`: the first failed check, or else the final step.
+    // The step to show for `step=fail`: the first failed check, or else the final step
+    // (where a trap, if any, is shown).
     fn first_failure_step(&self) -> Option<usize> {
         let count = RUN_LOG.with(|r| r.step_count());
-        (count > 0).then(|| count - 1)
+        self.spec_results
+            .first_failure_step()
+            .or((count > 0).then(|| count - 1))
     }
 
     // Copy (or, when embedded, open) a link to the current program at the current step.
@@ -1567,7 +1701,7 @@ impl Editor {
         } else {
             self.window.copy_to_clipboard(&url);
             let share = self.share_mut().inner_mut();
-            share.flash("link copied \u{2713}");
+            share.flash("\u{2713}");
             share.set_link(&url);
         }
     }

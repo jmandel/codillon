@@ -30,14 +30,16 @@
   call $lookup
   drop
 )
-(func $slot (param $i (i32 | 0 <= $i && $i < CAP)) (result $a (i32 | $a == BASE + 12 * $i))
+(func $slot (param $i (i32 | 0 <= $i && $i < CAP))
+  (result $a (i32 | $a == BASE + 12 * $i))
   local.get $i
   i32.const 12
   i32.mul
   i32.const 65440
   i32.add
 )
-(func $find (param $k i32) (result $v (i32 | ($v == -1 && !($k in $M)) || (0 <= $v && $v < CAP && st($v) == FULL && key($v) == $k)))
+(func $find (param $k i32)
+  (result $v (i32 | ($v == -1 && !($k in $M)) || (0 <= $v && $v < CAP && st($v) == FULL && key($v) == $k)))
   (@requires R)
   (local $i i32)
   (local $p i32)
@@ -84,7 +86,8 @@
   end
   unreachable
 )
-(func $lookup (param $k i32) (param $dflt i32) (result $v (i32 | $v == ($k in $M ? $M[$k] : $dflt)))
+(func $lookup (param $k i32) (param $dflt i32)
+  (result $v (i32 | $v == ($k in $M ? $M[$k] : $dflt)))
   (@requires R)
   (@ensures R)
   (local $i i32)
@@ -101,7 +104,8 @@
   call $slot
   i32.load offset=8
 )
-(func $delete (param $k i32) (result $ok (i32 | $ok == ($k in old($M) ? 1 : 0)))
+(func $delete (param $k i32)
+  (result $ok (i32 | $ok == ($k in old($M) ? 1 : 0)))
   (@requires R)
   (@ensures R && $M == remove(old($M), $k))
   (local $i i32)
@@ -121,7 +125,8 @@
   (@set $M := remove($M, $k))
   i32.const 1
 )
-(func $insert (param $k i32) (param $x i32) (result $ok (i32 | $ok == 1 || ($ok == 0 && !($k in $M) && $used == CAP - 1)))
+(func $insert (param $k i32) (param $x i32)
+  (result $ok (i32 | $ok == 1 || ($ok == 0 && !($k in $M) && $used == CAP - 1)))
   (@requires R)
   (@ensures R && $M == ($ok == 1 ? old($M)[$k -> $x] : old($M)))
   (local $i i32)

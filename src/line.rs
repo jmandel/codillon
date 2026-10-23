@@ -169,10 +169,34 @@ enum BrowserAnimation {
     FlyEnd(bool),
 }
 
+// What the specification checker says about this line at the current step.
+#[derive(Default, Clone, PartialEq, Debug)]
+pub struct SpecMark {
+    pub failed: Option<String>, // a check written or made here failed (commentary)
+    pub held: usize,            // checks written here that held so far on this run
+    pub unknown: Option<String>, // why some check could not be evaluated
+    pub assumed: bool,          // an (@assume …) line: taken without proof, checked at run time
+}
+
+impl SpecMark {
+    fn held_label(&self) -> Option<String> {
+        if self.assumed && self.held > 0 {
+            return Some(format!("assumed \u{2218}{}", self.held));
+        }
+        match (self.held, &self.unknown) {
+            (0, None) => None,
+            (0, Some(_)) => Some("? not checked".to_string()),
+            (n, None) => Some(format!("\u{2218}{n}")),
+            (n, Some(_)) => Some(format!("\u{2218}{n} ?")),
+        }
+    }
+}
+
 pub struct CodeLine {
     contents: LinePara,
     info: LineInfo,
     animation_state: AnimationState,
+    spec_mark: SpecMark,
 }
 
 impl WithElement for CodeLine {
@@ -234,6 +258,8 @@ impl Component for CodeLine {
             && !reason.is_empty()
         {
             assert_eq!(comment, Some(*reason));
+        } else if let Some(msg) = &self.spec_mark.failed {
+            assert_eq!(comment, Some(msg.as_str()));
         } else if let Some(reason) = &self.info.invalid
             && !reason.is_empty()
         {
@@ -358,10 +384,17 @@ impl CodeLine {
     }
 
     fn class(&self) -> String {
+        // gutter precedence: trap > malformed > failed spec check > invalid > line number
         let prefix = if self.info.runtime_error.is_some() {
             "line runtime-error-line"
-        } else if !self.info.is_active() {
+        } else if !self.info.is_active() || matches!(self.info.kind, LineKind::Malformed(_)) {
             "line malformed-line"
+        } else if self.spec_mark.failed.is_some() {
+            match self.info.kind {
+                LineKind::Other(_) => "line spec-failed-line meta-line",
+                LineKind::Instr(_) => "line spec-failed-line instr-line",
+                _ => "line spec-failed-line spec-line",
+            }
         } else if self.info.invalid.is_some() {
             "line invalid-line"
         } else {
@@ -433,6 +466,7 @@ impl CodeLine {
             ),
             info: LineInfo::default(),
             animation_state: Default::default(),
+            spec_mark: Default::default(),
         };
 
         ret.contents.get_mut().0.set_attribute("class", "instr");
@@ -468,6 +502,12 @@ impl CodeLine {
                 .1
                 .0
                 .set_attribute("data-commentary", reason);
+        } else if let Some(msg) = &self.spec_mark.failed {
+            self.contents
+                .get_mut()
+                .1
+                .0
+                .set_attribute("data-commentary", msg);
         } else if let Some(reason) = &self.info.invalid
             && !reason.is_empty()
         {
@@ -709,6 +749,27 @@ impl CodeLine {
         } else {
             self.info.invalid = reason;
         }
+        self.conform();
+    }
+
+    pub fn spec_mark(&self) -> &SpecMark {
+        &self.spec_mark
+    }
+
+    pub fn set_spec_mark(&mut self, mark: SpecMark) {
+        if mark == self.spec_mark {
+            return;
+        }
+        let debug_span = &mut self.contents.get_mut().1.1.0;
+        match mark.held_label() {
+            Some(label) => debug_span.set_attribute("data-held", &label),
+            None => debug_span.remove_attribute("data-held"),
+        }
+        match &mark.unknown {
+            Some(reason) => debug_span.set_attribute("title", reason),
+            None => debug_span.remove_attribute("title"),
+        }
+        self.spec_mark = mark;
         self.conform();
     }
 

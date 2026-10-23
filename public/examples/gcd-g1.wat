@@ -8,7 +8,8 @@
   drop
 )
 (@define gcd($x, $y) = ($y == 0 ? $x : gcd($y, $x % $y)))
-(func $gcd (param $a (i32 | 0 <= $a)) (param $b (i32 | 0 <= $b)) (result $g (i32 | $g == gcd($a, $b)))
+(func $gcd (param $a (i32 | 0 <= $a)) (param $b (i32 | 0 <= $b))
+  (result $g (i32 | $g == gcd($a, $b)))
   (local $x i32)
   (local $y i32)
   (local $t i32)

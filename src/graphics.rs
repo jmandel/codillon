@@ -11,6 +11,7 @@ use crate::{
     editor::LINE_SPACING,
     jet::{AccessToken, Component, ElementFactory, ElementHandle, WithElement},
     line::INDENT_PX,
+    refine::{RefinedDraw, number_line_pos},
     syntax::{FrameInfo, InstrKind},
     utils::{
         AnimationRequest, AnnotatedOperatorType, BLOCK_BOUNDARY_INDENT, Coordinate, SlotConnection,
@@ -27,11 +28,14 @@ use std::{
 use thousands::Separable;
 use wasmparser::ValType;
 use web_sys::{
-    SvgDefsElement, SvgElement, SvgLinearGradientElement, SvgMaskElement, SvgPathElement,
-    SvgStopElement, SvgTextElement, SvgUseElement, SvggElement, console::log_1,
+    SvgCircleElement, SvgDefsElement, SvgElement, SvgLinearGradientElement, SvgMaskElement,
+    SvgPathElement, SvgStopElement, SvgTextElement, SvgUseElement, SvggElement, console::log_1,
 };
 
 const SYM_HW: f32 = 15.0;
+// A refined value is drawn as a number line, 84 x 14.
+const REFINED_HW: f32 = 42.0;
+const REFINED_H: f32 = 14.0;
 
 #[derive(Debug, PartialEq)]
 pub struct FractionInfo {
@@ -863,6 +867,32 @@ Z",
             &Some(&I32),
         ));
 
+        // refined i32: a number-line cup (input) and box (output), 84 x 14
+        ret.defs_mut().get_mut().0.push(Self::make_icon(
+            &factory,
+            "i32_refined_in",
+            "M -4.9,-14 H -42 V 0 H 42 V -14 H 4.9",
+            "#fffff0",
+            ty_to_color(&Some(&I32)),
+            "1.5",
+        ));
+
+        ret.defs_mut().get_mut().0.push(Self::make_icon(
+            &factory,
+            "i32_refined_out",
+            "M -42,0 V 14 H 42 V 0 Z",
+            "#fffff0",
+            ty_to_color(&Some(&I32)),
+            "1.5",
+        ));
+
+        ret.defs_mut().get_mut().0.push(Self::make_stranded(
+            &factory,
+            "i32_refined_out_stranded",
+            "M -42,0 V 14 H 42 V 0 Z",
+            &Some(&I32),
+        ));
+
         ret.defs_mut()
             .get_mut()
             .0
@@ -1272,16 +1302,71 @@ A 15,10 0 0 1 14.827,-8.484 15,10 0 0 1 0.003,-0 15,10 0 0 1 -14.826,-8.481 15,1
             let num_stranded = fraction.outputs().len() - num_outputs;
             &mut fraction.outputs()[num_stranded + location.operand_num]
         };
+        let has_overlay = !slot.get().1.0.is_empty();
         if let Some(value) = value {
-            slot.get_mut().1.0.set_val(&value.val);
+            slot.get_mut().1.1.0.set_val(&value.val);
             if value.old {
                 slot.get_mut().0.set_attribute("filter", "grayscale(0.75)");
+                if has_overlay {
+                    slot.get_mut()
+                        .1
+                        .0
+                        .set_attribute("filter", "grayscale(0.75)");
+                }
             } else {
                 slot.get_mut().0.remove_attribute("filter");
+                if has_overlay {
+                    slot.get_mut().1.0.remove_attribute("filter");
+                }
             }
         } else {
             slot.get_mut().0.remove_attribute("filter");
-            slot.get_mut().1.0.clear();
+            slot.get_mut().1.1.0.clear();
+            if has_overlay {
+                slot.get_mut().1.0.remove_attribute("filter");
+            }
+        }
+    }
+
+    // Draw the number line of a refined slot for the current step.
+    pub fn set_refined_slot(
+        &mut self,
+        location: &Coordinate,
+        is_input: bool,
+        draw: Option<&RefinedDraw>,
+    ) {
+        let Some(fraction) = self.fractions_mut().get_mut(&location.position_id) else {
+            return;
+        };
+        let (idx, x) = if is_input {
+            let Some(x) = fraction.input_x.get(location.operand_num).copied() else {
+                return;
+            };
+            (location.operand_num, x)
+        } else {
+            let num_outputs = fraction.targets.output_locations_scales_and_types.len();
+            let num_stranded = fraction.outputs().len() - num_outputs;
+            let Some(x) = fraction.output_x.get(location.operand_num).copied() else {
+                return;
+            };
+            (num_stranded + location.operand_num, x)
+        };
+        let slots = if is_input {
+            fraction.inputs()
+        } else {
+            fraction.outputs()
+        };
+        let Some(slot) = slots.get_mut(idx) else {
+            return;
+        };
+        let overlays = &mut slot.get_mut().1.0;
+        if let Some(overlay) = overlays.get_mut(0) {
+            let (y0, y1) = if is_input {
+                (-REFINED_H, 0.0)
+            } else {
+                (0.0, REFINED_H)
+            };
+            draw_refined(overlay, x, y0, y1, draw);
         }
     }
 
@@ -1324,7 +1409,223 @@ struct AutoSizedNumber {
     expected_width: f32,
 }
 
-type Slot = DomStruct<(ElementHandle<SvgUseElement>, (AutoSizedNumber, ())), SvggElement>;
+// A slot: its symbol, the overlay of a refined (number-line) slot, and its value.
+type Slot = DomStruct<
+    (
+        ElementHandle<SvgUseElement>,
+        (DomVec<RefinedOverlay, SvggElement>, (AutoSizedNumber, ())),
+    ),
+    SvggElement,
+>;
+
+// The parts of a number line that depend on the value and the step: the admitted region,
+// a parity comb, fence posts (filled = inclusive, hollow = exclusive), the spill of a value
+// outside its region, and the value itself as a dot.
+type RefinedOverlay = DomStruct<
+    (
+        ElementHandle<SvgPathElement>, // region
+        (
+            ElementHandle<SvgPathElement>, // comb
+            (
+                ElementHandle<SvgPathElement>, // posts
+                (
+                    ElementHandle<SvgPathElement>, // filled post heads
+                    (
+                        ElementHandle<SvgPathElement>, // hollow post heads
+                        (
+                            ElementHandle<SvgPathElement>,         // spill hatch
+                            (ElementHandle<SvgCircleElement>, ()), // the value
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    ),
+    SvggElement,
+>;
+
+fn new_refined_overlay(factory: &ElementFactory) -> RefinedOverlay {
+    let mut ret = DomStruct::new(
+        (
+            factory.svg_path(),
+            (
+                factory.svg_path(),
+                (
+                    factory.svg_path(),
+                    (
+                        factory.svg_path(),
+                        (
+                            factory.svg_path(),
+                            (factory.svg_path(), (factory.svg_circle(), ())),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+        factory.svg_g(),
+    );
+    let color = ty_to_color(&Some(&ValType::I32));
+    let muted = ty_to_muted(&Some(&ValType::I32));
+    ret.set_attribute("class", "refined");
+    let (region, (comb, (posts, (filled, (hollow, (spill, (dot, ()))))))) = ret.get_mut();
+    region.set_attribute("fill", &muted);
+    region.set_attribute("stroke", "none");
+    comb.set_attribute("stroke", color);
+    comb.set_attribute("stroke-width", "0.8");
+    comb.set_attribute("fill", "none");
+    posts.set_attribute("stroke", color);
+    posts.set_attribute("stroke-width", "1.2");
+    posts.set_attribute("fill", "none");
+    filled.set_attribute("fill", color);
+    filled.set_attribute("stroke", color);
+    filled.set_attribute("stroke-width", "1");
+    hollow.set_attribute("fill", "#fffff0");
+    hollow.set_attribute("stroke", color);
+    hollow.set_attribute("stroke-width", "1");
+    spill.set_attribute("stroke", "darkred");
+    spill.set_attribute("stroke-width", "1");
+    spill.set_attribute("fill", "none");
+    dot.set_attribute("r", "2.4");
+    ret
+}
+
+// Draw a number line centred at x (relative to the fraction), with its body between
+// y0 (top) and y1 (bottom).
+fn draw_refined(overlay: &mut RefinedOverlay, x: f32, y0: f32, y1: f32, d: Option<&RefinedDraw>) {
+    let px = |v: i128| x + REFINED_HW * number_line_pos(v);
+    let (region, (comb, (posts, (filled, (hollow, (spill, (dot, ()))))))) = overlay.get_mut();
+    let Some(d) = d else {
+        for p in [region, comb, posts, filled, hollow, spill] {
+            p.set_attribute("d", "");
+        }
+        dot.set_attribute("visibility", "hidden");
+        return;
+    };
+    let (min, max) = (i32::MIN as i128, i32::MAX as i128);
+    let span = d.region.span(min, max);
+
+    // admitted region
+    let mut region_d = String::new();
+    if d.region.depicted
+        && let Some((lo, hi)) = span
+    {
+        let (a, b) = (px(lo), px(hi));
+        let (a, b) = if b - a < 2.0 {
+            (a - 1.0, b + 1.0)
+        } else {
+            (a, b)
+        };
+        region_d = format!(
+            "M {a:.2},{:.2} H {b:.2} V {:.2} H {a:.2} Z",
+            y0 + 1.5,
+            y1 - 0.75
+        );
+    }
+    region.set_attribute("d", &region_d);
+
+    // parity comb: a tooth for each admitted value near 0, finer stripes out to the walls
+    let mut comb_d = String::new();
+    if let Some(residue) = d.region.parity {
+        let (lo, hi) = span.unwrap_or((min, max));
+        for v in -8..=8i128 {
+            if v.rem_euclid(2) == residue && v >= lo && v <= hi {
+                let cx = px(v);
+                comb_d.push_str(&format!("M {cx:.2},{:.2} V {:.2} ", y1 - 5.0, y1 - 0.75));
+            }
+        }
+        let mut f = 0.62f32;
+        while f < 0.99 {
+            for s in [-1.0f32, 1.0] {
+                let cx = x + REFINED_HW * s * f;
+                if cx >= px(lo) && cx <= px(hi) {
+                    comb_d.push_str(&format!("M {cx:.2},{:.2} V {:.2} ", y1 - 3.5, y1 - 0.75));
+                }
+            }
+            f += 0.06;
+        }
+    }
+    comb.set_attribute("d", &comb_d);
+
+    // fence posts
+    let mut posts_d = String::new();
+    let mut filled_d = String::new();
+    let mut hollow_d = String::new();
+    if d.region.depicted {
+        let head = |cx: f32, out: &mut String| {
+            out.push_str(&format!(
+                "M {:.2},{:.2} a 2.1,2.1 0 1 0 4.2,0 a 2.1,2.1 0 1 0 -4.2,0 Z ",
+                cx - 2.1,
+                y0 - 1.5
+            ));
+        };
+        let mut seen = vec![];
+        for b in [d.region.lower, d.region.upper].into_iter().flatten() {
+            if seen.contains(&b) || b.value < min || b.value > max {
+                continue;
+            }
+            seen.push(b);
+            let cx = px(b.value);
+            posts_d.push_str(&format!("M {cx:.2},{:.2} V {:.2} ", y0 - 1.5, y1));
+            head(
+                cx,
+                if b.inclusive {
+                    &mut filled_d
+                } else {
+                    &mut hollow_d
+                },
+            );
+        }
+    }
+    posts.set_attribute("d", &posts_d);
+    filled.set_attribute("d", &filled_d);
+    hollow.set_attribute("d", &hollow_d);
+
+    // the value, and its spill over the rim if the refinement does not admit it
+    let mut spill_d = String::new();
+    match d.value {
+        Some(v) => {
+            let cx = px(v.clamp(min, max));
+            dot.set_attr_num("cx", cx);
+            dot.set_attr_num("cy", (y0 + y1) / 2.0);
+            dot.set_attribute("visibility", "visible");
+            let outside = d.admitted == Some(false);
+            dot.set_attribute("fill", if outside { "darkred" } else { "#000080" });
+            if outside {
+                // from the nearest edge of the region to the value, rising above the rim
+                let (a, b) = match span {
+                    Some((lo, _)) if v < lo && d.region.depicted => (cx - 2.5, px(lo)),
+                    Some((_, hi)) if v > hi && d.region.depicted => (px(hi), cx + 2.5),
+                    _ => (cx - 3.5, cx + 3.5),
+                };
+                let (a, b) = (a.min(b), a.max(b).max(a.min(b) + 5.0));
+                let (top, bot) = (y0 - 5.0, y1);
+                let h = bot - top;
+                let mut t = a - h;
+                while t < b {
+                    // a 45° diagonal from (t, bot) to (t + h, top), clipped to [a, b]
+                    let (mut xa, mut ya, mut xb, mut yb) = (t, bot, t + h, top);
+                    if xa < a {
+                        ya -= a - xa;
+                        xa = a;
+                    }
+                    if xb > b {
+                        yb += xb - b;
+                        xb = b;
+                    }
+                    if xb > xa {
+                        spill_d.push_str(&format!("M {xa:.2},{ya:.2} L {xb:.2},{yb:.2} "));
+                    }
+                    t += 3.0;
+                }
+                spill_d.push_str(&format!(
+                    "M {a:.2},{bot:.2} V {top:.2} H {b:.2} V {bot:.2} "
+                ));
+            }
+        }
+        None => dot.set_attribute("visibility", "hidden"),
+    }
+    spill.set_attribute("d", &spill_d);
+}
 type FractionVec = DomVec<Slot, SvggElement>;
 type SymbolsType = DomStruct<(FractionVec, (FractionVec, ())), SvggElement>;
 
@@ -1342,6 +1643,45 @@ struct OperatorFraction {
     symbols: SymbolsType,
 
     targets: FractionTargets,
+    input_x: Vec<f32>,  // unscaled slot centres
+    output_x: Vec<f32>, // (likewise, for the non-stranded outputs)
+}
+
+// Horizontal layout of a row of slots: their centres, and the scale that fits the row.
+// Without refined slots this is Codillon's layout: centred, and scaled to the column.
+// A refined (number-line) slot is wider; such a row is right-aligned to the column and
+// may extend to the left of it, into the space before the code's indentation.
+fn layout_slots(slots: &[SlotInfo]) -> (Vec<f32>, f32) {
+    let max_width = (indent_px(BLOCK_BOUNDARY_INDENT) - 2 * MARGIN + 1) as f32;
+    let n = slots.len();
+    if !slots.iter().any(|s| s.refined) {
+        let scale = if n as f32 * SYM_HW * 2.0 > max_width {
+            max_width / (n as f32 * SYM_HW * 2.0)
+        } else {
+            1.0
+        };
+        let left_edge = -SYM_HW * (n as f32 - 1.0);
+        return (
+            (0..n)
+                .map(|i| left_edge + 2.0 * SYM_HW * i as f32)
+                .collect(),
+            scale,
+        );
+    }
+    let widths: Vec<f32> = slots
+        .iter()
+        .map(|s| 2.0 * if s.refined { REFINED_HW } else { SYM_HW })
+        .collect();
+    let total: f32 = widths.iter().sum();
+    let room = max_width + 2.0 * (REFINED_HW - SYM_HW);
+    let scale = if total > room { room / total } else { 1.0 };
+    let mut right = max_width / 2.0 / scale;
+    let mut centres = vec![0.0; n];
+    for i in (0..n).rev() {
+        centres[i] = right - widths[i] / 2.0;
+        right -= widths[i];
+    }
+    (centres, scale)
 }
 
 impl AutoSizedNumber {
@@ -1427,7 +1767,13 @@ impl Component for AutoSizedNumber {
 impl Slot {
     fn new_empty(factory: &ElementFactory) -> Self {
         DomStruct::new(
-            (factory.svg_use(), (AutoSizedNumber::new(factory), ())),
+            (
+                factory.svg_use(),
+                (
+                    DomVec::new(factory.svg_g()),
+                    (AutoSizedNumber::new(factory), ()),
+                ),
+            ),
             factory.svg_g(),
         )
     }
@@ -1446,6 +1792,8 @@ impl OperatorFraction {
             info: None,
             animated_indent: None,
             targets: Default::default(),
+            input_x: vec![],
+            output_x: vec![],
         };
         ret.symbols.set_attribute("class", "fraction");
 
@@ -1510,8 +1858,6 @@ impl OperatorFraction {
 
         let AnnotatedOperatorType { inputs, outputs } = &info.ty;
 
-        let in_len = inputs.len() as i32;
-        let out_len = outputs.len() as i32;
         self.inputs().truncate(inputs.len());
         while self.inputs().len() < inputs.len() {
             self.inputs().push(Slot::new_empty(factory));
@@ -1527,17 +1873,10 @@ impl OperatorFraction {
         self.targets.input_locations_scales_and_types.clear();
         self.targets.output_locations_scales_and_types.clear();
 
-        fn scale(len: i32) -> f32 {
-            let max_width = (indent_px(BLOCK_BOUNDARY_INDENT) - 2 * MARGIN + 1) as f32;
-            if len as f32 * SYM_HW * 2.0 > max_width {
-                max_width / (len as f32 * SYM_HW * 2.0)
-            } else {
-                1.0
-            }
-        }
-
-        let in_scale = scale(in_len);
-        let out_scale = scale(out_len);
+        let (in_x, in_scale) = layout_slots(inputs);
+        let (out_x, out_scale) = layout_slots(outputs);
+        self.input_x = in_x.clone();
+        self.output_x = out_x.clone();
 
         if in_scale != 1.0 {
             self.inputs()
@@ -1552,11 +1891,11 @@ impl OperatorFraction {
             self.outputs().remove_attribute("transform");
         }
 
-        let left_edge_in = -SYM_HW * (in_len - 1) as f32;
-        let left_edge_out = -SYM_HW * (out_len - 1) as f32;
-
         fn render(info: &SlotInfo, is_input: bool) -> String {
             let name = info.slot.ty().map(|x| x.to_string());
+            if info.refined {
+                return format!("#i32_refined_{}", if is_input { "in" } else { "out" });
+            }
             format!(
                 "#{}_{}{}",
                 name.unwrap_or(String::from("mystery")),
@@ -1571,7 +1910,7 @@ impl OperatorFraction {
 
         for (i, ty) in inputs.iter().enumerate() {
             let sym = &mut self.inputs()[i].get_mut().0;
-            let x = left_edge_in + 2.0 * SYM_HW * i as f32;
+            let x = in_x[i];
             sym.set_attr_num("x", x);
             sym.set_attribute("href", &render(ty, true));
             self.targets.input_locations_scales_and_types.push((
@@ -1581,29 +1920,36 @@ impl OperatorFraction {
             ));
 
             let height = icon_height(ty.slot.ty()) - 1.25;
-            let text = &mut self.inputs()[i].get_mut().1.0;
+            let refined = ty.refined;
+            let (overlays, (text, ())) = &mut self.inputs()[i].get_mut().1;
 
-            text.set_pos(x, -height / 2.0);
+            if refined {
+                text.set_pos(x - REFINED_HW + 11.0, -REFINED_H / 2.0);
+            } else {
+                text.set_pos(x, -height / 2.0);
+            }
             text.set_fill("black");
             text.clear();
+            set_overlay(overlays, factory, refined, x, -REFINED_H, 0.0);
         }
 
         let num_stranded = outputs.iter().map(|ty| if ty.used { 0 } else { 1 }).sum();
 
         for (i, ty) in outputs.iter().enumerate().take(num_stranded) {
             let sym = &mut self.outputs()[i].get_mut().0;
-            let x = left_edge_out + 2.0 * SYM_HW * i as f32;
+            let x = out_x[i];
             sym.set_attr_num("x", x);
             sym.set_attribute("href", &(render(ty, false) + "_stranded"));
 
-            let text = &mut self.outputs()[i].get_mut().1.0;
+            let (overlays, (text, ())) = &mut self.outputs()[i].get_mut().1;
             text.clear();
+            set_overlay(overlays, factory, false, x, 0.0, REFINED_H);
         }
 
         for (i, ty) in outputs.iter().enumerate() {
             let idx = num_stranded + i;
             let sym = &mut self.outputs()[idx].get_mut().0;
-            let x = left_edge_out + 2.0 * SYM_HW * i as f32;
+            let x = out_x[i];
             sym.set_attr_num("x", x);
             sym.set_attribute("href", &render(ty, false));
 
@@ -1618,13 +1964,39 @@ impl OperatorFraction {
                     Some(ValType::F32) => 6.5,
                     _ => 3.5,
                 };
-            let text = &mut self.outputs()[idx].get_mut().1.0;
+            let refined = ty.refined;
+            let (overlays, (text, ())) = &mut self.outputs()[idx].get_mut().1;
 
-            text.set_pos(x, height / 2.0);
-            text.set_fill("white");
+            if refined {
+                text.set_pos(x - REFINED_HW + 11.0, REFINED_H / 2.0);
+                text.set_fill("black");
+            } else {
+                text.set_pos(x, height / 2.0);
+                text.set_fill("white");
+            }
             text.clear();
+            set_overlay(overlays, factory, refined, x, 0.0, REFINED_H);
         }
     }
+}
+
+// Give a slot its number-line overlay (or none), drawn empty until a value arrives.
+fn set_overlay(
+    overlays: &mut DomVec<RefinedOverlay, SvggElement>,
+    factory: &ElementFactory,
+    refined: bool,
+    x: f32,
+    y0: f32,
+    y1: f32,
+) {
+    if !refined {
+        overlays.truncate(0);
+        return;
+    }
+    if overlays.is_empty() {
+        overlays.push(new_refined_overlay(factory));
+    }
+    draw_refined(&mut overlays[0], x, y0, y1, None);
 }
 
 delegate_element_component!(OperatorFraction, symbols, SvggElement);

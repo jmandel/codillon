@@ -14,6 +14,7 @@ pub mod editor;
 pub mod graphics;
 pub mod line;
 pub mod link;
+pub mod refine;
 pub mod save_status;
 pub mod share;
 pub mod slider;

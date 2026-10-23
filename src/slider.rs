@@ -80,12 +80,16 @@ impl Slider {
         }
     }
 
+    // `spec_failures`: steps at which a specification check failed (sorted), each drawn
+    // as a darkred-outlined pill, distinct from the filled pill of a trap.
     pub fn build_ticks(
         &mut self,
         last_step: usize,
         current_step: usize,
         termination: &TerminationType,
+        spec_failures: &[usize],
     ) {
+        const MAX_FAILURE_PILLS: usize = 200;
         assert!(last_step > 0); // logic error to use slider if there's only one step
         self.input.set_attribute("max", &last_step.to_string());
         self.tick_labels.remove_range(0, self.tick_labels.len());
@@ -101,21 +105,45 @@ impl Slider {
             self.tick_labels
                 .push(DomStruct::new((DomText::new(&label), ()), span));
         };
+        let pills: Vec<usize> = spec_failures
+            .iter()
+            .copied()
+            .filter(|s| *s <= last_step)
+            .take(MAX_FAILURE_PILLS)
+            .collect();
+        // keep plain ticks clear of the failure pills
+        let near_pill = |step: usize| {
+            pills
+                .iter()
+                .any(|p| p.abs_diff(step) * 40 <= last_step.max(1))
+        };
         while step < last_step {
             // Don't include the last interval tick if it is less than half an interval away from last step
             // to avoid crowding the last interval tick with last step tick
             if step + interval > last_step && remainder != 0 && remainder <= interval / 2 {
                 break;
             }
-            if step != current_step {
+            if step != current_step && !near_pill(step) {
                 add_tick(step, "slider-tick", "");
             }
             step += interval;
         }
-        let (class, prefix) = match termination {
-            TerminationType::Success if last_step == current_step => {
-                ("slider-tick current-slider-tick", "")
+        for &p in &pills {
+            if p != current_step && p != last_step {
+                add_tick(p, "slider-tick spec-fail-slider-tick", "");
             }
+        }
+        let last_is_pill = pills.contains(&last_step);
+        let (class, prefix) = match termination {
+            TerminationType::Success if last_step == current_step => (
+                if last_is_pill {
+                    "slider-tick current-slider-tick spec-fail-current"
+                } else {
+                    "slider-tick current-slider-tick"
+                },
+                "",
+            ),
+            TerminationType::Success if last_is_pill => ("slider-tick spec-fail-slider-tick", ""),
             TerminationType::Success => ("slider-tick", ""),
             TerminationType::TooManySteps => ("slider-tick bad-slider-tick", ">\u{a0}"),
             _ => ("slider-tick bad-slider-tick", ""),
@@ -123,7 +151,15 @@ impl Slider {
 
         add_tick(last_step, class, prefix);
         if current_step != last_step {
-            add_tick(current_step, "slider-tick current-slider-tick", "");
+            add_tick(
+                current_step,
+                if pills.contains(&current_step) {
+                    "slider-tick current-slider-tick spec-fail-current"
+                } else {
+                    "slider-tick current-slider-tick"
+                },
+                "",
+            );
         }
     }
 }

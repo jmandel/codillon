@@ -17,8 +17,8 @@ pub struct ShareButton {
 }
 
 impl ShareButton {
-    const LABEL: &'static str = "share link";
-    const EMBED_LABEL: &'static str = "open in editor \u{2197}";
+    const LABEL: &'static str = "link";
+    const EMBED_LABEL: &'static str = "\u{2197}";
 
     pub fn new(factory: &ElementFactory) -> Self {
         let mut contents = DomStruct::new((DomText::new(Self::LABEL), ()), factory.div());
@@ -32,6 +32,14 @@ impl ShareButton {
 
     pub fn set_embed(&mut self, embed: bool) {
         self.embed = embed;
+        self.contents.set_attribute(
+            "title",
+            if embed {
+                "open this program and step in the editor"
+            } else {
+                "copy a link to this program and step"
+            },
+        );
         self.reset_label();
     }
 

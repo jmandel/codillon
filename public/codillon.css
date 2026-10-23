@@ -102,6 +102,12 @@ div.textentry:focus {
     content: counter(codelines) "        ";
 }
 
+/* a specification check failed on this run (on the spec line, and where it was checked) */
+.spec-failed-line::before {
+    font-style: normal;
+    content: "\2696        ";
+}
+
 .line:has(span.instr[data-synthetic-before])::before {
     color: darkred;
     content: "\1d160        ";
@@ -140,6 +146,7 @@ span.instr[data-debug]::before {
 }
 
 span.comment[data-commentary]::after {
+    font-style: normal;
     font-family: 'MLMRoman10-Regular';
     font-size: 12pt;
     color: darkred;
@@ -362,16 +369,16 @@ canvas {
 
 .share-button {
     position: fixed;
-    right: 14px;
-    bottom: 10px;
+    left: 3px;
+    top: 3px;
     z-index: 1001;
     font-family: 'MLMSansDemiCond10-Regular';
-    font-size: 11pt;
+    font-size: 9pt;
     color: darkblue;
     background-color: #fffff0;
     border: 1px solid #b8b8d8;
-    border-radius: 10px;
-    padding: 2px 9px;
+    border-radius: 8px;
+    padding: 0px 4px;
     cursor: pointer;
     user-select: none;
 }
@@ -387,8 +394,13 @@ canvas {
 }
 
 /* embed mode (#embed=1): the editor lives in an iframe that is sized to its content */
+html.embed {
+    overflow-y: hidden; /* the parent sizes the frame to fit */
+}
+
 html.embed body {
     margin: 0;
+    padding-bottom: 20px; /* room for a horizontal scrollbar */
 }
 
 html.embed .save-status {
@@ -396,10 +408,33 @@ html.embed .save-status {
 }
 
 html.embed .share-button {
-    bottom: 4px;
-    right: 6px;
+    font-size: 11pt;
 }
 
 .spec-line::before {
     font-style: normal;
+}
+
+/* checks that held on this run: a count, never a check mark */
+span.debug[data-held]::before {
+    font-family: 'MLMSansDemiCond10-Regular';
+    font-style: normal;
+    font-size: 13pt;
+    color: slategray;
+    margin-left: 12px;
+    content: attr(data-held);
+}
+
+.bad-slider-tick.spec-fail-slider-tick, .spec-fail-slider-tick {
+    color: darkred;
+    background-color: #fffff0;
+    border: 1.5px solid darkred;
+    border-radius: 10px;
+    padding-left: 4px;
+    padding-right: 4px;
+    line-height: 1.15;
+}
+
+.current-slider-tick.spec-fail-current {
+    box-shadow: 0 0 0 1.5px darkred;
 }

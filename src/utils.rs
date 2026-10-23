@@ -186,7 +186,24 @@ pub struct GeneralOperator<'a> {
     info: OpInfo,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocalAccess {
+    Get,
+    Set,
+    Tee,
+}
+
 impl GeneralOperator<'_> {
+    /// Does this operator read or write a local (or param), and which?
+    pub fn local_access(&self) -> Option<(u32, LocalAccess)> {
+        match self.op {
+            Operator::LocalGet { local_index } => Some((local_index, LocalAccess::Get)),
+            Operator::LocalSet { local_index } => Some((local_index, LocalAccess::Set)),
+            Operator::LocalTee { local_index } => Some((local_index, LocalAccess::Tee)),
+            _ => None,
+        }
+    }
+
     /// Is this a direct or indirect call (whose outputs are the callee's results)?
     pub fn is_call(&self) -> bool {
         matches!(
@@ -901,7 +918,29 @@ impl SimulatedStack {
     }
 }
 
+/// Memory stores are recorded (for specifications that read memory) as two slot
+/// assignments with these tagged "slot" numbers, beyond any real slot: the effective
+/// address under STORE_ADDR_TAG | n and the stored value under STORE_VALUE_TAG | n,
+/// where n numbers the module's store instructions in order (see `store_ops`).
+pub const STORE_ADDR_TAG: u32 = 0xC000_0000;
+pub const STORE_VALUE_TAG: u32 = 0xE000_0000;
+pub const STORE_SEQ_MASK: u32 = 0x1FFF_FFFF;
+
+/// (static offset, width in bytes) of every store instruction, in module order.
+pub fn store_ops(module: &ValidModule) -> Vec<(u64, u32)> {
+    let mut ret = vec![];
+    for func in &module.functions {
+        for op in &func.operators {
+            if let Some((_, offset, width, Some(_))) = bounds_check_info(&op.inner.op) {
+                ret.push((offset, width as u32));
+            }
+        }
+    }
+    ret
+}
+
 struct FunctionHelperInfo {
+    record_stores: bool,
     result_types_to_func_idx: IndexMap<Vec<ValType>, u32>,
     shadow_memory_indices: Vec<usize>,
     bounds_check_to_func_idx: IndexMap<Option<EncoderValType>, u32>,
@@ -1031,6 +1070,16 @@ impl<'a> ValidModule<'a> {
     }
 
     pub fn build_instrumented_binary(self, types: &TypedModule) -> Result<Vec<u8>> {
+        self.build_instrumented_binary_with(types, false)
+    }
+
+    /// As `build_instrumented_binary`; with `record_stores`, every store also records its
+    /// effective address and value (see STORE_ADDR_TAG), so the host can follow memory.
+    pub fn build_instrumented_binary_with(
+        self,
+        types: &TypedModule,
+        record_stores: bool,
+    ) -> Result<Vec<u8>> {
         use wasm_encoder::*;
         let mut module = Module::default();
 
@@ -1136,6 +1185,28 @@ impl<'a> ValidModule<'a> {
             );
             debug_assert_eq!(next_type_idx, type_section.len());
             debug_assert_eq!(next_func_idx, num_func_imports + function_section.len());
+            // stores to record need a transparent function for (address, value)
+            let store_types: Vec<Vec<wasmparser::ValType>> = if record_stores {
+                use wasmparser::ValType as V;
+                self.functions
+                    .iter()
+                    .flat_map(|f| f.operators.iter())
+                    .filter_map(|op| match bounds_check_info(&op.inner.op) {
+                        Some((_, _, _, Some(ty))) => Some(vec![
+                            V::I32,
+                            match ty {
+                                EncoderValType::I64 => V::I64,
+                                EncoderValType::F32 => V::F32,
+                                EncoderValType::F64 => V::F64,
+                                _ => V::I32,
+                            },
+                        ]),
+                        _ => None,
+                    })
+                    .collect()
+            } else {
+                vec![]
+            };
             for func in &types.funcs {
                 for OperatorType { outputs, .. } in &func.ops {
                     let results = outputs
@@ -1162,6 +1233,20 @@ impl<'a> ValidModule<'a> {
                         next_type_idx += 1;
                         next_func_idx += 1;
                     }
+                }
+            }
+            for results in store_types {
+                if !result_types_to_func_idx.contains_key(&results) {
+                    let instr_results = RoundtripReencoder.val_types(results.clone())?;
+                    let mut instr_params = instr_results.clone();
+                    instr_params.extend(vec![EncoderValType::I32; results.len()]);
+                    debug_assert_eq!(type_section.len(), next_type_idx);
+                    type_section.ty().function(instr_params, instr_results);
+                    debug_assert_eq!(num_func_imports + function_section.len(), next_func_idx);
+                    function_section.function(next_type_idx);
+                    result_types_to_func_idx.insert(results, next_func_idx);
+                    next_type_idx += 1;
+                    next_func_idx += 1;
                 }
             }
             // Last in type and function section: dynamically generated functions to do
@@ -1270,8 +1355,10 @@ impl<'a> ValidModule<'a> {
             let mut code_section = CodeSection::new();
 
             let mut block_count = 0;
+            let mut store_count: u32 = 0;
 
             let info = FunctionHelperInfo {
+                record_stores,
                 result_types_to_func_idx,
                 shadow_memory_indices,
                 bounds_check_to_func_idx,
@@ -1284,6 +1371,7 @@ impl<'a> ValidModule<'a> {
                     types,
                     step_function_idx,
                     &mut block_count,
+                    &mut store_count,
                     &info,
                 )?;
                 code_section.function(&function);
@@ -1330,6 +1418,7 @@ impl<'a> ValidModule<'a> {
         types: &TypedModule,
         step_function_idx: u32,
         block_count: &mut usize,
+        store_count: &mut u32,
         info: &FunctionHelperInfo,
     ) -> Result<wasm_encoder::Function> {
         use wasm_encoder::Instruction::*;
@@ -1467,6 +1556,26 @@ impl<'a> ValidModule<'a> {
                 new_function.instruction(&I64Const(total_offset));
                 new_function.instruction(&I64Sub); // limit = size - (offset + width)
                 new_function.instruction(&Call(info.bounds_check_to_func_idx[&ty]));
+            }
+
+            // record the effective address and value of a store (for specifications)
+            if let Some((_, offset, _, Some(ty))) = bounds_check_info(&codillon_operator.inner.op) {
+                if info.record_stores {
+                    let value_ty = match ty {
+                        EncoderValType::I64 => ValType::I64,
+                        EncoderValType::F32 => ValType::F32,
+                        EncoderValType::F64 => ValType::F64,
+                        _ => ValType::I32,
+                    };
+                    let seq = *store_count & STORE_SEQ_MASK;
+                    let _ = offset; // the host adds the static offset (see store_ops)
+                    new_function.instruction(&I32Const((STORE_ADDR_TAG | seq) as i32));
+                    new_function.instruction(&I32Const((STORE_VALUE_TAG | seq) as i32));
+                    new_function.instruction(&Call(
+                        info.result_types_to_func_idx[&vec![ValType::I32, value_ty]],
+                    ));
+                }
+                *store_count += 1;
             }
 
             if i + 1 == orig_function.operators.len() {
@@ -1774,6 +1883,7 @@ impl SlotConnections {
 pub struct SlotInfo {
     pub slot: Slot,
     pub used: bool,
+    pub refined: bool, // drawn as a number line: its type is (T | P)
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -4885,7 +4995,7 @@ pub(crate) mod tests {
             plan: SpecPlan,
             results: CheckResults,
             log: RunLog,
-            binary: Vec<u8>,
+            binary: Vec<u8>, // the plain module (before instrumentation)
         }
 
         fn load(src: &str) -> FakeTextBuffer {
@@ -4913,8 +5023,10 @@ pub(crate) mod tests {
             let types = validized.to_types_table(&wasm_bin)?;
             indent_and_frame(&mut editor, &validized, &types, None);
             let plan = build_plan(&editor, &validized, &types);
-            let binary = validized.build_instrumented_binary(&types)?;
-            let log = test_execution(&binary, &[], &mut [])?;
+            let binary = wasm_bin.clone();
+            let instrumented =
+                validized.build_instrumented_binary_with(&types, plan.uses_memory)?;
+            let log = test_execution(&instrumented, &[], &mut [])?;
             let results = check_run(&plan, &log);
             Ok(SpecRun {
                 editor,
@@ -4974,6 +5086,11 @@ pub(crate) mod tests {
                 include_str!("../public/examples/hashtable.wat"),
             ),
             ("hello", include_str!("../public/examples/hello.wat")),
+            ("triangle", include_str!("../public/examples/triangle.wat")),
+            (
+                "triangle-bug",
+                include_str!("../public/examples/triangle-bug.wat"),
+            ),
         ];
 
         #[test]
@@ -5043,7 +5160,7 @@ pub(crate) mod tests {
 
         #[test]
         fn correct_programs_hold() -> Result<()> {
-            for name in ["parity", "isqrt", "isqrt-s1", "gcd"] {
+            for name in ["parity", "isqrt", "isqrt-s1", "gcd", "triangle"] {
                 let src = EXAMPLES.iter().find(|(n, _)| *n == name).unwrap().1;
                 let r = run_spec(src)?;
                 assert_eq!(failures(&r), vec![], "{name}");
@@ -5135,6 +5252,80 @@ pub(crate) mod tests {
         }
 
         #[test]
+        fn memory_is_followed_through_recorded_stores() -> Result<()> {
+            let src = "(memory 1)
+(@define CELL = 64)
+(func $main
+i32.const 7
+call $put
+(@assert load(CELL) == 7 && load(CELL + 4) == 7 && load8(CELL + 1) == 0)
+(@assert load(CELL) == 0)
+i32.const -2
+call $put
+)
+(func $put (param $v i32)
+(@ensures load(CELL) == $v && load8(CELL + 3) == u($v) / 16777216 % 256)
+(@ensures load(CELL + 4) == $v)
+i32.const 64
+local.get $v
+i32.store
+i32.const 60
+local.get $v
+i32.store offset=8
+)
+";
+            let r = run_spec(src)?;
+            assert!(r.plan.uses_memory);
+            assert_eq!(r.log.termination_type(), TerminationType::Success);
+            let f = failures(&r);
+            assert_eq!(f.len(), 1, "{f:?}");
+            assert_eq!(f[0].2, "load(CELL) == 0 : load(CELL) = 7 == 0 \u{2717}");
+            assert!(
+                r.results
+                    .events
+                    .iter()
+                    .all(|e| e.outcome != Outcome::Unknown)
+            );
+            assert_eq!(held(&r, line_of(src, "(@ensures load(CELL) ==")), 2);
+            // without memory specs, stores are not recorded (the binary is unchanged)
+            let plain = run_spec(&src.replace("load8(", "abs(").replace("load(", "abs("))?;
+            assert!(!plain.plan.uses_memory);
+
+            // the hash table runs with its stores recorded; checks that need the ghost
+            // map are reported as not checked, never as held
+            let src = include_str!("../public/examples/hashtable.wat");
+            let r = run_spec(src)?;
+            assert!(r.plan.uses_memory);
+            assert_eq!(r.log.termination_type(), TerminationType::Success);
+            assert!(
+                r.results
+                    .events
+                    .iter()
+                    .any(|e| e.outcome == Outcome::Unknown)
+            );
+            assert_eq!(failures(&r), vec![]);
+            Ok(())
+        }
+
+        #[test]
+        fn triangle_bug() -> Result<()> {
+            let src = include_str!("../public/examples/triangle-bug.wat");
+            let r = run_spec(src)?;
+            let f = failures(&r);
+            let local = line_of(src, "(local $i");
+            assert!(
+                f.iter().any(|(l, k, m)| *l == local
+                    && *k == CheckKind::LocalRefinement
+                    && m == "$i <= $n : 6 \u{2264} 5 \u{2717}"),
+                "{f:?}"
+            );
+            assert!(f.iter().any(|(_, k, _)| *k == CheckKind::Decreases));
+            assert!(f.iter().any(|(_, k, _)| *k == CheckKind::ResultRefinement));
+            assert!(!f.iter().any(|(_, k, _)| *k == CheckKind::Invariant));
+            Ok(())
+        }
+
+        #[test]
         fn parity_bugs() -> Result<()> {
             let src = include_str!("../public/examples/parity-p1.wat");
             let r = run_spec(src)?;
@@ -5165,9 +5356,12 @@ pub(crate) mod tests {
             let src = include_str!("../public/examples/parity-p2.wat");
             let r = run_spec(src)?;
             let f = failures(&r);
-            assert!(f.iter().any(|(l, k, m)| *l == line_of(src, "(func $half ")
-                && *k == CheckKind::ResultRefinement
-                && m.contains("2147483646")));
+            assert!(
+                f.iter()
+                    .any(|(l, k, m)| *l == line_of(src, "(func $half ") + 1
+                        && *k == CheckKind::Ensures
+                        && m.contains("2147483646"))
+            );
 
             let src = include_str!("../public/examples/parity-p3.wat");
             let r = run_spec(src)?;
