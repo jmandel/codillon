@@ -974,6 +974,7 @@ impl RangeLike for StaticRangeHandle {
 pub struct WindowHandle {
     window: web_sys::Window,
     onbeforeunload: Option<Closure<dyn Fn(BeforeUnloadEvent)>>,
+    onhashchange: Option<Closure<dyn Fn()>>,
 }
 
 impl Default for WindowHandle {
@@ -981,6 +982,7 @@ impl Default for WindowHandle {
         Self {
             window: web_sys::window().expect("window"),
             onbeforeunload: None,
+            onhashchange: None,
         }
     }
 }
@@ -1016,10 +1018,69 @@ impl WindowHandle {
             .unwrap();
     }
 
+    pub fn set_onhashchange(&mut self, handler: impl Fn() + 'static) {
+        self.onhashchange = Some(Closure::new(handler));
+        self.window.set_onhashchange(Some(
+            self.onhashchange.as_ref().unwrap().as_ref().unchecked_ref(),
+        ));
+    }
+
+    // The current location fragment, including the leading '#' (or empty).
+    pub fn location_hash(&self) -> String {
+        self.window.location().hash().unwrap_or_default()
+    }
+
+    // The page URL without its fragment.
+    pub fn location_without_hash(&self) -> String {
+        let href = self.window.location().href().unwrap_or_default();
+        match href.split_once('#') {
+            Some((base, _)) => base.to_string(),
+            None => href,
+        }
+    }
+
+    // Replace the fragment without adding a history entry or firing `hashchange`.
+    pub fn replace_hash(&self, hash: &str) {
+        if let Ok(history) = self.window.history() {
+            let _ = history.replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some(hash));
+        }
+    }
+
+    pub fn copy_to_clipboard(&self, text: &str) {
+        let promise = self.window.navigator().clipboard().write_text(text);
+        // consume a rejection (e.g. no clipboard permission) instead of leaving it unhandled
+        wasm_bindgen_futures::spawn_local(async move {
+            let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+        });
+    }
+
+    pub fn open_in_new_tab(&self, url: &str) {
+        let _ = self.window.open_with_url_and_target(url, "_blank");
+    }
+
     #[cfg(debug_assertions)]
     pub fn audit(&self) {
         audit_handler(&self.onbeforeunload, self.window.onbeforeunload());
+        if let Some(handler) = &self.onhashchange {
+            assert_eq!(
+                self.window.onhashchange(),
+                Some(handler.as_ref().unchecked_ref::<js_sys::Function>().clone())
+            );
+        }
     }
+}
+
+// Fetch a text resource (relative URLs resolve against the page).
+pub async fn fetch_text(url: &str) -> Result<String> {
+    use wasm_bindgen_futures::JsFuture;
+    let window = web_sys::window().context("window")?;
+    let resp = JsFuture::from(window.fetch_with_str(url)).await.fmt_err()?;
+    let resp: web_sys::Response = resp.dyn_into().fmt_err()?;
+    if !resp.ok() {
+        bail!("HTTP {} for {url}", resp.status());
+    }
+    let text = JsFuture::from(resp.text().fmt_err()?).await.fmt_err()?;
+    text.as_string().context("response text")
 }
 
 // A trait for a safe "Component", allowing wrapped access to its root Node and audit

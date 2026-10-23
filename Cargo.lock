@@ -357,6 +357,7 @@ dependencies = [
  "indexmap 2.14.0",
  "itertools",
  "js-sys",
+ "miniz_oxide",
  "palette",
  "pretty_assertions",
  "regex",

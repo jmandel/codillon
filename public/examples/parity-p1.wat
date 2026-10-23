@@ -1,0 +1,33 @@
+;; P1 (gate inverted): the i32.eqz that negated is_even is gone (blank line).
+;; With x = 7 the else-arm is reached by an odd number: the @assert and $half's precondition fail.
+(func $main
+  i32.const 4
+  call $half_or_neg1
+  drop
+  i32.const 7
+  call $half_or_neg1
+  drop
+)
+(func $is_even (param $x i32) (result $e (i32 | $e == ($x % 2 == 0 ? 1 : 0)))
+  local.get $x
+  i32.const 1
+  i32.and
+  i32.eqz
+)
+(func $half (param $x (i32 | $x % 2 == 0)) (result $h (i32 | $h + $h == $x))
+  local.get $x
+  i32.const 1
+  i32.shr_s
+)
+(func $half_or_neg1 (param $x i32) (result $y (i32 | ($x % 2 == 0 && $y + $y == $x) || ($x % 2 == 1 && $y == -1)))
+  local.get $x
+  call $is_even
+
+  if (result i32)
+    i32.const -1
+  else
+    (@assert $x % 2 == 0)
+    local.get $x
+    call $half
+  end
+)

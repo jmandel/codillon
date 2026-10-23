@@ -3,8 +3,40 @@
   <head>
     <link data-trunk rel="css" href="public/codillon.css"/>
     <link data-trunk rel="copy-dir" href="public/fonts"/>
+    <link data-trunk rel="copy-dir" href="public/examples"/>
     <link data-trunk rel="icon" href="public/favicon.ico" type="image/x-icon">
     <title>Codillon</title>
+    <script>
+      // Embed mode (#...&embed=1): mark the document, and keep the parent frame informed
+      // of our height so it can size the iframe to fit.
+      (function () {
+        function isEmbed() { return /(^#|&)embed=1(&|$)/.test(location.hash); }
+        var last = -1;
+        function post() {
+          if (!isEmbed() || window.parent === window) return;
+          var h = Math.ceil(Math.max(document.documentElement.scrollHeight,
+                                     document.body ? document.body.getBoundingClientRect().bottom : 0));
+          if (h !== last) {
+            last = h;
+            window.parent.postMessage({ type: "codillon-height", height: h }, "*");
+          }
+        }
+        function apply() {
+          document.documentElement.classList.toggle("embed", isEmbed());
+          post();
+        }
+        apply();
+        window.addEventListener("hashchange", apply);
+        window.addEventListener("load", post);
+        var ro = new ResizeObserver(post);
+        ro.observe(document.documentElement);
+        document.addEventListener("DOMContentLoaded", function () {
+          ro.observe(document.body);
+          new MutationObserver(function () { requestAnimationFrame(post); })
+            .observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["height", "class"] });
+        });
+      })();
+    </script>
   </head>
   <body></body>
 </html>

@@ -1,13 +1,13 @@
 @font-face {
    font-family: 'MLMRoman12-Regular';
-   src: url('/fonts/mlmr12.woff2') format('woff2');
+   src: url('fonts/mlmr12.woff2') format('woff2');
    font-weight: normal;
    font-style: normal;
 }
 
 @font-face {
    font-family: 'MLMSansDemiCond10-Regular';
-   src: url('/fonts/mlmssdc10.woff2') format('woff2');
+   src: url('fonts/mlmssdc10.woff2') format('woff2');
    font-weight: normal;
    font-style: normal;
 }
@@ -351,4 +351,44 @@ canvas {
 .arrow-target {
     scroll-margin-top: 100px;
     scroll-margin-bottom: 100px;
+}
+
+.share-button {
+    position: fixed;
+    right: 14px;
+    bottom: 10px;
+    z-index: 1001;
+    font-family: 'MLMSansDemiCond10-Regular';
+    font-size: 11pt;
+    color: darkblue;
+    background-color: #fffff0;
+    border: 1px solid #b8b8d8;
+    border-radius: 10px;
+    padding: 2px 9px;
+    cursor: pointer;
+    user-select: none;
+}
+
+.share-button:hover {
+    border-color: darkblue;
+}
+
+.share-button.flashed {
+    color: white;
+    background-color: darkblue;
+    border-color: darkblue;
+}
+
+/* embed mode (#embed=1): the editor lives in an iframe that is sized to its content */
+html.embed body {
+    margin: 0;
+}
+
+html.embed .save-status {
+    display: none;
+}
+
+html.embed .share-button {
+    bottom: 4px;
+    right: 6px;
 }

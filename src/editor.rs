@@ -11,10 +11,12 @@ use crate::{
     jet::{
         AccessToken, Component, ControlHandlers, DocumentHandle, ElementFactory, InputEventHandle,
         NodeRef, RangeLike, ReactiveComponent, StorageHandle, WebOffset, WindowHandle, WithElement,
-        compare_document_position, get_selection, now_ms, set_selection_range,
+        compare_document_position, fetch_text, get_selection, now_ms, set_selection_range,
     },
     line::{Activity, CodeLine, LineInfo, Position, PositionRange},
+    link::{LinkParams, ProgramSource, StepRequest, decode_program, share_fragment},
     save_status::SaveStatus,
+    share::ShareButton,
     slider::Slider,
     syntax::{
         FrameInfo, FrameInfosMut, InstrKind, LineInfos, LineInfosMut, LineKind, SyntheticWasm,
@@ -48,7 +50,13 @@ type ComponentType = DomStruct<
             DomImage,
             (
                 ReactiveComponent<TextType>,
-                (DomCanvas, (Autocomplete, (SaveStatus, ()))),
+                (
+                    DomCanvas,
+                    (
+                        Autocomplete,
+                        (SaveStatus, (ReactiveComponent<ShareButton>, ())),
+                    ),
+                ),
             ),
         ),
     ),
@@ -85,6 +93,9 @@ macro_rules! field {
     };
     (save_status $comp:expr) => {
         $comp.1.1.1.1.1.0
+    };
+    (share $comp:expr) => {
+        $comp.1.1.1.1.1.1.0
     };
 }
 
@@ -126,6 +137,18 @@ struct Editor {
     animation_pending: bool,
     animations: PendingAnimations,
     function_identity_cache: FunctionIdCache,
+    link: LinkState,
+}
+
+// State derived from the URL fragment (see link.rs).
+#[derive(Default)]
+struct LinkState {
+    embed: bool,
+    storage_key: Option<String>, // None: the user's own program (STORAGE_ID)
+    example: Option<String>,     // name of the loaded example, if any
+    loaded_text: String,         // the program text as loaded from the link
+    pending_step: Option<StepRequest>,
+    load_generation: usize,
 }
 
 pub struct EditorHolder(Rc<RefCell<Editor>>);
@@ -284,6 +307,10 @@ impl Editor {
         get_mut!(self.component, save_status)
     }
 
+    fn share_mut(&mut self) -> &mut ReactiveComponent<ShareButton> {
+        get_mut!(self.component, share)
+    }
+
     fn update_live_info(
         &mut self,
         step_count: usize,
@@ -433,6 +460,16 @@ impl Editor {
                     }
                 } else {
                     slider_step = step_count - 1;
+                }
+
+                // A deep link may ask for a particular step after the first run.
+                if let Some(req) = ed.link.pending_step.take() {
+                    slider_step = match req {
+                        StepRequest::Number(n) => min(n, step_count - 1),
+                        StepRequest::Last => step_count - 1,
+                        StepRequest::Fail => ed.first_failure_step().unwrap_or(step_count - 1),
+                    };
+                    ed.scroll_on_next_input = !ed.link.embed;
                 }
 
                 ed.reset_execution_state();
@@ -858,6 +895,7 @@ impl Editor {
         }
 
         self.schedule_save(); // schedule save to local storage
+        self.share_mut().inner_mut().reset_label();
         self.schedule_animation_if_needed();
 
         #[cfg(debug_assertions)]
@@ -1096,7 +1134,17 @@ impl Editor {
         Ok(())
     }
 
+    fn storage_key(&self) -> String {
+        self.link
+            .storage_key
+            .clone()
+            .unwrap_or_else(|| STORAGE_ID.to_string())
+    }
+
     fn schedule_save(&mut self) {
+        if self.link.embed {
+            return; // embedded editors never write to storage
+        }
         self.save_status_mut().mark_dirty();
         if self.pending_save.is_some() {
             // A save or retry already in flight
@@ -1114,10 +1162,11 @@ impl Editor {
             let success = {
                 editor.pending_save = None;
                 // Currently synchronous and atomic but could be asynchronous in the future
+                let key = editor.storage_key();
                 editor
                     .storage
                     .as_ref()
-                    .map(|s| s.try_set_item(STORAGE_ID, &content))
+                    .map(|s| s.try_set_item(&key, &content))
                     .unwrap_or(false)
             };
             editor
@@ -1265,7 +1314,13 @@ impl Editor {
                             ReactiveComponent::new(DomVec::new(factory.div())),
                             (
                                 DomCanvas::new(factory.canvas())?,
-                                (Autocomplete::new(&factory), (SaveStatus::new(&factory), ())),
+                                (
+                                    Autocomplete::new(&factory),
+                                    (
+                                        SaveStatus::new(&factory),
+                                        (ReactiveComponent::new(ShareButton::new(&factory)), ()),
+                                    ),
+                                ),
                             ),
                         ),
                     ),
@@ -1290,6 +1345,7 @@ impl Editor {
             animation_pending: false,
             animations: Default::default(),
             function_identity_cache: Default::default(),
+            link: Default::default(),
         };
 
         let text = ret.textbox_mut();
@@ -1352,25 +1408,156 @@ impl Editor {
                 }
             });
 
-        // Restore from localStorage, or use default content
-        if let Some(storage) = StorageHandle::new()
-            && let Some(content) = storage.get_item(STORAGE_ID)
-        {
-            for line_str in content.lines() {
-                self.push_line(line_str);
-            }
-            if self.on_change().is_err() {
-                self.set_default_contents()
-            };
-        } else {
-            self.set_default_contents();
-        }
+        let e = self.holder();
+        self.share_mut().set_onmousedown(move |ev| {
+            ev.prevent_default();
+            e.borrow_mut().share_link();
+        });
 
-        self.on_change().expect("well-formed initial contents");
+        let e = self.holder();
+        self.window
+            .set_onhashchange(move || e.borrow_mut().load_from_location(false));
+
+        self.load_from_location(true);
 
         let height = LINE_SPACING * self.text().len();
         self.image_mut()
             .set_attribute("height", &height.to_string());
+    }
+
+    // Load the program named by the URL fragment (#ex= or #src=), or else (at startup)
+    // the user's own program from localStorage, or else the default program.
+    fn load_from_location(&mut self, startup: bool) {
+        let params = LinkParams::parse(&self.window.location_hash());
+        if !startup && params.source.is_none() && self.link.storage_key.is_none() {
+            // fragment changed without naming a program: keep the current one
+            self.link.embed = params.embed;
+            self.share_mut().inner_mut().set_embed(params.embed);
+            return;
+        }
+
+        self.flush_save();
+        self.link.load_generation += 1;
+        self.link.embed = params.embed;
+        self.link.storage_key = params.storage_key(STORAGE_ID);
+        self.link.example = None;
+        self.share_mut().inner_mut().set_embed(params.embed);
+
+        match params.source {
+            None => {
+                let saved = StorageHandle::new().and_then(|s| s.get_item(STORAGE_ID));
+                match saved {
+                    Some(content) => self.set_contents(&content, params.step),
+                    None => {
+                        self.set_default_contents();
+                        self.link.pending_step = params.step;
+                        self.after_load();
+                    }
+                }
+            }
+            Some(ProgramSource::Inline(payload)) => match decode_program(&payload) {
+                Ok(text) => self.set_contents(&text, params.step),
+                Err(e) => self.set_contents(&format!(";; could not read this link: {e}"), None),
+            },
+            Some(ProgramSource::Example(name)) => {
+                let url = format!("examples/{name}.wat");
+                self.set_contents(&format!(";; loading {url}"), None);
+                self.link.example = Some(name);
+                let generation = self.link.load_generation;
+                let holder = self.holder();
+                let step = params.step;
+                wasm_bindgen_futures::spawn_local(async move {
+                    let result = fetch_text(&url).await;
+                    let mut ed = holder.borrow_mut();
+                    if ed.link.load_generation != generation {
+                        return; // superseded by a later navigation
+                    }
+                    match result {
+                        Ok(text) => ed.set_contents(&text, step),
+                        Err(e) => ed.set_contents(&format!(";; could not load {url}: {e}"), None),
+                    }
+                });
+            }
+        }
+    }
+
+    // Replace the whole buffer with `content` (undo history is reset).
+    fn set_contents(&mut self, content: &str, step: Option<StepRequest>) {
+        let len = self.text().len();
+        self.text_mut().remove_range(0, len);
+        for line_str in content.lines() {
+            self.push_line(line_str);
+        }
+        if self.text().is_empty() {
+            self.push_line("");
+        }
+        self.link.pending_step = step;
+        if self.on_change().is_err() {
+            self.set_default_contents();
+        }
+        self.after_load();
+    }
+
+    fn after_load(&mut self) {
+        self.action_history = ActionHistory::default();
+        self.previous_instrumented_binary_hash = 0; // force a fresh run (for the step request)
+        self.on_change().expect("well-formed initial contents");
+        self.link.loaded_text = self.buffer_as_text();
+        let height = LINE_SPACING * self.text().len();
+        self.image_mut()
+            .set_attribute("height", &height.to_string());
+    }
+
+    // Save immediately if a save is pending (used before switching programs).
+    fn flush_save(&mut self) {
+        if self.pending_save.is_some() && self.save_status().is_dirty() {
+            let key = self.storage_key();
+            let content = self.buffer_as_text();
+            if let Some(s) = self.storage.as_ref() {
+                s.try_set_item(&key, &content);
+            }
+        }
+    }
+
+    // The step to show for `step=fail`: the first failed check, or else the final step.
+    fn first_failure_step(&self) -> Option<usize> {
+        let count = RUN_LOG.with(|r| r.step_count());
+        (count > 0).then(|| count - 1)
+    }
+
+    // Copy (or, when embedded, open) a link to the current program at the current step.
+    fn share_link(&mut self) {
+        let step_count = RUN_LOG.with(|r| r.step_count());
+        let current = self.current_step();
+        let step = if step_count <= 1 {
+            None
+        } else if current + 1 >= step_count {
+            Some(StepRequest::Last)
+        } else {
+            Some(StepRequest::Number(current))
+        };
+        let text = self.buffer_as_text();
+        let fragment = match &self.link.example {
+            Some(name) if text == self.link.loaded_text => {
+                let mut f = format!("#ex={name}");
+                match step {
+                    Some(StepRequest::Number(n)) => f.push_str(&format!("&step={n}")),
+                    Some(StepRequest::Last) => f.push_str("&step=last"),
+                    _ => {}
+                }
+                f
+            }
+            _ => share_fragment(&text, step, false),
+        };
+        let url = self.window.location_without_hash() + &fragment;
+        if self.link.embed {
+            self.window.open_in_new_tab(&url);
+        } else {
+            self.window.copy_to_clipboard(&url);
+            let share = self.share_mut().inner_mut();
+            share.flash("link copied \u{2713}");
+            share.set_link(&url);
+        }
     }
 
     fn push_line(&mut self, string: &str) {
@@ -1381,6 +1568,7 @@ impl Editor {
     fn set_default_contents(&mut self) {
         let len = self.text().len();
         self.text_mut().remove_range(0, len);
+        self.link.pending_step = None;
         self.push_line("(func");
         self.push_line("i32.const 5");
         self.push_line("i32.const 6");
