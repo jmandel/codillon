@@ -8,6 +8,7 @@ pub mod utils;
 
 pub mod action_history;
 pub mod autocomplete;
+pub mod checker;
 pub mod debug;
 pub mod editor;
 pub mod graphics;
@@ -16,5 +17,6 @@ pub mod link;
 pub mod save_status;
 pub mod share;
 pub mod slider;
+pub mod spec;
 pub mod symbolic;
 pub mod syntax;

@@ -11,12 +11,13 @@ use crate::{
         AccessToken, Component, ElementFactory, NodeRef, WebOffset, WithElement,
         set_selection_range,
     },
+    spec::LineSpec,
     symbolic::{LineSymbols, parse_line_symbols},
-    syntax::{FuncPart, InstrKind, LineKind, ModulePart, SyntheticWasm, parse_line},
+    syntax::{FuncPart, InstrKind, LineKind, ModulePart, SyntheticWasm, parse_line_spec},
     utils::{AnimationRequest, Tween, find_comment},
 };
 use anyhow::{Result, bail};
-use std::{cell::Cell, mem::swap};
+use std::{cell::Cell, mem::swap, rc::Rc};
 use web_sys::{HtmlBrElement, HtmlDivElement, HtmlSpanElement};
 
 type DomBr = DomStruct<(), HtmlBrElement>;
@@ -53,6 +54,7 @@ pub struct LineInfo {
     pub invalid: Option<String>,
     pub runtime_error: Option<String>,
     pub symbols: LineSymbols,
+    pub spec: Option<Rc<LineSpec>>, // specification content (annotation or refined header)
 }
 
 impl Default for LineInfo {
@@ -66,6 +68,7 @@ impl Default for LineInfo {
             invalid: None,
             runtime_error: None,
             symbols: Default::default(),
+            spec: None,
         };
         NEXT_LINE_ID.replace(ret.id + 1);
         ret
@@ -140,7 +143,11 @@ impl LineInfo {
         if idx < self.synthetic_before.num_strs() {
             self.synthetic_before.str(idx)
         } else if self.is_well_formed() && idx == self.synthetic_before.num_strs() {
-            instr_text
+            // refinements are erased: the module is compiled from the plain WebAssembly
+            match self.spec.as_deref().and_then(LineSpec::erased) {
+                Some(erased) => erased,
+                None => instr_text,
+            }
         } else {
             panic!("index out of range");
         }
@@ -211,7 +218,10 @@ pub struct PositionRange {
 impl Component for CodeLine {
     #[cfg(debug_assertions)]
     fn audit(&self) {
-        assert_eq!(self.info.kind, parse_line(self.instr().get()));
+        assert_eq!(
+            self.info.kind,
+            crate::syntax::parse_line(self.instr().get())
+        );
         assert_eq!(self.contents.get_attribute("class").unwrap(), &self.class());
         let comment = self.contents.get().1.0.get_attribute("data-commentary");
         if let Some(msg) = &self.info.runtime_error
@@ -360,6 +370,7 @@ impl CodeLine {
                 LineKind::Empty => "line",
                 LineKind::Other(_) => "line meta-line numbered-line",
                 LineKind::Instr(_) => "line instr-line numbered-line",
+                LineKind::Spec => "line spec-line numbered-line",
             }
         }
         .to_string();
@@ -504,8 +515,14 @@ impl CodeLine {
             self.instr_mut().replace_range(0, ws_bytes, "")?;
         }
         // Update kind, symbols, commentary, and active status
-        self.info.kind = parse_line(self.instr().get());
-        self.info.symbols = parse_line_symbols(self.instr().get(), &self.info.kind);
+        let (kind, spec) = parse_line_spec(self.instr().get());
+        self.info.kind = kind;
+        self.info.spec = spec;
+        let wasm_text = match self.info.spec.as_deref().and_then(LineSpec::erased) {
+            Some(erased) => erased,
+            None => self.instr().get(),
+        };
+        self.info.symbols = parse_line_symbols(wasm_text, &self.info.kind);
         self.conform();
         Ok(ws_bytes)
     }

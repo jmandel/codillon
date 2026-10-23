@@ -19,7 +19,8 @@
   i32.const 1
   i32.shr_s
 )
-(func $half_or_neg1 (param $x i32) (result $y (i32 | ($x % 2 == 0 && $y + $y == $x) || ($x % 2 == 1 && $y == -1)))
+(func $half_or_neg1 (param $x i32) (result $y i32)
+  (@ensures ($x % 2 == 0 && $y + $y == $x) || ($x % 2 == 1 && $y == -1))
   local.get $x
   call $is_even
 

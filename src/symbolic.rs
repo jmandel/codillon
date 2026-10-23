@@ -115,6 +115,22 @@ pub struct LineSymbols {
 }
 
 impl LineSymbols {
+    /// The name (without `$`) of the global defined on this line, if any.
+    pub fn defined_global(&self) -> Option<&str> {
+        self.defines
+            .iter()
+            .find(|s| matches!(s.space, IndexSpace::Global))
+            .map(|s| s.name.as_str())
+    }
+
+    /// The name (without `$`) of the function defined on this line, if any.
+    pub fn defined_func(&self) -> Option<&str> {
+        self.defines
+            .iter()
+            .find(|s| matches!(s.space, IndexSpace::Func))
+            .map(|s| s.name.as_str())
+    }
+
     fn merge(&mut self, other: LineSymbols) {
         self.defines.extend(other.defines);
         self.consumes.extend(other.consumes);

@@ -125,6 +125,18 @@ impl RunLog {
         true
     }
 
+    /// Read a completed step: its line number word (top bit: "after call"), the slot
+    /// assignments recorded during it, and its call-frame operations.
+    pub fn with_step<T>(
+        &self,
+        idx: usize,
+        func: impl FnOnce(u32, &[(u32, WasmValue)], &[CallFrameOp]) -> T,
+    ) -> T {
+        self.with_completed_step(idx, |s| {
+            func(s.line_num, &s.slot_assignments, &s.call_frame_ops)
+        })
+    }
+
     pub fn graphics_op(&self, act: Action) {
         self.with_current_step_mut(|step| {
             debug_assert!(step.graphics_op.is_none());

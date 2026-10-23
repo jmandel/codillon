@@ -186,6 +186,16 @@ pub struct GeneralOperator<'a> {
     info: OpInfo,
 }
 
+impl GeneralOperator<'_> {
+    /// Is this a direct or indirect call (whose outputs are the callee's results)?
+    pub fn is_call(&self) -> bool {
+        matches!(
+            self.op,
+            Operator::Call { .. } | Operator::CallIndirect { .. }
+        )
+    }
+}
+
 #[derive(Debug)]
 pub struct Aligned<T> {
     pub inner: T,
@@ -2219,7 +2229,7 @@ pub fn indent_and_frame(
                 debug_assert!(ends_before == 0);
                 code.set_indent(line_no, default_indent);
             }
-            LineKind::Empty | LineKind::Other(_) => {
+            LineKind::Empty | LineKind::Other(_) | LineKind::Spec => {
                 /* not an instruction */
 
                 /* process function end */
@@ -3038,7 +3048,7 @@ pub(crate) mod tests {
 
     use crate::line::{Activity, LineInfo};
     use crate::symbolic::parse_line_symbols;
-    use crate::syntax::{SyntheticWasm, fix_syntax, parse_line};
+    use crate::syntax::{SyntheticWasm, fix_syntax};
 
     #[derive(Default, Debug)]
     struct FakeTextLine {
@@ -3053,14 +3063,19 @@ pub(crate) mod tests {
 
     impl FakeTextLine {
         fn new(s: &str, id: u32) -> Self {
-            let kind = parse_line(s);
-            let symbols = parse_line_symbols(s, &kind);
+            let (kind, spec) = crate::syntax::parse_line_spec(s);
+            let wasm_text = spec
+                .as_deref()
+                .and_then(crate::spec::LineSpec::erased)
+                .unwrap_or(s);
+            let symbols = parse_line_symbols(wasm_text, &kind);
             Self {
                 instr_text: String::from(s),
                 info: LineInfo {
                     kind,
                     id,
                     symbols,
+                    spec,
                     ..Default::default()
                 },
             }
@@ -4856,5 +4871,418 @@ pub(crate) mod tests {
         }
 
         Ok(())
+    }
+
+    // Refinement specs: parsing, erasure and run-time checking of whole programs.
+    mod spec_checks {
+        use super::*;
+        use crate::checker::{CheckKind, CheckResults, Outcome, SpecPlan, build_plan, check_run};
+        use crate::syntax::LineKind;
+        use pretty_assertions::assert_eq;
+
+        struct SpecRun {
+            editor: FakeTextBuffer,
+            plan: SpecPlan,
+            results: CheckResults,
+            log: RunLog,
+            binary: Vec<u8>,
+        }
+
+        fn load(src: &str) -> FakeTextBuffer {
+            let mut editor = FakeTextBuffer::default();
+            for line in src.lines() {
+                editor.push_line(line);
+            }
+            editor
+        }
+
+        fn run_spec(src: &str) -> Result<SpecRun> {
+            let mut editor = load(src);
+            fix_syntax(&mut editor);
+            let mut text = String::new();
+            for line in editor.lines.iter() {
+                for i in 0..line.info.num_well_formed_strs() {
+                    text.push_str(line.info.well_formed_str(i, &line.instr_text));
+                    text.push(' ');
+                }
+                text.push('\n');
+            }
+            let wasm_bin = str_to_binary(text)?;
+            let raw = RawModule::new(&editor, &wasm_bin)?;
+            let validized = raw.fix_validity(&mut editor, &wasm_bin)?;
+            let types = validized.to_types_table(&wasm_bin)?;
+            indent_and_frame(&mut editor, &validized, &types, None);
+            let plan = build_plan(&editor, &validized, &types);
+            let binary = validized.build_instrumented_binary(&types)?;
+            let log = test_execution(&binary, &[], &mut [])?;
+            let results = check_run(&plan, &log);
+            Ok(SpecRun {
+                editor,
+                plan,
+                results,
+                log,
+                binary,
+            })
+        }
+
+        fn line_of(src: &str, needle: &str) -> usize {
+            src.lines()
+                .position(|l| l.contains(needle))
+                .unwrap_or_else(|| panic!("no line containing {needle}"))
+        }
+
+        fn failures(r: &SpecRun) -> Vec<(usize, CheckKind, String)> {
+            r.results
+                .events
+                .iter()
+                .filter(|e| e.outcome == Outcome::Failed)
+                .map(|e| (e.spec_line, e.kind, e.message.clone()))
+                .collect()
+        }
+
+        fn held(r: &SpecRun, spec_line: usize) -> usize {
+            r.results
+                .events
+                .iter()
+                .filter(|e| e.spec_line == spec_line && e.outcome == Outcome::Held)
+                .count()
+        }
+
+        const EXAMPLES: &[(&str, &str)] = &[
+            ("parity", include_str!("../public/examples/parity.wat")),
+            (
+                "parity-p1",
+                include_str!("../public/examples/parity-p1.wat"),
+            ),
+            (
+                "parity-p2",
+                include_str!("../public/examples/parity-p2.wat"),
+            ),
+            (
+                "parity-p3",
+                include_str!("../public/examples/parity-p3.wat"),
+            ),
+            ("isqrt", include_str!("../public/examples/isqrt.wat")),
+            ("isqrt-s1", include_str!("../public/examples/isqrt-s1.wat")),
+            ("isqrt-s2", include_str!("../public/examples/isqrt-s2.wat")),
+            ("isqrt-s3", include_str!("../public/examples/isqrt-s3.wat")),
+            ("gcd", include_str!("../public/examples/gcd.wat")),
+            ("gcd-g1", include_str!("../public/examples/gcd-g1.wat")),
+            ("gcd-g3", include_str!("../public/examples/gcd-g3.wat")),
+            (
+                "hashtable",
+                include_str!("../public/examples/hashtable.wat"),
+            ),
+            ("hello", include_str!("../public/examples/hello.wat")),
+        ];
+
+        #[test]
+        fn examples_parse_and_plan_cleanly() -> Result<()> {
+            for (name, src) in EXAMPLES {
+                let editor = load(src);
+                for (i, line) in editor.lines.iter().enumerate() {
+                    assert!(
+                        !matches!(line.info.kind, LineKind::Malformed(_)),
+                        "{name}:{} malformed: {:?} ({})",
+                        i + 1,
+                        line.info.kind,
+                        line.instr_text
+                    );
+                }
+                let r = run_spec(src)?;
+                assert_eq!(r.plan.errors, vec![], "{name}");
+                for line in &r.editor.lines {
+                    assert!(
+                        line.info.is_active(),
+                        "{name}: inactive {}",
+                        line.instr_text
+                    );
+                    assert_eq!(
+                        line.info.invalid, None,
+                        "{name}: invalid {}",
+                        line.instr_text
+                    );
+                }
+            }
+            Ok(())
+        }
+
+        // Erasure: the refined program compiles to exactly the binary of the plain program
+        // with each annotation line blanked and each refinement replaced by its type.
+        #[test]
+        fn erasure_preserves_lines_and_binary() -> Result<()> {
+            for (name, src) in EXAMPLES {
+                let erased: String = src
+                    .lines()
+                    .map(
+                        |l| match crate::spec::scan_line(l.split(";;").next().unwrap()) {
+                            crate::spec::ScanResult::Spec(crate::spec::LineSpec::Annotation(_)) => {
+                                String::new()
+                            }
+                            crate::spec::ScanResult::Spec(crate::spec::LineSpec::Header {
+                                erased: Some(e),
+                                ..
+                            }) => e,
+                            _ => l.to_string(),
+                        },
+                    )
+                    .map(|l| l + "\n")
+                    .collect();
+                assert_eq!(erased.lines().count(), src.lines().count());
+                for l in erased.lines() {
+                    let code = l.split(";;").next().unwrap();
+                    assert!(!code.contains("(@") && !code.contains('|'), "{name}: {l}");
+                }
+                let a = run_spec(src)?;
+                let b = run_spec(&erased)?;
+                assert_eq!(a.binary, b.binary, "{name}: erased binary differs");
+                assert_eq!(a.log.step_count(), b.log.step_count(), "{name}");
+            }
+            Ok(())
+        }
+
+        #[test]
+        fn correct_programs_hold() -> Result<()> {
+            for name in ["parity", "isqrt", "isqrt-s1", "gcd"] {
+                let src = EXAMPLES.iter().find(|(n, _)| *n == name).unwrap().1;
+                let r = run_spec(src)?;
+                assert_eq!(failures(&r), vec![], "{name}");
+                assert!(
+                    r.results.events.iter().all(|e| e.outcome == Outcome::Held),
+                    "{name}: {:?}",
+                    r.results.events.iter().find(|e| e.outcome != Outcome::Held)
+                );
+                assert_eq!(r.log.termination_type(), TerminationType::Success, "{name}");
+            }
+            // counts: isqrt(10) arrives at the loop head 4 times (entry + 3 back edges)
+            let src = include_str!("../public/examples/isqrt.wat");
+            let r = run_spec(src)?;
+            assert_eq!(held(&r, line_of(src, "(@invariant")), 4);
+            assert_eq!(held(&r, line_of(src, "(@decreases")), 4);
+            assert_eq!(held(&r, line_of(src, "(@ensures")), 1);
+            assert_eq!(held(&r, line_of(src, "(func $isqrt")), 2); // param + result
+            // gcd: the define is recursive
+            let src = include_str!("../public/examples/gcd.wat");
+            let r = run_spec(src)?;
+            assert_eq!(held(&r, line_of(src, "(@invariant")), 3);
+            Ok(())
+        }
+
+        #[test]
+        fn isqrt_bugs() -> Result<()> {
+            // S3: start at 1 with n = 0: invariant and measure fail on loop entry
+            let src = include_str!("../public/examples/isqrt-s3.wat");
+            let r = run_spec(src)?;
+            let f = failures(&r);
+            let inv = line_of(src, "(@invariant");
+            let dec = line_of(src, "(@decreases");
+            assert!(f.iter().any(|(l, k, m)| *l == inv
+                && *k == CheckKind::Invariant
+                && m == "on entry: $r * $r <= $n : 1\u{b7}1 = 1 \u{2264} 0 \u{2717}"));
+            assert!(f.iter().any(|(l, k, m)| *l == dec
+                && *k == CheckKind::Decreases
+                && m == "$n - $r * $r : 0 - 1\u{b7}1 = -1 < 0 \u{2717}"));
+            let first = r.results.first_failure_step().unwrap();
+            let loop_line = line_of(src, "loop $grow");
+            let e = r.results.events.iter().find(|e| e.step == first).unwrap();
+            assert_eq!(e.at_line, loop_line);
+            r.log
+                .with_step(first, |line, _, _| assert_eq!(line as usize, loop_line));
+
+            // S2: spec bug, perfect square 4
+            let src = include_str!("../public/examples/isqrt-s2.wat");
+            let r = run_spec(src)?;
+            let f = failures(&r);
+            assert_eq!(f.len(), 1, "{f:?}");
+            assert_eq!(f[0].0, line_of(src, "(@ensures"));
+            assert_eq!(f[0].2, "$root * $root < $n : 2\u{b7}2 = 4 < 4 \u{2717}");
+            // reported at the function's last step, with the arrow on its closing line
+            let e = r
+                .results
+                .events
+                .iter()
+                .find(|e| e.outcome == Outcome::Failed)
+                .unwrap();
+            r.log.with_step(e.step, |line, _, _| {
+                assert_eq!(line as usize, e.at_line);
+            });
+            assert_eq!(src.lines().nth(e.at_line).unwrap().trim(), ")");
+            Ok(())
+        }
+
+        #[test]
+        fn gcd_bugs() -> Result<()> {
+            // G1 traps; every check before the trap held
+            let src = include_str!("../public/examples/gcd-g1.wat");
+            let r = run_spec(src)?;
+            assert_eq!(r.log.termination_type(), TerminationType::Error);
+            assert_eq!(failures(&r), vec![]);
+            assert!(held(&r, line_of(src, "(@invariant")) >= 3);
+            // G3: invariant not established on entry, preserved afterwards
+            let src = include_str!("../public/examples/gcd-g3.wat");
+            let r = run_spec(src)?;
+            let inv = line_of(src, "(@invariant");
+            let f = failures(&r);
+            assert_eq!(f.len(), 1, "{f:?}");
+            assert_eq!(f[0].0, inv);
+            assert!(
+                f[0].2.starts_with("on entry: $y <= $x : 6 \u{2264} 4"),
+                "{}",
+                f[0].2
+            );
+            assert!(held(&r, inv) >= 2);
+            Ok(())
+        }
+
+        #[test]
+        fn parity_bugs() -> Result<()> {
+            let src = include_str!("../public/examples/parity-p1.wat");
+            let r = run_spec(src)?;
+            let f = failures(&r);
+            let assert_line = line_of(src, "(@assert");
+            let half = line_of(src, "(func $half ");
+            assert!(
+                f.iter()
+                    .any(|(l, k, _)| *l == assert_line && *k == CheckKind::Assert)
+            );
+            let req = f
+                .iter()
+                .find(|(l, k, _)| *l == half && *k == CheckKind::ParamRefinement)
+                .expect("requires of $half");
+            assert_eq!(
+                req.2,
+                "at the call of $half: $x % 2 == 0 : 7 % 2 = 1 == 0 \u{2717}"
+            );
+            // the requires failure is shown at the call, in the caller
+            let e = r
+                .results
+                .events
+                .iter()
+                .find(|e| e.spec_line == half && e.outcome == Outcome::Failed)
+                .unwrap();
+            assert_eq!(src.lines().nth(e.at_line).unwrap().trim(), "call $half");
+
+            let src = include_str!("../public/examples/parity-p2.wat");
+            let r = run_spec(src)?;
+            let f = failures(&r);
+            assert!(f.iter().any(|(l, k, m)| *l == line_of(src, "(func $half ")
+                && *k == CheckKind::ResultRefinement
+                && m.contains("2147483646")));
+
+            let src = include_str!("../public/examples/parity-p3.wat");
+            let r = run_spec(src)?;
+            let f = failures(&r);
+            assert_eq!(f.len(), 1, "{f:?}");
+            assert_eq!(f[0].2, "$h < $x : 0 < 0 \u{2717}");
+            Ok(())
+        }
+
+        #[test]
+        fn refined_locals_old_and_recursion() -> Result<()> {
+            let src = "(func $main
+i32.const 5
+call $count
+drop
+i32.const 3
+call $fact
+drop
+)
+(func $count (param $n i32) (result $r (i32 | $r == old($n) + 1))
+(local $i (i32 | 0 <= $i <= 3))
+block $done
+loop $up
+local.get $i
+local.get $n
+i32.ge_s
+br_if $done
+local.get $i
+i32.const 1
+i32.add
+local.set $i
+br $up
+end
+end
+local.get $n
+i32.const 1
+i32.add
+)
+(func $fact (param $k (i32 | $k >= 0)) (result $f (i32 | $f >= 1))
+(@requires $k <= 12)
+local.get $k
+i32.eqz
+if (result i32)
+i32.const 1
+else
+local.get $k
+i32.const 1
+i32.sub
+call $fact
+local.get $k
+i32.mul
+end
+)
+";
+            let r = run_spec(src)?;
+            assert_eq!(r.plan.errors, vec![]);
+            let local_line = line_of(src, "(local $i");
+            let f = failures(&r);
+            assert_eq!(f.len(), 2, "{f:?}"); // i = 4 and i = 5
+            assert_eq!(f[0].0, local_line);
+            assert_eq!(f[0].1, CheckKind::LocalRefinement);
+            assert_eq!(f[0].2, "$i <= 3 : 4 \u{2264} 3 \u{2717}");
+            let e = r
+                .results
+                .events
+                .iter()
+                .find(|e| e.outcome == Outcome::Failed)
+                .unwrap();
+            assert_eq!(src.lines().nth(e.at_line).unwrap(), "local.set $i");
+            // initial value and the first sets held
+            assert_eq!(held(&r, local_line), 4);
+            // old() and the result name
+            assert_eq!(held(&r, line_of(src, "(func $count")), 1);
+            // recursion: 4 entries and 4 exits of $fact, each with its own frame
+            let fact = line_of(src, "(func $fact");
+            assert_eq!(held(&r, fact), 8);
+            assert_eq!(held(&r, line_of(src, "(@requires")), 4);
+            Ok(())
+        }
+
+        #[test]
+        fn spec_errors_are_reported_per_line() -> Result<()> {
+            let src = "(func $main
+i32.const 1
+call $f
+drop
+)
+(@requires $x > 0)
+(func $f (param $x (i32 | $q > 0)) (result $r (i32 | $r > nosuch($x)))
+(@requires $r > 0)
+(@invariant $x > 0)
+(@assert $x >>> 1)
+local.get $x
+)
+";
+            let editor = load(src);
+            assert!(matches!(
+                editor.lines[line_of(src, "(@assert")].info.kind,
+                LineKind::Malformed(_)
+            ));
+            let r = run_spec(src)?;
+            let mut errs: HashMap<usize, String> = HashMap::new();
+            for (l, e) in &r.plan.errors {
+                errs.entry(*l).or_insert(e.clone());
+            }
+            assert_eq!(errs[&5], "@requires belongs inside a function");
+            assert_eq!(errs[&6], "unknown name $q"); // first refinement in the header
+            assert_eq!(
+                errs[&7],
+                "the result $r is only known when the function returns"
+            );
+            assert_eq!(errs[&8], "@invariant belongs right after a loop line");
+            // the run still happens, and the remaining check (result) is evaluated
+            assert_eq!(r.log.termination_type(), TerminationType::Success);
+            Ok(())
+        }
     }
 }

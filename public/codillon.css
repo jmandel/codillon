@@ -60,6 +60,13 @@ div.textentry:focus {
     counter-increment: codelines;
 }
 
+/* specification lines, e.g. (@invariant …): erased before compilation */
+.spec-line {
+    color: indigo;
+    font-style: italic;
+    counter-increment: codelines;
+}
+
 .invalid-line {
     counter-increment: codelines;
 }
@@ -391,4 +398,8 @@ html.embed .save-status {
 html.embed .share-button {
     bottom: 4px;
     right: 6px;
+}
+
+.spec-line::before {
+    font-style: normal;
 }

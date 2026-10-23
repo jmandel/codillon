@@ -3,6 +3,7 @@
 use crate::{
     action_history::{ActionHistory, Edit},
     autocomplete::Autocomplete,
+    checker::{SpecPlan, build_plan},
     debug::{ExecutionState, ExecutionStatus, RUN_LOG, TerminationType, run_binary},
     dom_canvas::DomCanvas,
     dom_struct::DomStruct,
@@ -138,6 +139,7 @@ struct Editor {
     animations: PendingAnimations,
     function_identity_cache: FunctionIdCache,
     link: LinkState,
+    spec_plan: Rc<SpecPlan>,
 }
 
 // State derived from the URL fragment (see link.rs).
@@ -880,6 +882,15 @@ impl Editor {
         self.slot_connections = find_connections(&validized, &types);
         self.update_displayed_types(&validized, &types)?;
 
+        // specifications: where each predicate is checked (and what is wrong with them)
+        let plan = build_plan(self, &validized, &types);
+        for (line, msg) in &plan.errors {
+            if self.line(*line).info().invalid.is_none() {
+                self.line_mut(*line).set_invalid(Some(msg.clone()));
+            }
+        }
+        self.spec_plan = Rc::new(plan);
+
         // instrumentation
         let instrumented_binary = &validized.build_instrumented_binary(&types)?;
         let instrumented_binary_hash = Self::hash_binary(instrumented_binary);
@@ -1346,6 +1357,7 @@ impl Editor {
             animations: Default::default(),
             function_identity_cache: Default::default(),
             link: Default::default(),
+            spec_plan: Default::default(),
         };
 
         let text = ret.textbox_mut();
