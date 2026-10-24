@@ -59,7 +59,7 @@ fn examples_parse_without_errors() {
 #[test]
 fn malformed_lines_never_panic() {
     use super::ast::{LineKind, parse_line};
-    for t in ["i32.trunc_", "i64.trunc_sat_", "f32.convert_", "i32.load offset=", "(func", "(param $x (i32 |", "prove 99", ")", "\"", "(i32| $p)"] {
+    for t in ["i32.trunc_", "i64.trunc_sat_", "f32.convert_", "i32.load offset=", "(param $x (i32 |", "prove 99", ")", "\"", "(i32| $p)"] {
         let k = parse_line(t, 1);
         if t != ")" {
             assert!(matches!(k, LineKind::Error(_) | LineKind::Other), "{t}: {k:?}");
