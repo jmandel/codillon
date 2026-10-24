@@ -496,6 +496,9 @@ impl CodeLine {
             && !msg.is_empty()
         {
             Some(match &self.info.proof.note {
+                // a stale-fact hint names the lines to look at: first, so a cut-short
+                // commentary never loses them (review 20 D.2.5)
+                Some(note) if note.contains(" is about the old ") => format!("{note} — {msg}"),
                 Some(note) => format!("{msg} — {note}"),
                 None => msg.to_string(),
             })

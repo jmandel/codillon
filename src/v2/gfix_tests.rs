@@ -133,7 +133,9 @@ fn f1_mutually_recursive_lemmas_are_rejected() {
     not_proven_at(&out, 12);
     assert!(!verified(&out, "$f"));
     assert!(
-        errors(&out).iter().any(|(_, e)| e.contains("recursive through")),
+        errors(&out)
+            .iter()
+            .any(|(_, e)| e.contains("recursive through")),
         "{:?}",
         errors(&out)
     );
@@ -162,9 +164,21 @@ fn dump_src() {
     let src = std::fs::read_to_string(std::env::var("SRC").unwrap()).unwrap();
     let out = check_module(&Module::parse(&src), std::env::var("STRICT").is_err());
     for f in &out.funcs {
-        println!("func {} verified={} strict_clean={}", f.name, f.verified, f.strict_clean);
+        println!(
+            "func {} verified={} strict_clean={}",
+            f.name, f.verified, f.strict_clean
+        );
         for c in &f.cups {
-            println!("  cup {} {} {:?} ⟨{}⟩ {:?} checks {:?} {:?}", c.line, c.kind.name(), c.verdict, c.goal, c.feed, c.depends_on_checks, c.diag);
+            println!(
+                "  cup {} {} {:?} ⟨{}⟩ {:?} checks {:?} {:?}",
+                c.line,
+                c.kind.name(),
+                c.verdict,
+                c.goal,
+                c.feed,
+                c.depends_on_checks,
+                c.diag
+            );
         }
         for e in &f.line_errors {
             println!("  ERR {e:?}");
@@ -207,12 +221,17 @@ fn f2_writing_a_local_named_in_a_refinement_owes_its_cup() {
     let d = out.cups().find(|c| c.line == 18).unwrap();
     assert!(!d.depends_on_checks.is_empty());
     // gradual run with a value the kernel cannot fold: the new cup is a runtime check on line 11
-    let src = F2.replacen(
-        "    i32.const 0\n    local.set $n",
-        "    local.get $c\n    local.set $n",
-        1,
-    )
-    .replacen("  local.get $c\n  if", "  local.get $c\n  i32.const 1\n  i32.sub\n  if", 1);
+    let src = F2
+        .replacen(
+            "    i32.const 0\n    local.set $n",
+            "    local.get $c\n    local.set $n",
+            1,
+        )
+        .replacen(
+            "  local.get $c\n  if",
+            "  local.get $c\n  i32.const 1\n  i32.sub\n  if",
+            1,
+        );
     let (r, _) = super::tests::instrumented_run(&src, "f", &[2]);
     assert!(
         matches!(r, Err(super::eval::EvalErr::CheckFailed { line: 13, .. })),
@@ -235,7 +254,9 @@ fn f2_a_local_refinement_may_not_read_memory() {
 )"#;
     let out = check(src);
     assert!(
-        errors(&out).iter().any(|(l, e)| *l == 7 && e.contains("memory")),
+        errors(&out)
+            .iter()
+            .any(|(l, e)| *l == 7 && e.contains("memory")),
         "{:?}",
         errors(&out)
     );
@@ -271,7 +292,13 @@ fn f3_refined_globals_rest_on_their_initializer_and_every_set() {
     let m = Module::parse(F3);
     let out = check_module(&m, true);
     // $g's initializer 0 violates `v ≠ 0`: a module error, and the division is not proven
-    assert!(out.errors.iter().any(|(l, e)| *l == 1 && e.contains("initializer")), "{:?}", out.errors);
+    assert!(
+        out.errors
+            .iter()
+            .any(|(l, e)| *l == 1 && e.contains("initializer")),
+        "{:?}",
+        out.errors
+    );
     not_proven_at(&out, 5);
     assert!(!verified(&out, "$f"));
     // $setter's unproven global.set (line 10) is a check $reader's division rests on
@@ -279,7 +306,13 @@ fn f3_refined_globals_rest_on_their_initializer_and_every_set() {
     assert_eq!(c.depends_on_checks.to_vec(), vec![10]);
     assert!(!verified(&out, "$reader"));
     // $k's refinement names a local: rejected, so $lie gets nothing from it
-    assert!(out.errors.iter().any(|(l, e)| *l == 17 && e.contains("only `v`")), "{:?}", out.errors);
+    assert!(
+        out.errors
+            .iter()
+            .any(|(l, e)| *l == 17 && e.contains("only `v`")),
+        "{:?}",
+        out.errors
+    );
     not_proven_at(&out, 21);
     // gradual: the check in $setter catches the bad write before $reader can divide by it
     let (r, _) = super::tests::instrumented_run(F3, "setter", &[0]);
@@ -346,15 +379,24 @@ fn f4_a_check_never_reads_a_capture_from_later_or_a_sibling_arm() {
     let (r, _) = super::tests::instrumented_run(F4, "f", &[5]);
     assert_eq!(r.unwrap(), vec![1]);
     let (r, _) = super::tests::instrumented_run(F4, "f", &[-1]);
-    assert!(matches!(r, Err(EvalErr::CheckFailed { line: 11, .. })), "{r:?}");
+    assert!(
+        matches!(r, Err(EvalErr::CheckFailed { line: 11, .. })),
+        "{r:?}"
+    );
     let (r, _) = super::tests::instrumented_run(F4, "g", &[5, 0]);
     assert_eq!(r.unwrap(), vec![0]);
     let (r, _) = super::tests::instrumented_run(F4, "g", &[-1, 0]);
-    assert!(matches!(r, Err(EvalErr::CheckFailed { line: 24, .. })), "{r:?}");
+    assert!(
+        matches!(r, Err(EvalErr::CheckFailed { line: 24, .. })),
+        "{r:?}"
+    );
     // negated: a 0 shadow would make ¬$pos($x) pass for x = 5
     let neg = F4.replace("(call $pos v)", "(i32.eqz (call $pos v))");
     let (r, _) = super::tests::instrumented_run(&neg, "f", &[5]);
-    assert!(matches!(r, Err(EvalErr::CheckFailed { line: 11, .. })), "{r:?}");
+    assert!(
+        matches!(r, Err(EvalErr::CheckFailed { line: 11, .. })),
+        "{r:?}"
+    );
 }
 
 // ---------------- vericoding helpers ----------------
@@ -407,7 +449,12 @@ fn f6_an_untouched_unproven_target_blocks_acceptance() {
     assert!(!j.crossed(), "{:?}", j.boundary);
     assert_eq!(j.touched, vec!["$half_or_neg1".to_string()]);
     assert!(
-        !j.out.funcs.iter().find(|f| f.name == "$half").unwrap().verified,
+        !j.out
+            .funcs
+            .iter()
+            .find(|f| f.name == "$half")
+            .unwrap()
+            .verified,
         "$half is still a stub"
     );
     assert!(!j.accepted, "{}", j.summary());
@@ -451,13 +498,26 @@ fn f5_a_spinning_or_self_calling_body_is_not_accepted() {
 fn f5_adequacy_reports_a_harness_that_never_finishes() {
     use super::adequacy::Bench;
     let start = session_start("isqrt");
-    let sub = replace(&start, 32, 32, &["  loop $spin", "    br $spin", "  end", "  unreachable"]);
+    let sub = replace(
+        &start,
+        32,
+        32,
+        &["  loop $spin", "    br $spin", "  end", "  unreachable"],
+    );
     let b = Bench::new(&sub, 8);
     assert!(b.runs.is_empty());
     assert_eq!(b.runs_away.len(), 1, "{:?}", b.runs_away);
     assert!(b.runs_away[0].starts_with("$isqrt_harness("));
+    // gcd's spec predicate recurses deeper than adequacy's depth on some inputs: that is not
+    // the implementation running away
+    let p = format!("{}/public/examples/v2/gcd.wat", env!("CARGO_MANIFEST_DIR"));
+    let g: Vec<String> = std::fs::read_to_string(p)
+        .unwrap()
+        .lines()
+        .map(String::from)
+        .collect();
+    assert!(Bench::new(&g, 48).runs_away.is_empty());
 }
-
 
 // ---------------- F7: a locked line made dead is a boundary violation ----------------
 
@@ -480,11 +540,18 @@ fn f7_returning_before_a_locked_line_is_rejected() {
     .collect();
     let s = SessionStart::new(&start);
     assert!(!s.judge(&start).accepted, "x < 100 is not provable");
-    let sub = replace(&start, 7, 7, &["  local.get $x", "  return", start[6].as_str()]);
+    let sub = replace(
+        &start,
+        7,
+        7,
+        &["  local.get $x", "  return", start[6].as_str()],
+    );
     let j = s.judge(&sub);
     assert!(!j.accepted, "{}", j.summary());
     assert!(
-        j.boundary.iter().any(|r| r.line == 9 && r.msg.contains("unreachable")),
+        j.boundary
+            .iter()
+            .any(|r| r.line == 9 && r.msg.contains("unreachable")),
         "{:?}",
         j.boundary
     );
@@ -559,7 +626,10 @@ fn f8_a_check_on_a_loop_parameter_runs() {
     assert_eq!(r.unwrap(), vec![25]);
     assert!(n > 0, "the check ran");
     let (r, _) = super::tests::instrumented_run(F8, "f", &[0]);
-    assert!(matches!(r, Err(EvalErr::CheckFailed { line: 8, .. })), "{r:?}");
+    assert!(
+        matches!(r, Err(EvalErr::CheckFailed { line: 8, .. })),
+        "{r:?}"
+    );
 }
 
 #[test]
@@ -589,7 +659,11 @@ fn f8_float_conversion_checks_evaluate() {
     assert!(run(1.5).iter().all(|o| *o == CheckOutcome::Holds));
     assert!(run(-2147483648.0).iter().all(|o| *o == CheckOutcome::Holds));
     assert!(run(3e9).iter().any(|o| matches!(o, CheckOutcome::Fails(_))));
-    assert!(run(f32::NAN).iter().any(|o| matches!(o, CheckOutcome::Fails(_))));
+    assert!(
+        run(f32::NAN)
+            .iter()
+            .any(|o| matches!(o, CheckOutcome::Fails(_)))
+    );
 }
 
 #[test]
@@ -598,10 +672,16 @@ fn f8_eval_fop_matches_wasm() {
     let f = |x: f32| x.to_bits() as u64;
     assert_eq!(eval_fop("f32.add", &[f(1.5), f(2.25)]), Ok(f(3.75)));
     assert_eq!(eval_fop("f32.lt", &[f(1.0), f(2.0)]), Ok(1));
-    assert_eq!(eval_fop("i32.trunc_f32_s", &[f(-2147483648.0)]), Ok(0x8000_0000));
+    assert_eq!(
+        eval_fop("i32.trunc_f32_s", &[f(-2147483648.0)]),
+        Ok(0x8000_0000)
+    );
     assert_eq!(eval_fop("i32.trunc_f32_s", &[f(2147483648.0)]), Err(true));
     assert_eq!(eval_fop("i32.trunc_sat_f32_s", &[f(f32::NAN)]), Ok(0));
-    assert_eq!(eval_fop("f64.convert_i32_u", &[0xffff_ffff]), Ok(4294967295.0f64.to_bits()));
+    assert_eq!(
+        eval_fop("f64.convert_i32_u", &[0xffff_ffff]),
+        Ok(4294967295.0f64.to_bits())
+    );
     assert_eq!(eval_fop("f32.min", &[f(-0.0), f(0.0)]), Ok(f(-0.0)));
     assert_eq!(eval_fop("v128.any_true", &[0]), Err(false));
 }
@@ -624,7 +704,10 @@ fn f9_fact_preconditions_and_tautological_fact_results() {
     .collect();
     let m = Module::parse_lines(&src);
     assert!(pre_holds(&m, 0, &[3]));
-    assert!(!pre_holds(&m, 0, &[12]), "the fact parameter is a precondition");
+    assert!(
+        !pre_holds(&m, 0, &[12]),
+        "the fact parameter is a precondition"
+    );
     let rows = vacuity(&src);
     let f = rows.iter().find(|r| r.func == "$f").unwrap();
     assert!(f.witnesses > 0 && f.witnesses < f.tried, "{f:?}");

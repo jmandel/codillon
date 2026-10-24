@@ -448,8 +448,10 @@ span.comment[data-commentary]::after {
     box-sizing: border-box;
 }
 
-/* code wider than the window (v2 fact clauses): the commentary is pinned to the window's
-   right edge, over the code's off-screen tail, instead of floating past it (review 19 §1) */
+/* code wider than the window (v2 fact clauses): the commentary and the header badge are pinned
+   to the window's right edge (review 19 §1), on a sub-row in the gap below the code's glyphs, so
+   they never cover the spec text they annotate (review 20 D.2.1); the full commentary is the
+   hover title, and a stale-fact hint comes first in it so the ellipsis never cuts its lines */
 .line.wide-line {
     position: relative;
 }
@@ -457,22 +459,32 @@ span.comment[data-commentary]::after {
 .line.wide-line > span.comment[data-commentary] {
     position: absolute;
     right: 0;
-    top: 0;
-    width: min(34vw, 460px);
+    bottom: -19px;
+    width: min(40vw, 560px);
     contain: none;
+    z-index: 2;
 }
 
 .line.wide-line > span.comment[data-commentary]::after {
     background-color: #fffff0;
     max-width: 100%;
+    font-size: 9pt;
+    line-height: 1.1;
+    padding: 1px 4px;
+    margin-top: 0;
 }
 
-/* …and so is a header's badge (VERIFIED or gradual), which would sit past the code's end */
 .line.wide-line > span.instr[data-badge]::after {
     position: absolute;
     right: 6px;
-    top: 13px;
+    bottom: -16px;
     background-color: #fffff0;
+    z-index: 2;
+}
+
+/* both on one wide line: the badge sits left of the commentary */
+.line.wide-line:has(> span.comment[data-commentary]) > span.instr[data-badge]::after {
+    right: calc(min(40vw, 560px) + 10px);
 }
 
 .line.wide-line > span.instr[data-badge-kind="verified"]::after {

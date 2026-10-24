@@ -50,7 +50,7 @@ pub fn panel(vc: &VcState, lines: &[String], strict: bool, disp: &dyn Fn(u32) ->
     h.push_str(&format!(
         "<p class=\"vc-own\"><span class=\"vc-lockmark\"></span>{locked} spec lines locked (headers, predicates, harnesses, axioms) · \
 <span class=\"vc-openmark\"></span>{open} lines for the implementation and its proofs. \
-The kernel alone judges a submission: accepted only if every function it touched is VERIFIED (strict-clean).</p>"
+The kernel alone judges a submission: accepted only if every implementation function is VERIFIED (strict-clean) and the program runs to completion on small inputs.</p>"
     ));
 
     // ---- sessions ----
@@ -275,7 +275,10 @@ The kernel alone judges a submission: accepted only if every function it touched
                 esc(&b.runs_away[0])
             ));
         }
-        if a.bench.as_ref().is_some_and(|b| b.runs.is_empty() && b.runs_away.is_empty()) {
+        if a.bench
+            .as_ref()
+            .is_some_and(|b| b.runs.is_empty() && b.runs_away.is_empty())
+        {
             h.push_str("<p class=\"vc-verdict vc-bad\">No harness input satisfies a precondition, so no run can tell a mutant apart: every mutant survives.</p>");
         }
         if !surv.is_empty() {

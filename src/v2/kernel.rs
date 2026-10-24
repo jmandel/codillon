@@ -667,8 +667,10 @@ impl<'a, 'm> Pass<'a, 'm> {
                 Some(x) => format!("{what} ({x})"),
                 None => what,
             };
+            // the stale-fact hint first: it names the lines to look at, and a pinned note on a
+            // wide line is ellipsized at its end (review 20 D.2.5)
             if let Some(h) = self.stale_hint(&r.atom) {
-                d = format!("{d}; {h}");
+                d = format!("{h}; {d}");
             }
             // strict mode (§4.1): every unfed cup is an error, as in ghost code
             if self.ghost || !self.cx.gradual {

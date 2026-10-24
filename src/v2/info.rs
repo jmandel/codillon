@@ -162,7 +162,11 @@ pub fn analyze(m: &Module) -> Vec<FnInfo> {
     }
     // mutual recursion: f reaches itself through a call or lemma path of length ≥ 2
     let edges = |x: &FnInfo| -> Vec<usize> {
-        x.calls.iter().chain(x.lemma_calls.iter()).copied().collect()
+        x.calls
+            .iter()
+            .chain(x.lemma_calls.iter())
+            .copied()
+            .collect()
     };
     for f in 0..n {
         for g in edges(&info[f]) {

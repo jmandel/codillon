@@ -234,17 +234,14 @@ pub const SMALL: i64 = 100;
 /// Is every argument small (0 ≤ x ≤ [`SMALL`]: small read signed *and* unsigned)? Only small inputs are required to
 /// finish: a correct algorithm may legitimately need longer than the budget on 2^31 or 2^63.
 fn small(m: &Module, f: usize, args: &[u64]) -> bool {
-    m.funcs[f]
-        .value_params()
-        .zip(args)
-        .all(|((_, _, r), a)| {
-            let x = if r.ty == ValTy::I32 {
-                *a as u32 as i32 as i64
-            } else {
-                *a as i64
-            };
-            (0..=SMALL).contains(&x)
-        })
+    m.funcs[f].value_params().zip(args).all(|((_, _, r), a)| {
+        let x = if r.ty == ValTy::I32 {
+            *a as u32 as i32 as i64
+        } else {
+            *a as i64
+        };
+        (0..=SMALL).contains(&x)
+    })
 }
 
 /// The partial-correctness theorem (§6) says nothing about a body that never returns, so in
@@ -647,6 +644,9 @@ impl Bench {
         let m = Module::parse_lines(lines);
         let out = check_module(&m, true);
         let plan = RuntimePlan::new(&m, &out);
+        // a runaway is the implementation's only if it ran out in an implementation function (a
+        // deep or costly spec predicate is not the implementation's doing)
+        let spec = super::vericode::student_bodies(&m);
         let mut runs = vec![];
         let mut runs_away = vec![];
         for (f, func) in m.funcs.iter().enumerate() {
@@ -661,7 +661,11 @@ impl Bench {
                 // (and long runs are left out to keep mutation testing fast)
                 if r.is_ok() && it.steps <= 100_000 {
                     runs.push((func.name(), args, it.steps));
-                } else if matches!(r, Err(EvalErr::Budget)) {
+                } else if matches!(r, Err(EvalErr::Budget))
+                    && it
+                        .ran_out_in
+                        .is_some_and(|g| !spec.contains(&m.funcs[g].name()))
+                {
                     // one is enough to report, and each costs the whole budget
                     runs_away.push(format!("{}{}", func.name(), show_args(&args)));
                     break;

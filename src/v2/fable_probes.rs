@@ -2,13 +2,25 @@
 use super::vericode::*;
 
 fn example(name: &str) -> Vec<String> {
-    let p = format!("{}/public/examples/v2/{name}.wat", env!("CARGO_MANIFEST_DIR"));
-    std::fs::read_to_string(p).unwrap().lines().map(|s| s.to_string()).collect()
+    let p = format!(
+        "{}/public/examples/v2/{name}.wat",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    std::fs::read_to_string(p)
+        .unwrap()
+        .lines()
+        .map(|s| s.to_string())
+        .collect()
 }
 
 fn report(tag: &str, s: &SessionStart, lines: &[String]) {
     let j = s.judge(lines);
-    println!("PROBE {tag}: accepted={} crossed={} :: {}", j.accepted, j.crossed(), j.summary());
+    println!(
+        "PROBE {tag}: accepted={} crossed={} :: {}",
+        j.accepted,
+        j.crossed(),
+        j.summary()
+    );
     for r in j.boundary.iter().take(3) {
         println!("    boundary @{}: {}", r.line, r.msg);
     }
@@ -57,7 +69,10 @@ fn fable_probes() {
 
     // A6 add an import
     let mut t = g.clone();
-    t.insert(1, "(import \"env\" \"oracle\" (func $oracle (param i32) (result i32)))".into());
+    t.insert(
+        1,
+        "(import \"env\" \"oracle\" (func $oracle (param i32) (result i32)))".into(),
+    );
     report("A6 import", &s, &t);
 
     // A7 add an ordinary function and call it
@@ -86,9 +101,19 @@ fn fable_probes() {
     // A17 shadow the reference function $gcd_ref by a lemma placed before it; then $gcd's
     // postcondition (v = gcd_ref(a,b)) is about the LLM's function
     let mut t = g.clone();
-    let orig = t.iter().position(|l| l.starts_with("(func $gcd_ref ")).unwrap();
-    println!("    ($gcd_ref header at line {}: {})", orig + 1, &t[orig][..70.min(t[orig].len())]);
-    let hdr = t[orig].replace("(func $gcd_ref ", "(func $gcd_ref (export \"lemma:shadow2\") ");
+    let orig = t
+        .iter()
+        .position(|l| l.starts_with("(func $gcd_ref "))
+        .unwrap();
+    println!(
+        "    ($gcd_ref header at line {}: {})",
+        orig + 1,
+        &t[orig][..70.min(t[orig].len())]
+    );
+    let hdr = t[orig].replace(
+        "(func $gcd_ref ",
+        "(func $gcd_ref (export \"lemma:shadow2\") ",
+    );
     t.insert(orig, ")".into());
     t.insert(orig, "  local.get $a".into());
     t.insert(orig, hdr);
@@ -101,8 +126,15 @@ fn fable_probes() {
 
     // A13 duplicate-name lemma shadowing the student predicate $is_gcd (placed before it)
     let mut t = g.clone();
-    let orig = t.iter().position(|l| l.starts_with("(func $is_gcd")).unwrap();
-    println!("    ($is_gcd header at line {}: {})", orig + 1, &t[orig][..60.min(t[orig].len())]);
+    let orig = t
+        .iter()
+        .position(|l| l.starts_with("(func $is_gcd"))
+        .unwrap();
+    println!(
+        "    ($is_gcd header at line {}: {})",
+        orig + 1,
+        &t[orig][..60.min(t[orig].len())]
+    );
     let hdr = t[orig].replace("(func $is_gcd", "(func $is_gcd (export \"lemma:shadow\")");
     t.insert(orig, ")".into());
     t.insert(orig, "  i32.const 1".into());
@@ -118,7 +150,6 @@ fn fable_probes() {
     let a = t.remove(123);
     t.insert(120, a); // before the loop guard: now covers the guard too
     report("A14b moved assume", &s2, &t);
-
 
     // A14c move the assume out of the loop (different block context)
     let mut t = base.clone();
@@ -165,55 +196,160 @@ fn fable_probes() {
     let j = s.judge(&t);
     for f in &j.out.funcs {
         if f.name == "$gcd" || f.name == "$vac2" {
-            println!("    FUNC {} verified={} strict_clean={}", f.name, f.verified, f.strict_clean);
+            println!(
+                "    FUNC {} verified={} strict_clean={}",
+                f.name, f.verified, f.strict_clean
+            );
             for c in &f.cups {
                 if f.name == "$vac2" || (136..=140).contains(&c.line) {
-                    println!("      cup @{} {:?} ⟨{}⟩ {:?} feed={:?} assum={:?} dep={:?}", c.line, c.kind, c.goal, c.verdict, c.feed, c.assumptions.iter().map(|o| (o.line, o.kind)).collect::<Vec<_>>(), c.depends_on_checks);
+                    println!(
+                        "      cup @{} {:?} ⟨{}⟩ {:?} feed={:?} assum={:?} dep={:?}",
+                        c.line,
+                        c.kind,
+                        c.goal,
+                        c.verdict,
+                        c.feed,
+                        c.assumptions
+                            .iter()
+                            .map(|o| (o.line, o.kind))
+                            .collect::<Vec<_>>(),
+                        c.depends_on_checks
+                    );
                 }
             }
-            for (l, e) in &f.line_errors { println!("      err @{l}: {e}"); }
+            for (l, e) in &f.line_errors {
+                println!("      err @{l}: {e}");
+            }
         }
     }
-    for l in 136..=140 { println!("    {}: {}", l, t[l-1]); }
+    for l in 136..=140 {
+        println!("    {}: {}", l, t[l - 1]);
+    }
 }
 
 #[test]
 fn fable_adequacy() {
     use super::adequacy::*;
-    for ex in ["gcd", "gcd-vacuous", "gcd-bug-guard", "isqrt", "isqrt-harness-bug", "parity", "parity-bug-gate", "parity-missing-proof", "hashtable", "hashtable-bug-tombstone", "hashtable-stale", "primality"] {
+    for ex in [
+        "gcd",
+        "gcd-vacuous",
+        "gcd-bug-guard",
+        "isqrt",
+        "isqrt-harness-bug",
+        "parity",
+        "parity-bug-gate",
+        "parity-missing-proof",
+        "hashtable",
+        "hashtable-bug-tombstone",
+        "hashtable-stale",
+        "primality",
+    ] {
         let lines = example(ex);
         let t0 = std::time::Instant::now();
         let rows = vacuity(&lines);
         let vt = t0.elapsed();
-        let flagged: Vec<String> = rows.iter().filter(|r| r.vacuous || r.unconstraining || r.witnesses == 0).map(|r| format!("{}@{} vac={} unc={} wit={}/{}", r.func, r.header_line, r.vacuous, r.unconstraining, r.witnesses, r.tried)).collect();
-        println!("VAC {ex}: {} rows in {:?}; flagged: {:?}", rows.len(), vt, flagged);
+        let flagged: Vec<String> = rows
+            .iter()
+            .filter(|r| r.vacuous || r.unconstraining || r.witnesses == 0)
+            .map(|r| {
+                format!(
+                    "{}@{} vac={} unc={} wit={}/{}",
+                    r.func, r.header_line, r.vacuous, r.unconstraining, r.witnesses, r.tried
+                )
+            })
+            .collect();
+        println!(
+            "VAC {ex}: {} rows in {:?}; flagged: {:?}",
+            rows.len(),
+            vt,
+            flagged
+        );
     }
-    for ex in ["gcd", "gcd-vacuous", "parity", "isqrt", "hashtable", "primality"] {
+    for ex in [
+        "gcd",
+        "gcd-vacuous",
+        "parity",
+        "isqrt",
+        "hashtable",
+        "primality",
+    ] {
         let lines = example(ex);
         let s = SessionStart::new(&lines);
         let owners = s.owners(&lines);
         let t0 = std::time::Instant::now();
         let ms = mutants(&lines, &owners);
         let bench = Bench::new(&lines, 16);
-        let mut killed_bot = 0; let mut killed_check = 0; let mut killed_trap = 0; let mut killed_budget = 0; let mut surv = vec![]; let mut surv_proven = vec![]; let mut invalid = 0; let mut own_only = 0; let mut runs_away = 0;
+        let mut killed_bot = 0;
+        let mut killed_check = 0;
+        let mut killed_trap = 0;
+        let mut killed_budget = 0;
+        let mut surv = vec![];
+        let mut surv_proven = vec![];
+        let mut invalid = 0;
+        let mut own_only = 0;
+        let mut runs_away = 0;
         let mut check_lines: std::collections::BTreeMap<u32, usize> = Default::default();
         for mt in &ms {
             match fate(&lines, mt, &bench) {
-                Fate::Killed(r) if r.contains("check at line") => { killed_check += 1; let l: u32 = r.rsplit(' ').nth(1).unwrap_or("0").parse().unwrap_or(0); *check_lines.entry(l).or_default() += 1; }
-                Fate::Killed(r) if r.contains("traps") => { killed_trap += 1; if r.contains("unreachable") { killed_bot += 1; } }
+                Fate::Killed(r) if r.contains("check at line") => {
+                    killed_check += 1;
+                    let l: u32 = r.rsplit(' ').nth(1).unwrap_or("0").parse().unwrap_or(0);
+                    *check_lines.entry(l).or_default() += 1;
+                }
+                Fate::Killed(r) if r.contains("traps") => {
+                    killed_trap += 1;
+                    if r.contains("unreachable") {
+                        killed_bot += 1;
+                    }
+                }
                 Fate::Killed(_) => killed_budget += 1,
-                Fate::OwnOnly(_) => { own_only += 1; }
-                Fate::RunsAway(_) => { runs_away += 1; }
-                Fate::Survived { proven: true } => surv_proven.push(format!("{}@{} {}→{}", mt.op, mt.line, mt.from, mt.to)),
-                Fate::Survived { proven: false } => surv.push(format!("{}@{} {}→{}", mt.op, mt.line, mt.from, mt.to)),
+                Fate::OwnOnly(_) => {
+                    own_only += 1;
+                }
+                Fate::RunsAway(_) => {
+                    runs_away += 1;
+                }
+                Fate::Survived { proven: true } => {
+                    surv_proven.push(format!("{}@{} {}→{}", mt.op, mt.line, mt.from, mt.to))
+                }
+                Fate::Survived { proven: false } => {
+                    surv.push(format!("{}@{} {}→{}", mt.op, mt.line, mt.from, mt.to))
+                }
                 Fate::Invalid(_) => invalid += 1,
             }
         }
-        println!("MUT {ex}: {} mutants, bench {} runs, {:?}; killed by check {} (lines {:?}), trap {} (of which unreachable {}), other {}, invalid {}, OWN-ONLY {}, RUNS-AWAY {}", ms.len(), bench.runs.len(), t0.elapsed(), killed_check, check_lines, killed_trap, killed_bot, killed_budget, invalid, own_only, runs_away);
-        println!("    survivors proven ({}): {:?}", surv_proven.len(), surv_proven);
-        println!("    survivors ({}): {:?}", surv.len(), &surv[..surv.len().min(12)]);
+        println!(
+            "MUT {ex}: {} mutants, bench {} runs, {:?}; killed by check {} (lines {:?}), trap {} (of which unreachable {}), other {}, invalid {}, OWN-ONLY {}, RUNS-AWAY {}",
+            ms.len(),
+            bench.runs.len(),
+            t0.elapsed(),
+            killed_check,
+            check_lines,
+            killed_trap,
+            killed_bot,
+            killed_budget,
+            invalid,
+            own_only,
+            runs_away
+        );
+        println!(
+            "    survivors proven ({}): {:?}",
+            surv_proven.len(),
+            surv_proven
+        );
+        println!(
+            "    survivors ({}): {:?}",
+            surv.len(),
+            &surv[..surv.len().min(12)]
+        );
         // which owners do the killing check lines have?
-        for (l, _) in &check_lines { println!("      check line {l} owner {:?}: {}", owners[*l as usize - 1], lines[*l as usize - 1].trim()); }
+        for l in check_lines.keys() {
+            println!(
+                "      check line {l} owner {:?}: {}",
+                owners[*l as usize - 1],
+                lines[*l as usize - 1].trim()
+            );
+        }
     }
 }
 

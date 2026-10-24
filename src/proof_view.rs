@@ -1067,13 +1067,10 @@ fn build_func(
         ));
         if failed_here
             && let Some(d) = &c.diag
-            && let Some(p) = d.find("; ⟨")
+            && let Some(h) = d.split("; ").find(|x| x.contains(" is about the old "))
         {
             // the run refuted a cup a stale fact could have fed: say which fact went stale
-            notes
-                .entry(c.line)
-                .or_default()
-                .push(d[p + 2..].to_string());
+            notes.entry(c.line).or_default().push(h.to_string());
         }
         match lk {
             Look::Refuted if !failed_here => {
@@ -1102,8 +1099,9 @@ fn build_func(
                     if let Some(p) = d.find("(the prove at line") {
                         // the failed prove has its own darkred commentary
                         let _ = p;
-                    } else if let Some(p) = d.find("; ⟨") {
-                        let _ = write!(q, " — {}", &d[p + 2..]);
+                    } else if let Some(h) = d.split("; ").find(|x| x.contains(" is about the old "))
+                    {
+                        let _ = write!(q, " — {h}");
                     }
                 }
                 quiets.entry(c.line).or_default().push(q);

@@ -54,7 +54,10 @@ about memory. OWNERSHIP: the student owns every function header (except lemma he
 bodies of predicates, measures, harnesses and $main, axioms, assume lines and declarations; \
 these line ranges are listed in \"locked\" and must not change. You own function bodies and \
 proof lines, and you may add lemma functions. You cannot use `assume`, add axioms, add imports \
-or call functions that do not exist. A failed `prove` is reported with a counterexample. \
+or call functions that do not exist. Every function you own must be fully proven, and the \
+program must really run: $main, the harnesses and your functions are run on small inputs and must \
+finish (a body that never returns is rejected). Lemmas are ghost code and must be total: no \
+loops, no stores, and calls only to predicates. A failed `prove` is reported with a counterexample. \
 Answer with JSON only: {\"edits\": [{\"replace_lines\": [a, b], \"with\": [\"line\", ...]}], \
 \"note\": \"...\"}. Line numbers refer to the module as sent; [a, b] is inclusive; [a, a-1] \
 inserts before line a. Edits must not overlap.";

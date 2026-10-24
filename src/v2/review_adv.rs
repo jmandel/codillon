@@ -7,11 +7,18 @@ use super::out::Feed;
 
 #[test]
 fn review_adv_programs() {
-    let dir = match std::env::var("REVIEW_ADV") { Ok(d) => d, Err(_) => return };
+    let dir = match std::env::var("REVIEW_ADV") {
+        Ok(d) => d,
+        Err(_) => return,
+    };
     let outdir = format!("{dir}/../adv-results");
     let _ = std::fs::create_dir_all(&outdir);
-    let mut names: Vec<_> = std::fs::read_dir(&dir).unwrap().filter_map(|e| e.ok()).map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|x| x == "wat")).collect();
+    let mut names: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "wat"))
+        .collect();
     names.sort();
     for p in names {
         let src = std::fs::read_to_string(&p).unwrap();
@@ -22,23 +29,36 @@ fn review_adv_programs() {
             text.push_str(&format!("PARSE ERROR line {l}: {e}\n"));
         }
         for gradual in [false, true] {
-            text.push_str(&format!("== mode {}\n", if gradual { "gradual" } else { "strict" }));
+            text.push_str(&format!(
+                "== mode {}\n",
+                if gradual { "gradual" } else { "strict" }
+            ));
             let t0 = std::time::Instant::now();
             let out = std::panic::catch_unwind(|| check_module(&m, gradual));
             let out = match out {
                 Ok(o) => o,
-                Err(_) => { text.push_str("PANIC in check_module\n"); continue; }
+                Err(_) => {
+                    text.push_str("PANIC in check_module\n");
+                    continue;
+                }
             };
             text.push_str(&format!("({} ms)\n", t0.elapsed().as_millis()));
             for (l, e) in &out.errors {
                 text.push_str(&format!("MODULE ERROR line {l}: {e}\n"));
             }
             for f in &out.funcs {
-                text.push_str(&format!("func {} lines {}-{} verified={} strict_clean={}\n", f.name, f.header_line, f.end_line, f.verified, f.strict_clean));
+                text.push_str(&format!(
+                    "func {} lines {}-{} verified={} strict_clean={}\n",
+                    f.name, f.header_line, f.end_line, f.verified, f.strict_clean
+                ));
                 for c in &f.cups {
                     let feed = match &c.feed {
                         Feed::Lookup { origin_line, .. } => format!("lookup@{origin_line}"),
-                        Feed::Prove { prove_line, hyp_lines, .. } => format!("prove@{prove_line} hyps{hyp_lines:?}"),
+                        Feed::Prove {
+                            prove_line,
+                            hyp_lines,
+                            ..
+                        } => format!("prove@{prove_line} hyps{hyp_lines:?}"),
                         Feed::Eval { steps } => format!("eval({steps})"),
                         Feed::DeadCode { ended_at } => format!("dead@{ended_at}"),
                         Feed::Unfed => "UNFED".into(),

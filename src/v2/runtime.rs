@@ -196,9 +196,8 @@ impl RuntimePlan {
         for fo in &out.funcs {
             let f = fo.func as usize;
             let scopes = scopes_of(m, f);
-            let scope_at = |l: u32| -> &[u32] {
-                scopes.get(&l).map(|v| v.as_slice()).unwrap_or(&[])
-            };
+            let scope_at =
+                |l: u32| -> &[u32] { scopes.get(&l).map(|v| v.as_slice()).unwrap_or(&[]) };
             // a capture is usable by a check only if it is written on every path to the check:
             // its line comes first and every block arm open there is still open at the check.
             // Opaque leaves (params, φs, globals, impure results) are born only where they are

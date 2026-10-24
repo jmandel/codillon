@@ -589,7 +589,11 @@ fn eval_fop_inner(name: &str, args: &[u64]) -> Option<Result<u64, bool>> {
                 f64::NAN
             } else if x == y {
                 // ±0: min prefers −0, max prefers +0
-                if (op == "min") == x.is_sign_negative() { x } else { y }
+                if (op == "min") == x.is_sign_negative() {
+                    x
+                } else {
+                    y
+                }
             } else if (op == "min") == (x < y) {
                 x
             } else {
