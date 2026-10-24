@@ -114,10 +114,17 @@ impl RunLog {
         use crate::v2::runtime::CheckOutcome;
         let vals = std::mem::take(&mut *self.v2_vals.borrow_mut());
         let plan = self.v2_plan.borrow().clone();
+        let uncompiled = id & crate::utils::V2_CHECK_UNCOMPILED != 0;
+        let id = id & !crate::utils::V2_CHECK_UNCOMPILED;
         let Some(plan) = plan else { return true };
         let Some(spec) = plan.checks.get(id as usize) else { return true };
-        let needs_mem = !plan.module.memory_min.is_none();
-        let mem = if needs_mem { self.v2_memory_bytes() } else { None };
+        if uncompiled {
+            let message = format!("runtime check ⟨{}⟩ could not be compiled (the kernel and the assembler disagree about this function)", spec.goal);
+            *self.v2_failure.borrow_mut() = Some(V2CheckFailure { line: spec.line, check: id, message });
+            return false;
+        }
+        // only checks that call memory-reading predicates need (a copy of) memory
+        let mem = if spec.reads_mem { self.v2_memory_bytes() } else { None };
         match plan.eval_check(id, &vals, mem.as_deref()) {
             CheckOutcome::Holds | CheckOutcome::Unknown(_) => true,
             CheckOutcome::Fails(message) => {

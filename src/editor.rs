@@ -158,8 +158,32 @@ struct LinkState {
 
 /// The v2 kernel's view of the current text.
 pub struct V2State {
-    pub out: crate::v2::out::ModuleOut,
+    pub out: std::cell::RefCell<crate::v2::out::ModuleOut>,
     pub plan: Rc<crate::v2::runtime::RuntimePlan>,
+}
+
+impl V2State {
+    /// Runtime checks the instrumenter could not compile are errors on their cups (never
+    /// silently "runtime-checked"); the run stops at them.
+    pub fn mark_uncompiled(&self) {
+        let bad = self.plan.uncompiled.borrow().clone();
+        if bad.is_empty() {
+            return;
+        }
+        let mut out = self.out.borrow_mut();
+        for f in out.funcs.iter_mut().filter(|f| bad.contains(&f.func)) {
+            let mut lines = vec![];
+            for c in f.cups.iter_mut().filter(|c| c.verdict == crate::v2::out::Verdict::RuntimeChecked && !c.ghost) {
+                c.diag = Some(format!("error: this runtime check could not be compiled into the run ({})", c.diag.clone().unwrap_or_default()));
+                lines.push(c.line);
+            }
+            for l in lines {
+                f.line_errors.push((l, "runtime check could not be compiled".into()));
+            }
+            f.strict_clean = false;
+            f.verified = false;
+        }
+    }
 }
 
 pub struct EditorHolder(Rc<RefCell<Editor>>);
@@ -552,7 +576,7 @@ impl Editor {
         let module = crate::v2::ast::Module::parse_lines(&texts);
         let out = crate::v2::kernel::check_module(&module, true);
         let plan = Rc::new(crate::v2::runtime::RuntimePlan::new(&module, &out));
-        let state = Rc::new(V2State { out, plan });
+        let state = Rc::new(V2State { out: std::cell::RefCell::new(out), plan });
         self.v2 = Some(state.clone());
         state
     }
@@ -968,6 +992,7 @@ impl Editor {
         // gradual mode: unfed cups become runtime checks in the instrumented run (R35)
         RUN_LOG.with(|r| r.set_v2_plan(Some(v2.plan.clone())));
         let instrumented_binary = &validized.build_instrumented_binary_with_checks(&types, Some(&v2.plan))?;
+        v2.mark_uncompiled();
         let instrumented_binary_hash = self.run_hash(instrumented_binary);
         let step_count = RUN_LOG.with(|r| r.step_count());
         if self.previous_instrumented_binary_hash != instrumented_binary_hash {

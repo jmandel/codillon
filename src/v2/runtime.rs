@@ -29,6 +29,8 @@ impl FuncPlan {
 
 #[derive(Clone, Debug, Default)]
 pub struct FuncPlan {
+    /// 1-based header line (the instrumenter checks it against the binary's function)
+    pub header_line: u32,
     /// per check id of this function: (shadow, type) sent, in order
     pub sends: BTreeMap<u32, Vec<(u32, ValTy)>>,
     /// module function index
@@ -55,6 +57,8 @@ pub struct CheckSpec {
     pub guard: Option<Atom>,
     /// shadow locals whose values the check needs, in send order: (term, shadow, type)
     pub sends: Vec<(TermId, u32, ValTy)>,
+    /// does evaluating it read linear memory (a call of a memory-reading function)?
+    pub reads_mem: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -74,6 +78,9 @@ pub struct RuntimePlan {
     pub terms: Vec<Terms>,
     /// does function f read memory (directly or through callees)?
     pub reads_mem: Vec<bool>,
+    /// functions whose checks the instrumenter could not compile (the kernel's view of the
+    /// function disagreed with the binary's): their checks stop the run with an error
+    pub uncompiled: std::cell::RefCell<Vec<u32>>,
 }
 
 fn walk(terms: &Terms, t: TermId, born: &HashSet<TermId>, out: &mut Vec<TermId>, seen: &mut HashSet<TermId>) {
@@ -97,6 +104,31 @@ fn walk(terms: &Terms, t: TermId, born: &HashSet<TermId>, out: &mut Vec<TermId>,
     }
 }
 
+/// Does evaluating the atom call a memory-reading function?
+fn sends_reach_mem(terms: &Terms, a: &Atom, reads_mem: &[bool]) -> bool {
+    let mut work = vec![];
+    atom_terms(a, &mut work);
+    let mut seen = HashSet::new();
+    while let Some(t) = work.pop() {
+        if !seen.insert(t) {
+            continue;
+        }
+        match terms.key(t) {
+            Key::Call(f, a, _) => {
+                if reads_mem.get(*f as usize).copied().unwrap_or(true) {
+                    return true;
+                }
+                work.extend(a.iter().copied());
+            }
+            Key::Op(_, _, a) | Key::Float(_, a) => work.extend(a.iter().copied()),
+            Key::Ite(c, a, b) => work.extend([*c, *a, *b]),
+            Key::Load(.., a, _) => work.push(*a),
+            _ => {}
+        }
+    }
+    false
+}
+
 fn atom_terms(a: &Atom, v: &mut Vec<TermId>) {
     match a {
         Atom::Cmp { a, b, .. } => v.extend([*a, *b]),
@@ -113,12 +145,13 @@ impl RuntimePlan {
     /// The plan for a checked module: one check per runtime-checked cup on an executable line.
     pub fn new(m: &Module, out: &ModuleOut) -> RuntimePlan {
         let reads_mem = super::info::analyze(m).iter().map(|i| i.reads_mem).collect();
-        let mut plan = RuntimePlan { module: m.clone(), funcs: vec![], checks: vec![], terms: vec![Terms::default(); m.funcs.len()], reads_mem };
+        let mut plan = RuntimePlan { module: m.clone(), funcs: vec![], checks: vec![], terms: vec![Terms::default(); m.funcs.len()], reads_mem, uncompiled: Default::default() };
         for fo in &out.funcs {
             let f = fo.func as usize;
             let born: HashSet<TermId> = fo.births.iter().map(|b| b.term).collect();
             let mut fp = FuncPlan {
                 func: fo.func,
+                header_line: fo.header_line,
                 n_locals: super::eval::value_locals(m, f).len() as u32,
                 ..Default::default()
             };
@@ -164,7 +197,9 @@ impl RuntimePlan {
             }
             for (c, sends) in checks {
                 let id = plan.checks.len() as u32;
+                let reads_mem = sends_reach_mem(&fo.terms, &c.atom, &plan.reads_mem);
                 plan.checks.push(CheckSpec {
+                    reads_mem,
                     func: fo.func,
                     line: c.line,
                     kind: c.kind,

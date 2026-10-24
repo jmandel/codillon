@@ -79,6 +79,8 @@ impl InstrImports {
 pub const V2_CHECK_SLOT_BASE: u32 = 0x4000_0000;
 /// A step-function argument with this bit set (and bit 31 clear) runs v2 runtime check `arg & !flag`.
 pub const V2_CHECK_FLAG: u32 = 0x4000_0000;
+/// With `V2_CHECK_FLAG`: a check the instrumenter could not compile (it stops the run).
+pub const V2_CHECK_UNCOMPILED: u32 = 0x2000_0000;
 /// The instrumented module exports its memory under this name when it has runtime checks.
 pub const V2_MEMORY_EXPORT: &str = "codillon_v2_memory";
 
@@ -1301,12 +1303,21 @@ impl<'a> ValidModule<'a> {
                 bounds_check_to_func_idx,
             };
 
+            let mut matched: Vec<u32> = vec![];
             // First in code section: the original functions
             for func_idx in 0..self.functions.len() {
-                let plan = checks.and_then(|c| c.for_defined(func_idx)).filter(|p| {
-                    // the kernel's view of the function must match the binary's
-                    p.n_locals as usize == types.funcs[func_idx].params.len() + types.funcs[func_idx].locals.len()
+                // the kernel's view of the function must match the binary's (same header line,
+                // same value locals); otherwise its checks are compiled as failures, never dropped
+                let plan = checks.and_then(|c| c.funcs.iter().find(|p| p.header_line as usize == self.functions[func_idx].lines.0 + 1));
+                if let Some(p) = plan {
+                    matched.push(p.func);
+                }
+                let mismatch = plan.filter(|p| {
+                    p.n_locals as usize != types.funcs[func_idx].params.len() + types.funcs[func_idx].locals.len()
                 });
+                if let (Some(c), Some(p)) = (checks, mismatch) {
+                    c.uncompiled.borrow_mut().push(p.func);
+                }
                 let function = self.build_function(
                     func_idx,
                     types,
@@ -1314,8 +1325,18 @@ impl<'a> ValidModule<'a> {
                     &mut block_count,
                     &info,
                     plan,
+                    mismatch.is_some(),
                 )?;
                 code_section.function(&function);
+            }
+
+            // plans with checks that match no function of the binary: their checks cannot run
+            if let Some(c) = checks {
+                for p in &c.funcs {
+                    if !p.before.is_empty() && !matched.contains(&p.func) {
+                        c.uncompiled.borrow_mut().push(p.func);
+                    }
+                }
             }
 
             // Next in code section: the "step" function.
@@ -1361,7 +1382,10 @@ impl<'a> ValidModule<'a> {
         block_count: &mut usize,
         info: &FunctionHelperInfo,
         checks: Option<&crate::v2::runtime::FuncPlan>,
+        uncompilable: bool,
     ) -> Result<wasm_encoder::Function> {
+        // a function whose checks cannot be compiled: each check site stops the run instead
+        let (checks, failing) = if uncompilable { (None, checks) } else { (checks, None) };
         use wasm_encoder::Instruction::*;
         let orig_function = &self.functions[func_idx];
         let typed_function = &types.funcs[func_idx];
@@ -1396,6 +1420,15 @@ impl<'a> ValidModule<'a> {
             }
         };
         let emit_checks = |f: &mut wasm_encoder::Function, line: u32| {
+            if let Some(p) = failing
+                && let Some(ids) = p.before.get(&line)
+            {
+                for &id in ids {
+                    f.instruction(&I32Const((V2_CHECK_FLAG | V2_CHECK_UNCOMPILED | id) as i32));
+                    f.instruction(&Call(step_function_idx));
+                }
+                return;
+            }
             let Some(p) = checks else { return };
             let Some(ids) = p.before.get(&line) else { return };
             for &id in ids {
@@ -3408,6 +3441,37 @@ pub(crate) mod tests {
                 }
             }
         }
+        Ok(())
+    }
+
+    /// A plan that disagrees with the binary is never dropped silently: the mismatched function's
+    /// checks stop the run with an error, and the plan records the function as uncompiled.
+    #[test]
+    fn v2_mismatched_plan_is_loud() -> Result<()> {
+        // the kernel saw a local the assembled program does not have
+        let kernel_src = "(func $main\n  (local $a i32)\n  unreachable\n)";
+        let binary_src = "(func $main\n  nop\n  unreachable\n)";
+        let m = crate::v2::ast::Module::parse(kernel_src);
+        let out = crate::v2::kernel::check_module(&m, true);
+        assert!(out.cups().any(|c| c.verdict == crate::v2::out::Verdict::RuntimeChecked));
+        let plan = std::rc::Rc::new(crate::v2::runtime::RuntimePlan::new(&m, &out));
+        let mut editor = FakeTextBuffer::from_v2(binary_src);
+        let EditorOutput { binary, .. } = test_editor_flow_with(&mut editor, Some(&plan))?;
+        assert_eq!(plan.uncompiled.borrow().as_slice(), &[0]);
+        let log = test_execution_with_checks(&binary, plan.clone())?;
+        assert_eq!(TerminationType::Error, log.termination_type());
+        let f = log.v2_failure().expect("the uncompiled check stops the run");
+        assert!(f.message.contains("could not be compiled"), "{}", f.message);
+
+        // a plan with checks for a function the binary does not have at that line
+        let kernel_src = "(func $main\n)\n(func $g\n  unreachable\n)";
+        let binary_src = "(func $main\n)";
+        let m = crate::v2::ast::Module::parse(kernel_src);
+        let out = crate::v2::kernel::check_module(&m, true);
+        let plan = crate::v2::runtime::RuntimePlan::new(&m, &out);
+        let mut editor = FakeTextBuffer::from_v2(binary_src);
+        test_editor_flow_with(&mut editor, Some(&plan))?;
+        assert_eq!(plan.uncompiled.borrow().as_slice(), &[1]);
         Ok(())
     }
 
