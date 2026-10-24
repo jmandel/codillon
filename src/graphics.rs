@@ -514,7 +514,7 @@ type CodillonSVG = DomStruct<
             Connections,
             (
                 ProofLayer,
-                (Fractions, (ProofLayer, (CodillonBlocks, (Arrow, ())))),
+                (Fractions, (CodillonBlocks, (Arrow, (ProofLayer, ())))),
             ),
         ),
     ),
@@ -650,14 +650,11 @@ macro_rules! field {
     (fractions $comp:expr) => {
         $comp.1.1.1.0
     };
-    (proof_over $comp:expr) => {
+    (blocks $comp:expr) => {
         $comp.1.1.1.1.0
     };
-    (blocks $comp:expr) => {
-        $comp.1.1.1.1.1.0
-    };
     (arrow $comp:expr) => {
-        $comp.1.1.1.1.1.1.0
+        $comp.1.1.1.1.1.0
     };
 }
 
@@ -749,11 +746,8 @@ impl DomImage {
                             (
                                 DomSet::new(factory.svg_g()),
                                 (
-                                    factory.svg_g(),
-                                    (
-                                        CodillonBlocks::new(factory.svg_g()),
-                                        (Arrow::new(&factory), ()),
-                                    ),
+                                    CodillonBlocks::new(factory.svg_g()),
+                                    (Arrow::new(&factory), (factory.svg_g(), ())),
                                 ),
                             ),
                         ),
@@ -1339,7 +1333,7 @@ A 15,10 0 0 1 14.827,-8.484 15,10 0 0 1 0.003,-0 15,10 0 0 1 -14.826,-8.481 15,1
 
     /// Draw the proof layers (markup from proof_view), skipping unchanged ones.
     pub fn set_proof_layers(&mut self, under: &str, over: &str) {
-        let (_, (_, (u, (_, (o, _))))) = self.contents.get_mut();
+        let (_, (_, (u, (_, (_, (_, (o, _))))))) = self.contents.get_mut();
         if self.proof_cache.0 != under {
             u.set_inner_html(under);
             self.proof_cache.0 = under.to_string();

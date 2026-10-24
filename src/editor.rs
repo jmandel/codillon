@@ -194,6 +194,31 @@ impl V2State {
     }
 }
 
+/// The width of code text in Codillon's code font (for placing marks behind parts of a line).
+fn measure_code(text: &str) -> Option<f32> {
+    use wasm_bindgen::JsCast;
+    thread_local! {
+        static CTX: Option<web_sys::CanvasRenderingContext2d> = (|| {
+            let doc = web_sys::window()?.document()?;
+            let canvas = doc
+                .create_element("canvas")
+                .ok()?
+                .dyn_into::<web_sys::HtmlCanvasElement>()
+                .ok()?;
+            canvas
+                .get_context("2d")
+                .ok()??
+                .dyn_into::<web_sys::CanvasRenderingContext2d>()
+                .ok()
+        })();
+    }
+    CTX.with(|c| {
+        let c = c.as_ref()?;
+        c.set_font("24pt MLMRoman12-Regular");
+        c.measure_text(text).ok().map(|m| m.width() as f32)
+    })
+}
+
 pub struct EditorHolder(Rc<RefCell<Editor>>);
 
 impl EditorHolder {
@@ -595,10 +620,24 @@ impl Editor {
             line: f.line,
             message: f.message,
         });
-        let scene = {
+        let mut scene = {
             let out = v2.out.borrow();
             crate::proof_view::build(&out, &geom, failure.as_ref(), &disp)
         };
+        // spec clauses on code lines, e.g. `block $done (fact …)`: a quiet wash behind them
+        let mut washes = String::new();
+        for (i, l) in self.text().iter().enumerate() {
+            let t = l.instr().get();
+            let Some(indent) = l.info().indent else {
+                continue;
+            };
+            for (a, b) in crate::proof_view::fact_clauses(t) {
+                if let (Some(x0), Some(x1)) = (measure_code(&t[..a]), measure_code(&t[..b])) {
+                    washes.push_str(&crate::proof_view::clause_wash(i, indent, x0, x1));
+                }
+            }
+        }
+        scene.under.insert_str(0, &washes);
         self.image_mut().set_proof_layers(&scene.under, &scene.over);
         for (i, lp) in scene.lines.into_iter().enumerate() {
             self.line_mut(i).set_proof(lp);

@@ -558,3 +558,15 @@ span.comment[data-commentary][data-tone="quiet"]::after {
     font-size: 10px;
     text-anchor: middle;
 }
+
+/* a spec clause inside a code line, e.g. `block $done (fact …)` */
+.pv-clause {
+    fill: #ebe7f7;
+    stroke: #d6d0ee;
+    stroke-width: 0.8;
+    stroke-dasharray: 2 2;
+}
+
+.pv-trunk {
+    stroke-width: 1.8;
+}

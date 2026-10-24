@@ -135,6 +135,12 @@ struct CupMark {
     label: Option<String>,
 }
 
+impl CupMark {
+    fn socket(&self) -> bool {
+        self.label.is_some()
+    }
+}
+
 fn draw_cup(o: &mut String, m: &CupMark) {
     let d = diamond(m.x, m.y, m.h);
     let (x, y, h) = (m.x, m.y, m.h);
@@ -148,11 +154,16 @@ fn draw_cup(o: &mut String, m: &CupMark) {
         Look::Assumed => {
             let _ = write!(
                 o,
-                "<path d=\"{d}\" fill=\"url(#pv-hatch)\" stroke=\"{PURPLE}\" stroke-width=\"1\" opacity=\"0.7\"/>\
-<circle cx=\"{:.1}\" cy=\"{:.1}\" r=\"2.3\" fill=\"none\" stroke=\"{PURPLE}\" stroke-width=\"0.9\"/>",
-                x + h + 1.5,
-                y - h + 0.5
+                "<path d=\"{d}\" fill=\"url(#pv-hatch)\" stroke=\"{PURPLE}\" stroke-width=\"1\" opacity=\"0.7\"/>"
             );
+            if !m.socket() {
+                let _ = write!(
+                    o,
+                    "<circle cx=\"{:.1}\" cy=\"{:.1}\" r=\"2.3\" fill=\"none\" stroke=\"{PURPLE}\" stroke-width=\"0.9\"/>",
+                    x + h + 1.5,
+                    y - h + 0.5
+                );
+            }
         }
         Look::Checked => {
             let _ = write!(
@@ -215,6 +226,48 @@ fn draw_cup(o: &mut String, m: &CupMark) {
             y - h + 4.0
         );
     }
+}
+
+/// Byte ranges of the `(fact …)` clauses in a line (balanced parentheses).
+pub fn fact_clauses(text: &str) -> Vec<(usize, usize)> {
+    let mut ret = vec![];
+    let mut from = 0;
+    while let Some(p) = text[from..].find("(fact") {
+        let start = from + p;
+        let mut depth = 0i32;
+        let mut end = text.len();
+        for (i, ch) in text[start..].char_indices() {
+            match ch {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = start + i + 1;
+                        break;
+                    }
+                }
+                ';' if text[start + i..].starts_with(";;") => {
+                    end = start + i;
+                    break;
+                }
+                _ => {}
+            }
+        }
+        ret.push((start, end));
+        from = end;
+    }
+    ret
+}
+
+/// A quiet wash behind a spec clause, `x0..x1` measured from the line's code start.
+pub fn clause_wash(line_idx: usize, indent: u16, x0: f32, x1: f32) -> String {
+    let y = line_idx as f32 * LS + 30.5;
+    format!(
+        "<rect x=\"{:.1}\" y=\"{:.1}\" width=\"{:.1}\" height=\"30\" rx=\"6\" class=\"pv-clause\"/>",
+        code_x(indent) - 3.0 + x0 - 2.0,
+        y - 15.0,
+        x1 - x0 + 4.0
+    )
 }
 
 /// Rewrite kernel line references ("line 12", "lines 3, 4", "@45") to displayed line numbers.
@@ -290,7 +343,7 @@ impl Ctx<'_> {
             // no value inputs: start near the fraction's centre, further left only if needed
             None => (frac_x(ind) - 8.0)
                 .min(end - STEP * n as f32)
-                .max(frac_x(ind) - 32.0),
+                .max(frac_x(ind) - 52.0),
         };
         let room = end - x0;
         let step = if n == 0 {
@@ -673,7 +726,7 @@ fn build_func(
             continue;
         };
         let k = per_line.entry(ch.line).or_default();
-        let x = code_x(ctx.indent(ch.line)) - 11.0 - CHIP_STEP * *k as f32;
+        let x = code_x(ctx.indent(ch.line)) - 14.0 - CHIP_STEP * *k as f32;
         *k += 1;
         chips.push(ChipDraw {
             line: ch.line,
@@ -726,11 +779,8 @@ fn build_func(
         let (lo, hi) = span(c);
         let all_dashed = !c.targets.is_empty() && c.targets.iter().all(|t| t.dashed);
         let long = (hi - lo) > 14.0 * LS;
-        let cls = format!(
-            "pv-wire{}{}",
-            if all_dashed { " pv-dash" } else { "" },
-            if long { " pv-long" } else { "" }
-        );
+        let _ = all_dashed;
+        let cls = format!("pv-wire pv-trunk{}", if long { " pv-long" } else { "" });
         // trunk from the chip to the farthest hook
         let tlo = c.targets.iter().map(|t| t.y - 14.0).fold(c.y, f32::min);
         let thi = c.targets.iter().map(|t| t.y - 14.0).fold(c.y, f32::max);
@@ -763,17 +813,17 @@ fn build_func(
             let bad = c.hint.is_some();
             // the ribbon carries on (faint, or solid when a cup needed it) to the fray
             let from = if c.targets.is_empty() { c.y } else { thi.max(c.y) };
-            if fy - 9.0 > from {
+            if fy - 11.0 > from {
                 let _ = write!(
                     under,
                     "<path d=\"M{tx:.1},{from:.1} V{:.1}\" class=\"{}\"/>",
-                    fy - 9.0,
+                    fy - 11.0,
                     if bad { "pv-wire" } else { "pv-ghost" }
                 );
             }
             let mut d = String::new();
-            for (a, len) in [(-1.25f32, 7.0f32), (-0.6, 9.0), (0.0, 7.5), (0.6, 9.0), (1.25, 7.0)] {
-                let (sx, sy) = (tx, fy - 9.0);
+            for (a, len) in [(-0.95f32, 10.0f32), (-0.45, 12.0), (0.0, 9.0), (0.45, 12.0), (0.95, 10.0)] {
+                let (sx, sy) = (tx, fy - 11.0);
                 let vx = a.sin();
                 let vy = a.cos();
                 let _ = write!(
@@ -821,7 +871,7 @@ fn build_func(
     // dead-code feeds: a faint wire from the line that ended the arm
     for (ended, i) in dead_wires {
         let (x, y, h) = cup_pos[i];
-        let sx = code_x(ctx.indent(ended)) - 11.0;
+        let sx = code_x(ctx.indent(ended)) - 14.0;
         let sy = y_mid(ended) + 8.0;
         let _ = write!(
             under,
@@ -910,6 +960,15 @@ mod tests {
             ]
         );
         assert!(parse_hyps("prove has nothing to feed").is_empty());
+    }
+
+    #[test]
+    fn finds_fact_clauses() {
+        let t = "block $done (fact (i32.eqz $y)) (fact (call $f $x)) ;; c";
+        let r = fact_clauses(t);
+        assert_eq!(r.len(), 2);
+        assert_eq!(&t[r[0].0..r[0].1], "(fact (i32.eqz $y))");
+        assert_eq!(&t[r[1].0..r[1].1], "(fact (call $f $x))");
     }
 
     #[test]
