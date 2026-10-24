@@ -545,3 +545,106 @@ impl<'m> Interp<'m> {
         }
     }
 }
+
+/// One float-involving instruction (`f32.add`, `f64.lt`, `i32.trunc_f32_s`, `f64.convert_i64_u`,
+/// reinterprets, …) on bit patterns, as Wasm computes it. `Err(true)`: it traps (a trapping
+/// truncation out of range); `Err(false)`: an instruction this does not know.
+pub fn eval_fop(name: &str, args: &[u64]) -> Result<u64, bool> {
+    eval_fop_inner(name, args).ok_or(false)?
+}
+
+fn eval_fop_inner(name: &str, args: &[u64]) -> Option<Result<u64, bool>> {
+    let (ty, op) = name.split_once('.')?;
+    // the source float width: the type itself for arithmetic and comparisons, else named in the op
+    let src32 = if ty == "f32" || ty == "f64" {
+        ty == "f32"
+    } else {
+        op.contains("f32")
+    };
+    let fx = |i: usize| -> Option<f64> {
+        let v = *args.get(i)?;
+        Some(if src32 {
+            f32::from_bits(v as u32) as f64
+        } else {
+            f64::from_bits(v)
+        })
+    };
+    let out_f = |x: f64| -> u64 {
+        if ty == "f32" {
+            (x as f32).to_bits() as u64
+        } else {
+            x.to_bits()
+        }
+    };
+    let b = |c: bool| c as u64;
+    let a0 = *args.first()?;
+    Some(Ok(match (ty, op) {
+        ("f32" | "f64", "add") => out_f(fx(0)? + fx(1)?),
+        ("f32" | "f64", "sub") => out_f(fx(0)? - fx(1)?),
+        ("f32" | "f64", "mul") => out_f(fx(0)? * fx(1)?),
+        ("f32" | "f64", "div") => out_f(fx(0)? / fx(1)?),
+        ("f32" | "f64", "min" | "max") => {
+            let (x, y) = (fx(0)?, fx(1)?);
+            out_f(if x.is_nan() || y.is_nan() {
+                f64::NAN
+            } else if x == y {
+                // ±0: min prefers −0, max prefers +0
+                if (op == "min") == x.is_sign_negative() { x } else { y }
+            } else if (op == "min") == (x < y) {
+                x
+            } else {
+                y
+            })
+        }
+        ("f32" | "f64", "copysign") => out_f(fx(0)?.copysign(fx(1)?)),
+        ("f32" | "f64", "abs") => out_f(fx(0)?.abs()),
+        ("f32" | "f64", "neg") => out_f(-fx(0)?),
+        ("f32" | "f64", "sqrt") => out_f(fx(0)?.sqrt()),
+        ("f32" | "f64", "ceil") => out_f(fx(0)?.ceil()),
+        ("f32" | "f64", "floor") => out_f(fx(0)?.floor()),
+        ("f32" | "f64", "trunc") => out_f(fx(0)?.trunc()),
+        ("f32" | "f64", "nearest") => out_f(fx(0)?.round_ties_even()),
+        ("f32" | "f64", "eq") => b(fx(0)? == fx(1)?),
+        ("f32" | "f64", "ne") => b(fx(0)? != fx(1)?),
+        ("f32" | "f64", "lt") => b(fx(0)? < fx(1)?),
+        ("f32" | "f64", "gt") => b(fx(0)? > fx(1)?),
+        ("f32" | "f64", "le") => b(fx(0)? <= fx(1)?),
+        ("f32" | "f64", "ge") => b(fx(0)? >= fx(1)?),
+        ("f32", "demote_f64") => (f64::from_bits(a0) as f32).to_bits() as u64,
+        ("f64", "promote_f32") => (f32::from_bits(a0 as u32) as f64).to_bits(),
+        ("f32", "convert_i32_s") => (a0 as u32 as i32 as f32).to_bits() as u64,
+        ("f32", "convert_i32_u") => (a0 as u32 as f32).to_bits() as u64,
+        ("f32", "convert_i64_s") => (a0 as i64 as f32).to_bits() as u64,
+        ("f32", "convert_i64_u") => (a0 as f32).to_bits() as u64,
+        ("f64", "convert_i32_s") => (a0 as u32 as i32 as f64).to_bits(),
+        ("f64", "convert_i32_u") => (a0 as u32 as f64).to_bits(),
+        ("f64", "convert_i64_s") => (a0 as i64 as f64).to_bits(),
+        ("f64", "convert_i64_u") => (a0 as f64).to_bits(),
+        ("f32", "reinterpret_i32") | ("i32", "reinterpret_f32") => a0 & 0xffff_ffff,
+        ("f64", "reinterpret_i64") | ("i64", "reinterpret_f64") => a0,
+        ("i32" | "i64", _) if op.starts_with("trunc_") => {
+            let x = fx(0)?;
+            let sat = op.starts_with("trunc_sat_");
+            let signed = op.ends_with("_s");
+            let (lo, hi): (f64, f64) = match (ty, signed) {
+                ("i32", true) => (-2147483648.0, 2147483648.0),
+                ("i32", false) => (0.0, 4294967296.0),
+                ("i64", true) => (-9223372036854775808.0, 9223372036854775808.0),
+                _ => (0.0, 18446744073709551616.0),
+            };
+            let t = x.trunc();
+            let ok = !x.is_nan() && t >= lo && t < hi;
+            if !ok && !sat {
+                return Some(Err(true));
+            }
+            // Rust's float→int casts saturate (NaN → 0), which is trunc_sat
+            match (ty, signed) {
+                ("i32", true) => x as i32 as u32 as u64,
+                ("i32", false) => x as u32 as u64,
+                ("i64", true) => x as i64 as u64,
+                _ => x as u64,
+            }
+        }
+        _ => return None,
+    }))
+}

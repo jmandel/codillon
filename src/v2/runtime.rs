@@ -397,6 +397,16 @@ impl Evaluator<'_> {
                 let args: Vec<u64> = a.iter().map(|x| self.term(*x)).collect::<Result<_, _>>()?;
                 eval_iop(op, w, &args).map_err(|_| TRAPS.to_string())?
             }
+            Key::Float(name, a) => {
+                let args: Vec<u64> = a.iter().map(|x| self.term(*x)).collect::<Result<_, _>>()?;
+                super::eval::eval_fop(&name, &args).map_err(|trap| {
+                    if trap {
+                        TRAPS.to_string()
+                    } else {
+                        format!("cannot evaluate {name}")
+                    }
+                })?
+            }
             Key::Ite(c, a, b) => {
                 if self.term(c)? as u32 != 0 {
                     self.term(a)?

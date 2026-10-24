@@ -424,7 +424,20 @@ impl<'a, 'm> Pass<'a, 'm> {
                     Err(EvalErr::CheckFailed { msg, .. }) => Err(msg),
                 }
             }
-            _ => Err("cannot evaluate a float atom".into()),
+            Key::Float(name, args) => {
+                let vals: Vec<u64> = args
+                    .iter()
+                    .map(|a| self.eval_term(it, *a))
+                    .collect::<Result<_, _>>()?;
+                super::eval::eval_fop(name, &vals).map_err(|trap| {
+                    if trap {
+                        TRAPPED.to_string()
+                    } else {
+                        format!("cannot evaluate {name}")
+                    }
+                })
+            }
+            _ => Err("cannot evaluate this atom".into()),
         }
     }
 
@@ -998,14 +1011,25 @@ impl<'a, 'm> Pass<'a, 'm> {
     }
 }
 
-fn trunc_bounds(name: &str) -> Option<(f64, f64)> {
+/// R27: a trapping truncation `name` from `fty` is defined iff lo < x < hi, with lo and hi as
+/// `fty` bit patterns: the nearest representable values just outside the target's range. In f32
+/// the value below −2^31 is −2^31 − 256 (and below −2^63, −2^63 − 2^40): −2^31 itself is valid.
+fn trunc_bounds(name: &str, fty: ValTy) -> Option<(u64, u64)> {
     let (to, op) = name.split_once('.')?;
     let signed = op.ends_with("_s");
-    Some(match (to, signed) {
-        ("i32", true) => (-2147483649.0, 2147483648.0),
-        ("i32", false) => (-1.0, 4294967296.0),
-        ("i64", true) => (-9223372036854777856.0, 9223372036854775808.0),
+    let f32_ = fty == ValTy::F32;
+    let (lo, hi): (f64, f64) = match (to, signed, f32_) {
+        ("i32", true, false) => (-2147483649.0, 2147483648.0),
+        ("i32", true, true) => (-2147483904.0, 2147483648.0),
+        ("i32", false, _) => (-1.0, 4294967296.0),
+        ("i64", true, false) => (-9223372036854777856.0, 9223372036854775808.0),
+        ("i64", true, true) => (-9223373136366403584.0, 9223372036854775808.0),
         _ => (-1.0, 18446744073709551616.0),
+    };
+    Some(if f32_ {
+        ((lo as f32).to_bits() as u64, (hi as f32).to_bits() as u64)
+    } else {
+        (lo.to_bits(), hi.to_bits())
     })
 }
 
@@ -1401,19 +1425,9 @@ impl<'a, 'm> Pass<'a, 'm> {
             } => {
                 let args = self.popn(tys.len());
                 let mut reqs = vec![];
-                if *trap && let Some((lo, hi)) = trunc_bounds(name) {
+                if *trap && let Some((lo, hi)) = trunc_bounds(name, tys[0]) {
                     let fty = tys[0];
-                    let bits = |x: f64| {
-                        if fty == ValTy::F32 {
-                            (x as f32).to_bits() as u64
-                        } else {
-                            x.to_bits()
-                        }
-                    };
-                    let (l, h) = (
-                        self.terms.konst(fty, bits(lo)),
-                        self.terms.konst(fty, bits(hi)),
-                    );
+                    let (l, h) = (self.terms.konst(fty, lo), self.terms.konst(fty, hi));
                     let gt = self.terms.intern(
                         Key::Float(
                             format!("{}.gt", fty.name()),
@@ -2209,10 +2223,16 @@ impl<'a, 'm> Pass<'a, 'm> {
                 .collect();
         }
         self.frames.push(fr);
-        // φ for the loop parameters
+        // φ for the loop parameters; the top one is captured right after the `loop` line (on
+        // entry and on every back edge) for runtime checks (R35); deeper ones are not capturable
+        // with a single top-of-stack copy, and checks reading them are reported as unevaluable
+        let np = bt.params.len();
         for (j, r) in bt.params.iter().enumerate() {
             let t = self.terms.leaf(r.ty, "#φ", None);
             self.stack.push(t);
+            if j + 1 == np {
+                self.birth(t, line, Capture::Top);
+            }
             if let Some(e) = &r.refine {
                 self.groups.push(vec![Dep::Cup(ids[k])]);
                 let g = (self.groups.len() - 1) as u32;

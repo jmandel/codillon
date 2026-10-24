@@ -222,6 +222,7 @@ impl Terms {
             Atom::Cmp { a, b, .. } => vec![*a, *b],
             Atom::Bool { t, .. } => match self.key(*t) {
                 Key::Call(_, args, _) => args.to_vec(),
+                Key::Float(_, args) => args.to_vec(),
                 _ => vec![*t],
             },
             Atom::Or(x, y) => {

@@ -492,3 +492,116 @@ fn f7_returning_before_a_locked_line_is_rejected() {
     let s2 = SessionStart::new(&sub);
     assert!(s2.judge(&sub).boundary.is_empty());
 }
+
+// ---------------- A14b (review 19): a student line moved within its own block ----------------
+
+/// Moving a student line among LLM lines of the same block is the same text as the LLM editing
+/// its own lines around it (delete above, insert below), so it cannot be a boundary violation by
+/// itself. What could make such a move harmful is covered elsewhere: an `assume` is never
+/// accepted in LLM code (strict), a block fact is checked at every exit wherever its header sits,
+/// a move into another block is a boundary violation (context), and a locked line made dead is
+/// one too (F7).
+#[test]
+fn a14b_a_move_within_the_block_is_judged_by_its_effect() {
+    use super::vericode::SessionStart;
+    let p = format!("{}/public/examples/v2/gcd.wat", env!("CARGO_MANIFEST_DIR"));
+    let g: Vec<String> = std::fs::read_to_string(p)
+        .unwrap()
+        .lines()
+        .map(String::from)
+        .collect();
+    let mut base = g.clone();
+    base.insert(123, "      assume (fact (i32.ne $y 0))".into());
+    let s = SessionStart::new(&base);
+    let mut t = base.clone();
+    let a = t.remove(123);
+    t.insert(120, a);
+    let j = s.judge(&t);
+    assert!(!j.crossed());
+    assert!(!j.accepted, "an assume in LLM code is never accepted");
+    // moved out of its loop: crossed
+    let mut t = base.clone();
+    let a = t.remove(123);
+    t.insert(117, a);
+    let j = s.judge(&t);
+    assert!(j.crossed(), "{}", j.summary());
+}
+
+// ---------------- F8: loop parameters and float conversions are checked at run time ----------------
+
+const F8: &str = r#"(func $f (export "f") (param $n i32) (result i32)
+  (local $t i32)
+  local.get $n
+  loop $l (param i32) (result i32)
+    local.set $t
+    i32.const 100
+    local.get $t
+    i32.div_u
+  end
+)
+(func $g (export "g") (param $x f32) (result i32)
+  local.get $x
+  i32.trunc_f32_s
+)
+(func $h (export "h") (result i32)
+  f32.const -2147483648
+  i32.trunc_f32_s
+)
+(func $k (export "k") (result i64)
+  f32.const -9223372036854775808
+  i64.trunc_f32_s
+)"#;
+
+#[test]
+fn f8_a_check_on_a_loop_parameter_runs() {
+    use super::eval::EvalErr;
+    let (r, n) = super::tests::instrumented_run(F8, "f", &[4]);
+    assert_eq!(r.unwrap(), vec![25]);
+    assert!(n > 0, "the check ran");
+    let (r, _) = super::tests::instrumented_run(F8, "f", &[0]);
+    assert!(matches!(r, Err(EvalErr::CheckFailed { line: 8, .. })), "{r:?}");
+}
+
+#[test]
+fn f8_float_conversion_checks_evaluate() {
+    use super::runtime::{CheckOutcome, RuntimePlan};
+    let m = Module::parse(F8);
+    let out = check_module(&m, true);
+    // −2^31 and −2^63 are exact in f32 and truncate fine: the kernel evaluates both cups true
+    for line in [17, 21] {
+        let cups: Vec<_> = out.cups().filter(|c| c.line == line).collect();
+        assert_eq!(cups.len(), 2);
+        for c in cups {
+            assert_eq!(c.verdict, Verdict::Proven, "line {line}: {}", c.goal);
+        }
+    }
+    // $g's two cups are runtime checks that evaluate on the run's value
+    let plan = RuntimePlan::new(&m, &out);
+    let ids: Vec<u32> = (0..plan.checks.len() as u32)
+        .filter(|i| plan.checks[*i as usize].line == 13)
+        .collect();
+    assert_eq!(ids.len(), 2);
+    let run = |x: f32| -> Vec<CheckOutcome> {
+        ids.iter()
+            .map(|i| plan.eval_check(*i, &[x.to_bits() as u64], None))
+            .collect()
+    };
+    assert!(run(1.5).iter().all(|o| *o == CheckOutcome::Holds));
+    assert!(run(-2147483648.0).iter().all(|o| *o == CheckOutcome::Holds));
+    assert!(run(3e9).iter().any(|o| matches!(o, CheckOutcome::Fails(_))));
+    assert!(run(f32::NAN).iter().any(|o| matches!(o, CheckOutcome::Fails(_))));
+}
+
+#[test]
+fn f8_eval_fop_matches_wasm() {
+    use super::eval::eval_fop;
+    let f = |x: f32| x.to_bits() as u64;
+    assert_eq!(eval_fop("f32.add", &[f(1.5), f(2.25)]), Ok(f(3.75)));
+    assert_eq!(eval_fop("f32.lt", &[f(1.0), f(2.0)]), Ok(1));
+    assert_eq!(eval_fop("i32.trunc_f32_s", &[f(-2147483648.0)]), Ok(0x8000_0000));
+    assert_eq!(eval_fop("i32.trunc_f32_s", &[f(2147483648.0)]), Err(true));
+    assert_eq!(eval_fop("i32.trunc_sat_f32_s", &[f(f32::NAN)]), Ok(0));
+    assert_eq!(eval_fop("f64.convert_i32_u", &[0xffff_ffff]), Ok(4294967295.0f64.to_bits()));
+    assert_eq!(eval_fop("f32.min", &[f(-0.0), f(0.0)]), Ok(f(-0.0)));
+    assert_eq!(eval_fop("v128.any_true", &[0]), Err(false));
+}
