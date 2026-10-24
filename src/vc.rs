@@ -91,12 +91,25 @@ pub enum Cut {
 /// A value to read from a model, to show the state it describes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Read {
-    Var { name: String, bits: u32 },    // a param or local (bitvector)
-    Global { index: usize, name: String, bits: u32 },
-    Ghost(String),                      // an integer ghost
-    Word(u32),                          // a 32-bit word of memory
-    MapHas { map: String, key: usize }, // key: index of the read giving the key
-    MapVal { map: String, key: usize },
+    Var {
+        name: String,
+        bits: u32,
+    }, // a param or local (bitvector)
+    Global {
+        index: usize,
+        name: String,
+        bits: u32,
+    },
+    Ghost(String), // an integer ghost
+    Word(u32),     // a 32-bit word of memory
+    MapHas {
+        map: String,
+        key: usize,
+    }, // key: index of the read giving the key
+    MapVal {
+        map: String,
+        key: usize,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -138,20 +151,31 @@ struct V {
 enum S {
     Int(String, (i128, i128)), // a term of width wid(range), and the range its value lies in
     Bool(String),
-    Map { dom: String, val: String, size: String },
+    Map {
+        dom: String,
+        val: String,
+        size: String,
+    },
 }
 
 #[derive(Debug, Clone)]
 enum G {
     Int(String),
-    Map { dom: String, val: String, size: String },
+    Map {
+        dom: String,
+        val: String,
+        size: String,
+    },
 }
 
 fn bv(v: i128, w: u32) -> String {
-    let m = if w >= 128 { v as u128 } else { v.rem_euclid(1i128 << w) as u128 };
+    let m = if w >= 128 {
+        v as u128
+    } else {
+        v.rem_euclid(1i128 << w) as u128
+    };
     format!("(_ bv{m} {w})")
 }
-
 
 const PREAMBLE: &str = "\
 (define-fun ld32 ((m (Array (_ BitVec 30) (_ BitVec 32))) (a (_ BitVec 32))) (_ BitVec 32) (let ((i ((_ extract 31 2) a)) (o ((_ extract 1 0) a))) (ite (= o #b00) (select m i) ((_ extract 31 0) (bvlshr (concat (select m (bvadd i #b000000000000000000000000000001)) (select m i)) ((_ zero_extend 59) (concat o #b000)))))))
@@ -183,9 +207,21 @@ struct Snapshot {
 
 #[derive(Debug, Clone)]
 enum Ctl {
-    Block { end: usize, arity: usize, height: usize },
-    If { end: usize, arity: usize, height: usize },
-    Loop { pc: usize, end: usize, height: usize, measure: Option<String> },
+    Block {
+        end: usize,
+        arity: usize,
+        height: usize,
+    },
+    If {
+        end: usize,
+        arity: usize,
+        height: usize,
+    },
+    Loop {
+        pc: usize,
+        height: usize,
+        measure: Option<String>,
+    },
     Func,
 }
 
@@ -237,7 +273,7 @@ struct Gen<'a> {
     decls: Vec<String>,
     counter: usize,
     // (obligation, decls in scope, facts, goal, the state at its cut point)
-    obligations: Vec<(Obligation, usize, Vec<String>, String, Rc<Snapshot>)>,
+    obligations: Vec<PendingObligation>,
     addresses: BTreeSet<u32>,
     infos: &'a [FuncInfo],
     recursive_defines: &'a HashSet<String>,
@@ -248,6 +284,9 @@ struct Gen<'a> {
 }
 
 type R<T> = Result<T, String>;
+
+// An obligation before its query is assembled: decls in scope, facts, goal, cut state.
+type PendingObligation = (Obligation, usize, Vec<String>, String, Rc<Snapshot>);
 
 fn block_arity(module: &ValidModule, bt: &BlockType) -> R<(usize, usize)> {
     Ok(match bt {
@@ -276,8 +315,6 @@ fn sort_of(w: W) -> &'static str {
     }
 }
 
-
-
 impl<'a> Gen<'a> {
     fn fresh(&mut self, prefix: &str) -> String {
         self.counter += 1;
@@ -292,7 +329,8 @@ impl<'a> Gen<'a> {
 
     fn define(&mut self, prefix: &str, sort: &str, term: String) -> String {
         let n = self.fresh(prefix);
-        self.decls.push(format!("(define-fun {n} () {sort} {term})"));
+        self.decls
+            .push(format!("(define-fun {n} () {sort} {term})"));
         n
     }
 
@@ -337,7 +375,14 @@ impl<'a> Gen<'a> {
     // ---------------------------------------------------------------------------------
     // Obligations
 
-    fn oblige(&mut self, st: &St, kind: ObKind, check: Option<&Check>, at_line: usize, goal: String) {
+    fn oblige(
+        &mut self,
+        st: &St,
+        kind: ObKind,
+        check: Option<&Check>,
+        at_line: usize,
+        goal: String,
+    ) {
         let ob = Obligation {
             func: self.func,
             kind,
@@ -361,7 +406,14 @@ impl<'a> Gen<'a> {
         ));
     }
 
-    fn oblige_unsupported(&mut self, st: &St, kind: ObKind, check: Option<&Check>, at_line: usize, why: String) {
+    fn oblige_unsupported(
+        &mut self,
+        st: &St,
+        kind: ObKind,
+        check: Option<&Check>,
+        at_line: usize,
+        why: String,
+    ) {
         self.oblige(st, kind, check, at_line, "true".into());
         self.obligations.last_mut().unwrap().0.unsupported = Some(why);
     }
@@ -397,6 +449,7 @@ impl<'a> Gen<'a> {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn assume_check(
         &mut self,
         st: &mut St,
@@ -457,10 +510,14 @@ impl<'a> Gen<'a> {
         struct ConstEnv<'b>(&'b SpecPlan, &'b [(String, S)]);
         impl Env for ConstEnv<'_> {
             fn var(&self, name: &str) -> Option<Val> {
-                self.1.iter().rev().find(|(n, _)| n == name).and_then(|(_, s)| match s {
-                    S::Int(_, (lo, hi)) if lo == hi => Some(Val::Int(*lo)),
-                    _ => None,
-                })
+                self.1
+                    .iter()
+                    .rev()
+                    .find(|(n, _)| n == name)
+                    .and_then(|(_, s)| match s {
+                        S::Int(_, (lo, hi)) if lo == hi => Some(Val::Int(*lo)),
+                        _ => None,
+                    })
             }
             fn define(&self, name: &str) -> Option<&Define> {
                 self.0.defines.iter().find(|d| d.name == name)
@@ -586,29 +643,32 @@ impl<'a> Gen<'a> {
                     }
                     _ => {
                         let ((x, rx), (y, ry)) = (int_of(x, a)?, int_of(y, b)?);
-                        let corners = |f: &dyn Fn(i128, i128) -> Option<i128>| -> Option<(i128, i128)> {
-                            let mut v = vec![];
-                            for p in [rx.0, rx.1] {
-                                for q in [ry.0, ry.1] {
-                                    v.push(f(p, q)?);
+                        let corners =
+                            |f: &dyn Fn(i128, i128) -> Option<i128>| -> Option<(i128, i128)> {
+                                let mut v = vec![];
+                                for p in [rx.0, rx.1] {
+                                    for q in [ry.0, ry.1] {
+                                        v.push(f(p, q)?);
+                                    }
                                 }
-                            }
-                            Some((*v.iter().min()?, *v.iter().max()?))
-                        };
+                                Some((*v.iter().min()?, *v.iter().max()?))
+                            };
                         let mag = |r: (i128, i128)| r.0.abs().max(r.1.abs());
                         // computed at a width that holds the operands and the result, then
                         // narrowed to the result's
-                        let arith = |this: &mut Self, op: &str, r: (i128, i128), extra: u32| -> R<S> {
-                            check_range(r)?;
-                            let w = wid(rx).max(wid(ry)).max(wid(r)) + extra;
-                            let f = this.sop(op, w);
-                            mk(format!("({f} {} {})", at(&x, rx, w), at(&y, ry, w)), w, r)
-                        };
+                        let arith =
+                            |this: &mut Self, op: &str, r: (i128, i128), extra: u32| -> R<S> {
+                                check_range(r)?;
+                                let w = wid(rx).max(wid(ry)).max(wid(r)) + extra;
+                                let f = this.sop(op, w);
+                                mk(format!("({f} {} {})", at(&x, rx, w), at(&y, ry, w)), w, r)
+                            };
                         match op {
                             BinOp::Add => arith(self, "sadd", (rx.0 + ry.0, rx.1 + ry.1), 0)?,
                             BinOp::Sub => arith(self, "ssub", (rx.0 - ry.1, rx.1 - ry.0), 0)?,
                             BinOp::Mul => {
-                                let r = corners(&|p, q| p.checked_mul(q)).ok_or("arithmetic beyond 64 bits")?;
+                                let r = corners(&|p, q| p.checked_mul(q))
+                                    .ok_or("arithmetic beyond 64 bits")?;
                                 arith(self, "smul", r, 0)?
                             }
                             BinOp::Div => {
@@ -636,7 +696,11 @@ impl<'a> Gen<'a> {
                                 };
                                 check_range(r)?;
                                 let w = wid(rx).max(wid(ry)).max(wid(r));
-                                let f = if *op == BinOp::BitXor { "bvxor" } else { "bvand" };
+                                let f = if *op == BinOp::BitXor {
+                                    "bvxor"
+                                } else {
+                                    "bvand"
+                                };
                                 mk(format!("({f} {} {})", at(&x, rx, w), at(&y, ry, w)), w, r)?
                             }
                             BinOp::Shl => match self.constant(cx, b) {
@@ -654,7 +718,11 @@ impl<'a> Gen<'a> {
                                 Some(c) if (0..63).contains(&c) => {
                                     let w = wid(rx);
                                     let c2 = c.min(w as i128 - 1);
-                                    mk(format!("(bvashr {x} {})", bv(c2, w)), w, (rx.0 >> c, rx.1 >> c))?
+                                    mk(
+                                        format!("(bvashr {x} {})", bv(c2, w)),
+                                        w,
+                                        (rx.0 >> c, rx.1 >> c),
+                                    )?
                                 }
                                 _ => return Err("a shift by a variable amount".into()),
                             },
@@ -688,8 +756,16 @@ impl<'a> Gen<'a> {
                     }
                     (S::Bool(x), S::Bool(y)) => S::Bool(format!("(ite {c} {x} {y})")),
                     (
-                        S::Map { dom: d1, val: v1, size: s1 },
-                        S::Map { dom: d2, val: v2, size: s2 },
+                        S::Map {
+                            dom: d1,
+                            val: v1,
+                            size: s1,
+                        },
+                        S::Map {
+                            dom: d2,
+                            val: v2,
+                            size: s2,
+                        },
                     ) => S::Map {
                         dom: format!("(ite {c} {d1} {d2})"),
                         val: format!("(ite {c} {v1} {v2})"),
@@ -703,12 +779,17 @@ impl<'a> Gen<'a> {
                 "u" => {
                     let (x, r) = int_of(self.spec_in(cx, &args[0], old)?, &args[0])?;
                     if within(r, I32) {
-                        S::Int(format!("((_ zero_extend 1) {})", at(&x, r, 32)), (0, u32::MAX as i128))
+                        S::Int(
+                            format!("((_ zero_extend 1) {})", at(&x, r, 32)),
+                            (0, u32::MAX as i128),
+                        )
                     } else {
                         return Err("u(…) of a value wider than 32 bits".into());
                     }
                 }
-                "load" | "load8" => self.load_term(cx, &args[0], if n == "load" { 4 } else { 1 }, old)?,
+                "load" | "load8" => {
+                    self.load_term(cx, &args[0], if n == "load" { 4 } else { 1 }, old)?
+                }
                 "abs" => {
                     let (x, r) = int_of(self.spec_in(cx, &args[0], old)?, &args[0])?;
                     let m = r.0.abs().max(r.1.abs());
@@ -717,7 +798,11 @@ impl<'a> Gen<'a> {
                     let w = wid(r).max(wid(ra)).max(wid((-m, m)));
                     let f = self.sop("sneg", w);
                     let xw = at(&x, r, w);
-                    mk(format!("(ite (bvslt {xw} {}) ({f} {xw}) {xw})", bv(0, w)), w, ra)?
+                    mk(
+                        format!("(ite (bvslt {xw} {}) ({f} {xw}) {xw})", bv(0, w)),
+                        w,
+                        ra,
+                    )?
                 }
                 "min" | "max" => {
                     let (x, rx) = int_of(self.spec_in(cx, &args[0], old)?, &args[0])?;
@@ -729,7 +814,9 @@ impl<'a> Gen<'a> {
                     S::Int(format!("(ite ({op} {xw} {yw}) {xw} {yw})"), r)
                 }
                 "size" => match self.spec_in(cx, &args[0], old)? {
-                    S::Map { size, .. } => S::Int(format!("((_ extract 33 0) {size})"), (0, 1i128 << 32)),
+                    S::Map { size, .. } => {
+                        S::Int(format!("((_ extract 33 0) {size})"), (0, 1i128 << 32))
+                    }
                     _ => return Err("size(…) of a non-map".into()),
                 },
                 "remove" => match self.spec_in(cx, &args[0], old)? {
@@ -743,7 +830,10 @@ impl<'a> Gen<'a> {
                         S::Map {
                             dom: format!("(store {dom} {k} false)"),
                             val,
-                            size: format!("(ite (select {dom} {k}) ({f} {size} {}) {size})", bv(1, 64)),
+                            size: format!(
+                                "(ite (select {dom} {k}) ({f} {size} {}) {size})",
+                                bv(1, 64)
+                            ),
                         }
                     }
                     _ => return Err("remove(…) of a non-map".into()),
@@ -813,13 +903,18 @@ impl<'a> Gen<'a> {
                                 let w = wid((0, n));
                                 let mut is = vec![];
                                 for p in parts {
-                                    is.push(format!("(ite {} (_ bv1 {w}) (_ bv0 {w}))", bool_of(p, body)?));
+                                    is.push(format!(
+                                        "(ite {} (_ bv1 {w}) (_ bv0 {w}))",
+                                        bool_of(p, body)?
+                                    ));
                                 }
                                 S::Int(
                                     if is.is_empty() {
                                         bv(0, w)
                                     } else {
-                                        is.into_iter().reduce(|a, b| format!("(bvadd {a} {b})")).unwrap()
+                                        is.into_iter()
+                                            .reduce(|a, b| format!("(bvadd {a} {b})"))
+                                            .unwrap()
                                     },
                                     (0, n),
                                 )
@@ -842,7 +937,11 @@ impl<'a> Gen<'a> {
                         let b = bool_of(b?, body)?;
                         let w = wq.max(wid(rlo)).max(wid(rhi));
                         let qw = resize(&q, wq, w);
-                        let range = format!("(and (bvsle {} {qw}) (bvslt {qw} {}))", at(&lo, rlo, w), at(&hi, rhi, w));
+                        let range = format!(
+                            "(and (bvsle {} {qw}) (bvslt {qw} {}))",
+                            at(&lo, rlo, w),
+                            at(&hi, rhi, w)
+                        );
                         S::Bool(if *kind == QuantKind::Forall {
                             format!("(forall (({q} (_ BitVec {wq}))) (=> {range} {b}))")
                         } else {
@@ -865,7 +964,9 @@ impl<'a> Gen<'a> {
                     cx.binders.pop();
                     let b = bool_of(b?, body)?;
                     S::Bool(if *kind == QuantKind::Forall {
-                        format!("(forall (({q} (_ BitVec 32))) (! (=> (select {dom} {q}) {b}) :pattern ((select {dom} {q}))))")
+                        format!(
+                            "(forall (({q} (_ BitVec 32))) (! (=> (select {dom} {q}) {b}) :pattern ((select {dom} {q}))))"
+                        )
                     } else {
                         format!("(exists (({q} (_ BitVec 32))) (and (select {dom} {q}) {b}))")
                     })
@@ -914,7 +1015,9 @@ impl<'a> Gen<'a> {
             Expr::InMap(k, m) => {
                 let (k, rk) = int_of(self.spec_in(cx, k, old)?, k)?;
                 match self.spec_in(cx, m, old)? {
-                    S::Map { dom, .. } if within(rk, I32) => S::Bool(format!("(select {dom} {})", at(&k, rk, 32))),
+                    S::Map { dom, .. } if within(rk, I32) => {
+                        S::Bool(format!("(select {dom} {})", at(&k, rk, 32)))
+                    }
                     S::Map { dom, .. } => {
                         // a key outside i32 is in no map of i32
                         let w = wid(rk);
@@ -969,12 +1072,15 @@ impl<'a> Gen<'a> {
         // (e.g. st(at($k, $d)), whose slot is 0..7), is split into its cases: each case
         // reads at a constant address, and the solver sees one word per slot rather than
         // loads at computed addresses.
-        if std::env::var("VC_NOSPLIT").is_err() && reads_memory(&d.body, &self.plan.defines, &mut vec![])
+        if std::env::var("VC_NOSPLIT").is_err()
+            && reads_memory(&d.body, &self.plan.defines, &mut vec![])
             && let Some(i) = vals
                 .iter()
                 .position(|v| matches!(v, S::Int(_, (lo, hi)) if lo < hi && hi - lo < SPLIT_LIMIT))
         {
-            let S::Int(t, (lo, hi)) = vals[i].clone() else { unreachable!() };
+            let S::Int(t, (lo, hi)) = vals[i].clone() else {
+                unreachable!()
+            };
             // (named by the term, so equal facts are equal text)
             let z = format!("cs{:x}", fnv(&t));
             let mut arms = vec![];
@@ -988,20 +1094,28 @@ impl<'a> Gen<'a> {
                 S::Int(last, rlast) => {
                     let mut r = rlast;
                     for (_, arm) in &arms {
-                        let S::Int(_, ra) = arm else { return Err(format!("{n} is not a number")) };
+                        let S::Int(_, ra) = arm else {
+                            return Err(format!("{n} is not a number"));
+                        };
                         r = (r.0.min(ra.0), r.1.max(ra.1));
                     }
                     let w = wid(r);
                     let mut acc = at(&last, rlast, w);
                     for (c, arm) in arms.into_iter().rev() {
                         let S::Int(a, ra) = arm else { unreachable!() };
-                        acc = format!("(ite (= {z} {}) {} {acc})", bv(c, wid((lo, hi))), at(&a, ra, w));
+                        acc = format!(
+                            "(ite (= {z} {}) {} {acc})",
+                            bv(c, wid((lo, hi))),
+                            at(&a, ra, w)
+                        );
                     }
                     S::Int(format!("(let (({z} {t})) {acc})"), r)
                 }
                 S::Bool(mut acc) => {
                     for (c, arm) in arms.into_iter().rev() {
-                        let S::Bool(a) = arm else { return Err(format!("{n} is not a truth value")) };
+                        let S::Bool(a) = arm else {
+                            return Err(format!("{n} is not a truth value"));
+                        };
                         acc = format!("(ite (= {z} {}) {a} {acc})", bv(c, wid((lo, hi))));
                     }
                     S::Bool(format!("(let (({z} {t})) {acc})"))
@@ -1066,7 +1180,11 @@ fn at(t: &str, r: (i128, i128), w: u32) -> String {
 }
 
 fn check_range(r: (i128, i128)) -> R<()> {
-    if within(r, I64) { Ok(()) } else { Err("arithmetic beyond 64 bits".into()) }
+    if within(r, I64) {
+        Ok(())
+    } else {
+        Err("arithmetic beyond 64 bits".into())
+    }
 }
 
 // A spec number from a term of width w whose value lies in r (exact: it fits).
@@ -1120,9 +1238,7 @@ fn ghost_term(g: &G) -> S {
 
 fn expr_is_bool(e: &Expr, defines: &[Define]) -> bool {
     match e {
-        Expr::Bool(_) | Expr::Not(_) | Expr::Chain(..) | Expr::InSet(..) | Expr::InMap(..) => {
-            true
-        }
+        Expr::Bool(_) | Expr::Not(_) | Expr::Chain(..) | Expr::InSet(..) | Expr::InMap(..) => true,
         Expr::Bin(op, ..) => matches!(op, BinOp::And | BinOp::Or | BinOp::Implies),
         Expr::Quant(k, ..) => *k != QuantKind::Count,
         Expr::Ite(_, a, _) => expr_is_bool(a, defines),
@@ -1140,12 +1256,12 @@ fn compare(op: CmpOp, a: &S, b: &S) -> R<String> {
             let w = wid(*rx).max(wid(*ry));
             let (x, y) = (at(x, *rx, w), at(y, *ry, w));
             match op {
-            CmpOp::Eq => format!("(= {x} {y})"),
-            CmpOp::Ne => format!("(not (= {x} {y}))"),
-            CmpOp::Lt => format!("(bvslt {x} {y})"),
-            CmpOp::Le => format!("(bvsle {x} {y})"),
-            CmpOp::Gt => format!("(bvsgt {x} {y})"),
-            CmpOp::Ge => format!("(bvsge {x} {y})"),
+                CmpOp::Eq => format!("(= {x} {y})"),
+                CmpOp::Ne => format!("(not (= {x} {y}))"),
+                CmpOp::Lt => format!("(bvslt {x} {y})"),
+                CmpOp::Le => format!("(bvsle {x} {y})"),
+                CmpOp::Gt => format!("(bvsgt {x} {y})"),
+                CmpOp::Ge => format!("(bvsge {x} {y})"),
             }
         }
         (S::Bool(x), S::Bool(y)) => match op {
@@ -1154,8 +1270,16 @@ fn compare(op: CmpOp, a: &S, b: &S) -> R<String> {
             _ => return Err("ordering truth values".into()),
         },
         (
-            S::Map { dom: d1, val: v1, size: s1 },
-            S::Map { dom: d2, val: v2, size: s2 },
+            S::Map {
+                dom: d1,
+                val: v1,
+                size: s1,
+            },
+            S::Map {
+                dom: d2,
+                val: v2,
+                size: s2,
+            },
         ) => {
             let eq = format!("(and (= {d1} {d2}) (= {v1} {v2}) (= {s1} {s2}))");
             match op {
@@ -1237,7 +1361,17 @@ impl<'a> Gen<'a> {
             let old = st.entry.clone();
             if let Some(c) = c {
                 if c.kind == CheckKind::Assert {
-                    self.oblige_check(st, ObKind::Assert, c, line, &[], fp, &locals, None, Some(&old));
+                    self.oblige_check(
+                        st,
+                        ObKind::Assert,
+                        c,
+                        line,
+                        &[],
+                        fp,
+                        &locals,
+                        None,
+                        Some(&old),
+                    );
                 }
                 self.assume_check(st, c, &[], fp, &locals, None, Some(&old));
             }
@@ -1299,8 +1433,14 @@ impl<'a> Gen<'a> {
                         st.approx = true;
                         if let Some(old_g) = target.get(&s.name).cloned() {
                             let fresh = match old_g {
-                                G::Int(_) => self.fresh_ghost(&GhostType::Scalar("int".into()), "gh", &mut st.path),
-                                G::Map { .. } => self.fresh_ghost(&GhostType::Map, "gh", &mut st.path),
+                                G::Int(_) => self.fresh_ghost(
+                                    &GhostType::Scalar("int".into()),
+                                    "gh",
+                                    &mut st.path,
+                                ),
+                                G::Map { .. } => {
+                                    self.fresh_ghost(&GhostType::Map, "gh", &mut st.path)
+                                }
                             };
                             target.insert(s.name.clone(), fresh);
                         }
@@ -1316,7 +1456,17 @@ impl<'a> Gen<'a> {
             let locals = st.locals.clone();
             let old = st.entry.clone();
             for c in cs {
-                self.oblige_check(st, ObKind::LocalRefinement, c, at_line, &[], fp, &locals, None, Some(&old));
+                self.oblige_check(
+                    st,
+                    ObKind::LocalRefinement,
+                    c,
+                    at_line,
+                    &[],
+                    fp,
+                    &locals,
+                    None,
+                    Some(&old),
+                );
                 self.assume_check(st, c, &[], fp, &locals, None, Some(&old));
             }
         }
@@ -1327,7 +1477,17 @@ impl<'a> Gen<'a> {
         let locals = st.locals.clone();
         let old = st.entry.clone();
         for c in &fp.exit_checks {
-            self.oblige_check(st, ObKind::Ensures, c, at_line, &[], fp, &locals, Some(&results), Some(&old));
+            self.oblige_check(
+                st,
+                ObKind::Ensures,
+                c,
+                at_line,
+                &[],
+                fp,
+                &locals,
+                Some(&results),
+                Some(&old),
+            );
         }
         st.returned = Some(results);
     }
@@ -1337,7 +1497,14 @@ impl<'a> Gen<'a> {
         st.path.push(ok);
     }
 
-    fn mem_access(&mut self, st: &mut St, addr: &V, offset: u64, bytes: u64, at_line: usize) -> String {
+    fn mem_access(
+        &mut self,
+        st: &mut St,
+        addr: &V,
+        offset: u64,
+        bytes: u64,
+        at_line: usize,
+    ) -> String {
         let end = offset + bytes;
         let ok = format!(
             "(bvule (bvadd ((_ zero_extend 32) {}) (_ bv{end} 64)) (_ bv{} 64))",
@@ -1352,7 +1519,11 @@ impl<'a> Gen<'a> {
     }
 
     // the state a loop's body may change: (locals, globals, memory, ghost names)
-    fn loop_writes(&self, pc: usize, end: usize) -> (BTreeSet<u32>, BTreeSet<u32>, bool, BTreeSet<String>) {
+    fn loop_writes(
+        &self,
+        pc: usize,
+        end: usize,
+    ) -> (BTreeSet<u32>, BTreeSet<u32>, bool, BTreeSet<String>) {
         let mut locals = BTreeSet::new();
         let mut globals = BTreeSet::new();
         let mut mem = false;
@@ -1414,7 +1585,17 @@ impl<'a> Gen<'a> {
         if let Some(lp) = lp {
             let locals = st.locals.clone();
             for c in &lp.invariants {
-                self.oblige_check(st, ObKind::InvariantEntry, c, line, &[], fp, &locals, None, Some(&old));
+                self.oblige_check(
+                    st,
+                    ObKind::InvariantEntry,
+                    c,
+                    line,
+                    &[],
+                    fp,
+                    &locals,
+                    None,
+                    Some(&old),
+                );
             }
             if let Some(c) = &lp.decreases {
                 let r = {
@@ -1432,8 +1613,16 @@ impl<'a> Gen<'a> {
                     self.spec_int(&mut cx, &c.expr)
                 };
                 match r {
-                    Ok(m) => self.oblige(st, ObKind::MeasureEntry, Some(c), line, format!("(bvsge {m} (_ bv0 64))")),
-                    Err(why) => self.oblige_unsupported(st, ObKind::MeasureEntry, Some(c), line, why),
+                    Ok(m) => self.oblige(
+                        st,
+                        ObKind::MeasureEntry,
+                        Some(c),
+                        line,
+                        format!("(bvsge {m} (_ bv0 64))"),
+                    ),
+                    Err(why) => {
+                        self.oblige_unsupported(st, ObKind::MeasureEntry, Some(c), line, why)
+                    }
                 }
             }
         }
@@ -1503,7 +1692,6 @@ impl<'a> Gen<'a> {
         st.cut_state = Rc::new(st.snapshot());
         st.ctl.push(Ctl::Loop {
             pc,
-            end,
             height: st.stack.len(),
             measure,
         });
@@ -1516,7 +1704,17 @@ impl<'a> Gen<'a> {
         if let Some(lp) = self.loop_plan(line) {
             let locals = st.locals.clone();
             for c in &lp.invariants {
-                self.oblige_check(st, ObKind::InvariantKept, c, at_line, &[], fp, &locals, None, Some(&old));
+                self.oblige_check(
+                    st,
+                    ObKind::InvariantKept,
+                    c,
+                    at_line,
+                    &[],
+                    fp,
+                    &locals,
+                    None,
+                    Some(&old),
+                );
             }
             if let Some(c) = &lp.decreases {
                 let r = {
@@ -1541,7 +1739,9 @@ impl<'a> Gen<'a> {
                         at_line,
                         format!("(and (bvsle (_ bv0 64) {m1}) (bvslt {m1} {m0}))"),
                     ),
-                    (Err(why), _) => self.oblige_unsupported(st, ObKind::Measure, Some(c), at_line, why),
+                    (Err(why), _) => {
+                        self.oblige_unsupported(st, ObKind::Measure, Some(c), at_line, why)
+                    }
                     (Ok(_), None) => self.oblige_unsupported(
                         st,
                         ObKind::Measure,
@@ -1558,7 +1758,12 @@ impl<'a> Gen<'a> {
     fn branch(&mut self, st: &mut St, depth: u32, at_line: usize) -> bool {
         let idx = st.ctl.len() - 1 - depth as usize;
         match st.ctl[idx].clone() {
-            Ctl::Loop { pc, measure, height, .. } => {
+            Ctl::Loop {
+                pc,
+                measure,
+                height,
+                ..
+            } => {
                 let _ = height;
                 self.back_edge(st, pc, measure, at_line);
                 false
@@ -1590,7 +1795,10 @@ impl<'a> Gen<'a> {
     fn cmp(&mut self, st: &mut St, f: &str) {
         let b = st.stack.pop().unwrap();
         let a = st.stack.pop().unwrap();
-        let v = self.value(W::B32, format!("(ite ({f} {} {}) (_ bv1 32) (_ bv0 32))", a.t, b.t));
+        let v = self.value(
+            W::B32,
+            format!("(ite ({f} {} {}) (_ bv1 32) (_ bv0 32))", a.t, b.t),
+        );
         st.stack.push(v);
     }
 
@@ -1609,10 +1817,23 @@ impl<'a> Gen<'a> {
         let bits = if w == W::B32 { 32 } else { 64 };
         let b = st.stack.pop().unwrap();
         let a = st.stack.pop().unwrap();
-        self.trap(st, TrapKind::DivideByZero, at_line, format!("(not (= {} (_ bv0 {bits})))", b.t));
+        self.trap(
+            st,
+            TrapKind::DivideByZero,
+            at_line,
+            format!("(not (= {} (_ bv0 {bits})))", b.t),
+        );
         if signed && (f == "bvsdiv") {
-            let min = if bits == 32 { "#x80000000" } else { "#x8000000000000000" };
-            let ones = if bits == 32 { "#xffffffff" } else { "#xffffffffffffffff" };
+            let min = if bits == 32 {
+                "#x80000000"
+            } else {
+                "#x8000000000000000"
+            };
+            let ones = if bits == 32 {
+                "#xffffffff"
+            } else {
+                "#xffffffffffffffff"
+            };
             self.trap(
                 st,
                 TrapKind::Overflow,
@@ -1692,7 +1913,13 @@ impl<'a> Gen<'a> {
         // the callee's view: its params are the arguments, its other locals arbitrary
         let mut callee_locals = args.clone();
         for v in &callee.vars[nargs..] {
-            let w = if v.width == 64 { W::B64 } else if v.width == 32 { W::B32 } else { W::Opaque };
+            let w = if v.width == 64 {
+                W::B64
+            } else if v.width == 32 {
+                W::B32
+            } else {
+                W::Opaque
+            };
             let fv = self.fresh_value(w, "cl");
             callee_locals.push(fv);
         }
@@ -1730,7 +1957,7 @@ impl<'a> Gen<'a> {
                 at_line,
                 smt: String::new(),
                 hash: 0,
-                    approximate: st.approx,
+                approximate: st.approx,
                 unsupported: None,
                 cut: st.cut.clone(),
                 reads: vec![],
@@ -1738,13 +1965,25 @@ impl<'a> Gen<'a> {
             };
             match r {
                 Ok(goal) => {
-                    self.obligations.push((ob, self.decls.len(), st.path.clone(), goal.clone(), st.cut_state.clone()));
+                    self.obligations.push((
+                        ob,
+                        self.decls.len(),
+                        st.path.clone(),
+                        goal.clone(),
+                        st.cut_state.clone(),
+                    ));
                     st.path.push(goal);
                 }
                 Err(why) => {
                     let mut ob = ob;
                     ob.unsupported = Some(why);
-                    self.obligations.push((ob, self.decls.len(), st.path.clone(), "true".into(), st.cut_state.clone()));
+                    self.obligations.push((
+                        ob,
+                        self.decls.len(),
+                        st.path.clone(),
+                        "true".into(),
+                        st.cut_state.clone(),
+                    ));
                     st.approx = true;
                 }
             }
@@ -1771,7 +2010,7 @@ impl<'a> Gen<'a> {
         let results: Vec<V> = ft
             .results()
             .iter()
-            .map(|t| width(t))
+            .map(width)
             .collect::<Vec<_>>()
             .into_iter()
             .map(|w| self.fresh_value(w, "ret"))
@@ -1840,23 +2079,39 @@ impl<'a> Gen<'a> {
                     return;
                 }
                 O::Block { blockty } => {
-                    let Ok((_, arity)) = block_arity(self.module, blockty) else { return };
+                    let Ok((_, arity)) = block_arity(self.module, blockty) else {
+                        return;
+                    };
                     let end = self.matching[&pc].1;
-                    st.ctl.push(Ctl::Block { end, arity, height: st.stack.len() });
+                    st.ctl.push(Ctl::Block {
+                        end,
+                        arity,
+                        height: st.stack.len(),
+                    });
                 }
                 O::Loop { .. } => {
                     let end = self.matching[&pc].1;
                     self.enter_loop(&mut st, pc, end);
                 }
                 O::If { blockty } => {
-                    let Ok((_, arity)) = block_arity(self.module, blockty) else { return };
+                    let Ok((_, arity)) = block_arity(self.module, blockty) else {
+                        return;
+                    };
                     let (els, end) = self.matching[&pc];
                     let c = st.stack.pop().unwrap();
                     let mut other = st.clone();
                     st.path.push(format!("(not (= {} (_ bv0 32)))", c.t));
-                    st.ctl.push(Ctl::If { end, arity, height: st.stack.len() });
+                    st.ctl.push(Ctl::If {
+                        end,
+                        arity,
+                        height: st.stack.len(),
+                    });
                     other.path.push(format!("(= {} (_ bv0 32))", c.t));
-                    other.ctl.push(Ctl::If { end, arity, height: other.stack.len() });
+                    other.ctl.push(Ctl::If {
+                        end,
+                        arity,
+                        height: other.stack.len(),
+                    });
                     other.pc = match els {
                         Some(e) => e + 1,
                         None => end,
@@ -1906,7 +2161,10 @@ impl<'a> Gen<'a> {
                     let c = st.stack.pop().unwrap();
                     let b = st.stack.pop().unwrap();
                     let a = st.stack.pop().unwrap();
-                    let v = self.value(a.w, format!("(ite (not (= {} (_ bv0 32))) {} {})", c.t, a.t, b.t));
+                    let v = self.value(
+                        a.w,
+                        format!("(ite (not (= {} (_ bv0 32))) {} {})", c.t, a.t, b.t),
+                    );
                     st.stack.push(v);
                 }
                 O::LocalGet { local_index } => {
@@ -1929,8 +2187,14 @@ impl<'a> Gen<'a> {
                     let v = st.stack.pop().unwrap();
                     st.globals[*global_index as usize] = v;
                 }
-                O::I32Const { value } => st.stack.push(V { t: bv(*value as i128, 32), w: W::B32 }),
-                O::I64Const { value } => st.stack.push(V { t: bv(*value as i128, 64), w: W::B64 }),
+                O::I32Const { value } => st.stack.push(V {
+                    t: bv(*value as i128, 32),
+                    w: W::B32,
+                }),
+                O::I64Const { value } => st.stack.push(V {
+                    t: bv(*value as i128, 64),
+                    w: W::B64,
+                }),
                 O::I32Add => self.binop(&mut st, W::B32, "bvadd"),
                 O::I32Sub => self.binop(&mut st, W::B32, "bvsub"),
                 O::I32Mul => self.binop(&mut st, W::B32, "bvmul"),
@@ -1961,15 +2225,25 @@ impl<'a> Gen<'a> {
                 O::I64RemU => self.divide(&mut st, W::B64, "bvurem", false, line),
                 O::I32Eqz | O::I64Eqz => {
                     let a = st.stack.pop().unwrap();
-                    let zero = if a.w == W::B32 { "(_ bv0 32)" } else { "(_ bv0 64)" };
-                    let v = self.value(W::B32, format!("(ite (= {} {zero}) (_ bv1 32) (_ bv0 32))", a.t));
+                    let zero = if a.w == W::B32 {
+                        "(_ bv0 32)"
+                    } else {
+                        "(_ bv0 64)"
+                    };
+                    let v = self.value(
+                        W::B32,
+                        format!("(ite (= {} {zero}) (_ bv1 32) (_ bv0 32))", a.t),
+                    );
                     st.stack.push(v);
                 }
                 O::I32Eq | O::I64Eq => self.cmp(&mut st, "="),
                 O::I32Ne | O::I64Ne => {
                     let b = st.stack.pop().unwrap();
                     let a = st.stack.pop().unwrap();
-                    let v = self.value(W::B32, format!("(ite (= {} {}) (_ bv0 32) (_ bv1 32))", a.t, b.t));
+                    let v = self.value(
+                        W::B32,
+                        format!("(ite (= {} {}) (_ bv0 32) (_ bv1 32))", a.t, b.t),
+                    );
                     st.stack.push(v);
                 }
                 O::I32LtS | O::I64LtS => self.cmp(&mut st, "bvslt"),
@@ -1987,7 +2261,11 @@ impl<'a> Gen<'a> {
                 }
                 O::I64ExtendI32S | O::I64ExtendI32U => {
                     let a = st.stack.pop().unwrap();
-                    let f = if matches!(op, O::I64ExtendI32S) { "sign_extend" } else { "zero_extend" };
+                    let f = if matches!(op, O::I64ExtendI32S) {
+                        "sign_extend"
+                    } else {
+                        "zero_extend"
+                    };
                     let v = self.value(W::B64, format!("((_ {f} 32) {})", a.t));
                     st.stack.push(v);
                 }
@@ -1996,15 +2274,26 @@ impl<'a> Gen<'a> {
                     let n = if matches!(op, O::I32Extend8S) { 8 } else { 16 };
                     let v = self.value(
                         W::B32,
-                        format!("((_ sign_extend {}) ((_ extract {} 0) {}))", 32 - n, n - 1, a.t),
+                        format!(
+                            "((_ sign_extend {}) ((_ extract {} 0) {}))",
+                            32 - n,
+                            n - 1,
+                            a.t
+                        ),
                     );
                     st.stack.push(v);
                 }
                 O::I32Load { memarg } => self.load(&mut st, memarg.offset, 4, W::B32, false, line),
                 O::I32Load8S { memarg } => self.load(&mut st, memarg.offset, 1, W::B32, true, line),
-                O::I32Load8U { memarg } => self.load(&mut st, memarg.offset, 1, W::B32, false, line),
-                O::I32Load16S { memarg } => self.load(&mut st, memarg.offset, 2, W::B32, true, line),
-                O::I32Load16U { memarg } => self.load(&mut st, memarg.offset, 2, W::B32, false, line),
+                O::I32Load8U { memarg } => {
+                    self.load(&mut st, memarg.offset, 1, W::B32, false, line)
+                }
+                O::I32Load16S { memarg } => {
+                    self.load(&mut st, memarg.offset, 2, W::B32, true, line)
+                }
+                O::I32Load16U { memarg } => {
+                    self.load(&mut st, memarg.offset, 2, W::B32, false, line)
+                }
                 O::I64Load { memarg } => self.load(&mut st, memarg.offset, 8, W::B64, false, line),
                 O::I32Store { memarg } => self.store(&mut st, memarg.offset, 4, line),
                 O::I32Store8 { memarg } => self.store(&mut st, memarg.offset, 1, line),
@@ -2025,7 +2314,10 @@ impl<'a> Gen<'a> {
                         st.stack.push(v);
                     }
                     if is_store(op)
-                        || matches!(op, O::MemoryFill { .. } | O::MemoryCopy { .. } | O::MemoryGrow { .. })
+                        || matches!(
+                            op,
+                            O::MemoryFill { .. } | O::MemoryCopy { .. } | O::MemoryGrow { .. }
+                        )
                     {
                         st.mem = self.declare("mem", MEM_SORT);
                     }
@@ -2073,7 +2365,12 @@ fn is_pure_define(d: &Define, defines: &[Define], seen: &mut Vec<String>) -> boo
     r
 }
 
-fn pure_expr(e: &Expr, defines: &[Define], bound: &mut Vec<String>, seen: &mut Vec<String>) -> bool {
+fn pure_expr(
+    e: &Expr,
+    defines: &[Define],
+    bound: &mut Vec<String>,
+    seen: &mut Vec<String>,
+) -> bool {
     match e {
         Expr::Int(_) | Expr::Bool(_) => true,
         Expr::Var(v) => bound.contains(v),
@@ -2113,11 +2410,14 @@ fn pure_expr(e: &Expr, defines: &[Define], bound: &mut Vec<String>, seen: &mut V
         }
         Expr::MapEmpty | Expr::Index(..) | Expr::Update(..) | Expr::InMap(..) => false,
         Expr::Neg(a) | Expr::Not(a) => pure_expr(a, defines, bound, seen),
-        Expr::Bin(_, a, b) => pure_expr(a, defines, bound, seen) && pure_expr(b, defines, bound, seen),
+        Expr::Bin(_, a, b) => {
+            pure_expr(a, defines, bound, seen) && pure_expr(b, defines, bound, seen)
+        }
         Expr::Chain(es, _) => es.iter().all(|x| pure_expr(x, defines, bound, seen)),
         Expr::Ite(a, b, c) => [a, b, c].iter().all(|x| pure_expr(x, defines, bound, seen)),
         Expr::InSet(a, es) => {
-            pure_expr(a, defines, bound, seen) && es.iter().all(|x| pure_expr(x, defines, bound, seen))
+            pure_expr(a, defines, bound, seen)
+                && es.iter().all(|x| pure_expr(x, defines, bound, seen))
         }
     }
 }
@@ -2166,7 +2466,11 @@ fn conjuncts(t: &str) -> Vec<&str> {
                         i += 1;
                     }
                 } else {
-                    while i + 1 < b.len() && !b[i + 1].is_ascii_whitespace() && b[i + 1] != b'(' && b[i + 1] != b')' {
+                    while i + 1 < b.len()
+                        && !b[i + 1].is_ascii_whitespace()
+                        && b[i + 1] != b'('
+                        && b[i + 1] != b')'
+                    {
                         i += 1;
                     }
                 }
@@ -2251,11 +2555,12 @@ fn func_infos(plan: &SpecPlan, module: &ValidModule) -> Vec<FuncInfo> {
                 Operator::CallIndirect { .. } => {
                     info.writes_mem = true;
                     info.writes_globals.extend(0..module.globals.len() as u32);
-                    info.sets_ghosts.extend(ghost_globals.iter().map(|n| (*n).clone()));
+                    info.sets_ghosts
+                        .extend(ghost_globals.iter().map(|n| (*n).clone()));
                 }
-                Operator::MemoryFill { .. } | Operator::MemoryCopy { .. } | Operator::MemoryGrow { .. } => {
-                    info.writes_mem = true
-                }
+                Operator::MemoryFill { .. }
+                | Operator::MemoryCopy { .. }
+                | Operator::MemoryGrow { .. } => info.writes_mem = true,
                 op if is_store(op) => info.writes_mem = true,
                 _ => {}
             }
@@ -2315,7 +2620,9 @@ pub fn generate(plan: &SpecPlan, module: &ValidModule, types: &TypedModule) -> V
     let pure: HashSet<String> = plan
         .defines
         .iter()
-        .filter(|d| mentions_name(&d.body, &d.name) && is_pure_define(d, &plan.defines, &mut vec![]))
+        .filter(|d| {
+            mentions_name(&d.body, &d.name) && is_pure_define(d, &plan.defines, &mut vec![])
+        })
         .map(|d| d.name.clone())
         .collect();
     let mem_bytes = module
@@ -2369,23 +2676,37 @@ pub fn generate(plan: &SpecPlan, module: &ValidModule, types: &TypedModule) -> V
                     .map(|p| (p.clone(), S::Int(format!("|p_{p}|"), I64)))
                     .collect(),
             };
-            let sort = if expr_is_bool(&d.body, &plan.defines) { "Bool" } else { "(_ BitVec 64)" };
-            let params: Vec<String> =
-                d.params.iter().map(|p| format!("(|p_{p}| (_ BitVec 64))")).collect();
+            let sort = if expr_is_bool(&d.body, &plan.defines) {
+                "Bool"
+            } else {
+                "(_ BitVec 64)"
+            };
+            let params: Vec<String> = d
+                .params
+                .iter()
+                .map(|p| format!("(|p_{p}| (_ BitVec 64))"))
+                .collect();
             let body = match g.spec(&mut cx, &d.body) {
                 Ok(S::Int(t, r)) => at(&t, r, 64),
                 Ok(S::Bool(t)) => t,
                 _ => continue,
             };
             let kw = "define-fun-rec";
-            let _ = writeln!(header, "({kw} |{}| ({}) {sort} {body})", d.name, params.join(" "));
+            let _ = writeln!(
+                header,
+                "({kw} |{}| ({}) {sort} {body})",
+                d.name,
+                params.join(" ")
+            );
         }
         header_widths = std::mem::take(&mut g.spec_widths);
     }
 
     let mut out = vec![];
     for (f, func) in module.functions.iter().enumerate() {
-        let Some(fp) = plan.funcs.get(f) else { continue };
+        let Some(fp) = plan.funcs.get(f) else {
+            continue;
+        };
         let ops: Vec<&Operator> = func.operators.iter().map(|o| o.inner.operator()).collect();
         let lines: Vec<usize> = func.operators.iter().map(|o| o.line_idx).collect();
         let op_types: Vec<(usize, Vec<W>)> = types.funcs[f]
@@ -2396,7 +2717,12 @@ pub fn generate(plan: &SpecPlan, module: &ValidModule, types: &TypedModule) -> V
                     t.inputs.len(),
                     t.outputs
                         .iter()
-                        .map(|s| types.slots[s.usize()].ty().map(|t| width(&t)).unwrap_or(W::Opaque))
+                        .map(|s| {
+                            types.slots[s.usize()]
+                                .ty()
+                                .map(|t| width(&t))
+                                .unwrap_or(W::Opaque)
+                        })
                         .collect(),
                 )
             })
@@ -2428,13 +2754,23 @@ pub fn generate(plan: &SpecPlan, module: &ValidModule, types: &TypedModule) -> V
         let ft = &module.types[func.type_idx as usize];
         let mut locals = vec![];
         for (i, var) in fp.vars.iter().enumerate() {
-            let w = if var.width == 64 { W::B64 } else if var.width == 32 { W::B32 } else { W::Opaque };
+            let w = if var.width == 64 {
+                W::B64
+            } else if var.width == 32 {
+                W::B32
+            } else {
+                W::Opaque
+            };
             if i < ft.params().len() {
                 let name = format!("|{}|", var.name.clone().unwrap_or(format!("p{i}")));
-                g.decls.push(format!("(declare-const {name} {})", sort_of(w)));
+                g.decls
+                    .push(format!("(declare-const {name} {})", sort_of(w)));
                 locals.push(V { t: name, w });
             } else {
-                locals.push(V { t: if w == W::B32 { bv(0, 32) } else { bv(0, 64) }, w });
+                locals.push(V {
+                    t: if w == W::B32 { bv(0, 32) } else { bv(0, 64) },
+                    w,
+                });
             }
         }
         let initial = f == 0; // the program starts here, from the initial state
@@ -2462,7 +2798,8 @@ pub fn generate(plan: &SpecPlan, module: &ValidModule, types: &TypedModule) -> V
                             .flatten()
                             .unwrap_or(format!("global{gi}"))
                     );
-                    g.decls.push(format!("(declare-const {name} {})", sort_of(w)));
+                    g.decls
+                        .push(format!("(declare-const {name} {})", sort_of(w)));
                     name
                 }
             };
@@ -2476,7 +2813,11 @@ pub fn generate(plan: &SpecPlan, module: &ValidModule, types: &TypedModule) -> V
         let mut ghosts = BTreeMap::new();
         let mut entry_facts = vec![];
         for (n, ty) in &plan.ghost_globals {
-            let gh = if initial { g.initial_ghost(ty) } else { g.fresh_ghost(ty, n, &mut entry_facts) };
+            let gh = if initial {
+                g.initial_ghost(ty)
+            } else {
+                g.fresh_ghost(ty, n, &mut entry_facts)
+            };
             ghosts.insert(n.clone(), gh);
         }
         let mut ghost_locals = BTreeMap::new();
@@ -2517,7 +2858,17 @@ pub fn generate(plan: &SpecPlan, module: &ValidModule, types: &TypedModule) -> V
         for var in vars {
             for c in &fp.local_checks[var] {
                 let old = st.entry.clone();
-                g.oblige_check(&st, ObKind::LocalRefinement, c, fp.lines.0, &[], fp, &entry_locals, None, Some(&old));
+                g.oblige_check(
+                    &st,
+                    ObKind::LocalRefinement,
+                    c,
+                    fp.lines.0,
+                    &[],
+                    fp,
+                    &entry_locals,
+                    None,
+                    Some(&old),
+                );
                 g.assume_check(&mut st, c, &[], fp, &entry_locals, None, Some(&old));
             }
         }
@@ -2557,15 +2908,27 @@ pub fn generate(plan: &SpecPlan, module: &ValidModule, types: &TypedModule) -> V
                 if v.w == W::B32 {
                     keys.push((reads.len(), v.t.clone()));
                 }
-                reads.push(Read::Var { name: name.clone(), bits: if v.w == W::B32 { 32 } else { 64 } });
+                reads.push(Read::Var {
+                    name: name.clone(),
+                    bits: if v.w == W::B32 { 32 } else { 64 },
+                });
                 terms.push(v.t.clone());
             }
             for (gi, v) in cut.globals.iter().enumerate() {
                 if v.w == W::Opaque {
                     continue;
                 }
-                let name = plan.global_names.get(gi).cloned().flatten().unwrap_or(format!("global {gi}"));
-                reads.push(Read::Global { index: gi, name, bits: if v.w == W::B32 { 32 } else { 64 } });
+                let name = plan
+                    .global_names
+                    .get(gi)
+                    .cloned()
+                    .flatten()
+                    .unwrap_or(format!("global {gi}"));
+                reads.push(Read::Global {
+                    index: gi,
+                    name,
+                    bits: if v.w == W::B32 { 32 } else { 64 },
+                });
                 terms.push(v.t.clone());
             }
             if mem_bytes > 0 {
@@ -2583,9 +2946,15 @@ pub fn generate(plan: &SpecPlan, module: &ValidModule, types: &TypedModule) -> V
                     }
                     G::Map { dom, val, .. } => {
                         for (ki, kt) in &keys {
-                            reads.push(Read::MapHas { map: n.clone(), key: *ki });
+                            reads.push(Read::MapHas {
+                                map: n.clone(),
+                                key: *ki,
+                            });
                             terms.push(format!("(select {dom} {kt})"));
-                            reads.push(Read::MapVal { map: n.clone(), key: *ki });
+                            reads.push(Read::MapVal {
+                                map: n.clone(),
+                                key: *ki,
+                            });
                             terms.push(format!("(select {val} {kt})"));
                         }
                     }
@@ -2609,7 +2978,10 @@ pub fn generate(plan: &SpecPlan, module: &ValidModule, types: &TypedModule) -> V
             // goal conjuncts that are facts verbatim (e.g. R after a call that ensures R)
             // need no search
             let facts: HashSet<&str> = path.iter().flat_map(|p| conjuncts(p)).collect();
-            let rest: Vec<&str> = conjuncts(&goal).into_iter().filter(|c| !facts.contains(c)).collect();
+            let rest: Vec<&str> = conjuncts(&goal)
+                .into_iter()
+                .filter(|c| !facts.contains(c))
+                .collect();
             let goal = match rest.as_slice() {
                 [] => "true".to_string(),
                 [one] => one.to_string(),
@@ -2691,7 +3063,11 @@ fn parse_sx(s: &str) -> Vec<Sx> {
                 }
                 i += 1;
             } else {
-                while i < chars.len() && !chars[i].is_whitespace() && chars[i] != '(' && chars[i] != ')' {
+                while i < chars.len()
+                    && !chars[i].is_whitespace()
+                    && chars[i] != '('
+                    && chars[i] != ')'
+                {
                     i += 1;
                 }
             }
@@ -2756,7 +3132,11 @@ fn signed(v: i128, w: u32) -> i128 {
 // The answer to check-sat: the first line of the output. (The browser build reports a
 // later error, e.g. get-value after unsat, by prefixing the whole output with "error:".)
 fn answer(output: &str) -> &str {
-    let first = output.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("");
+    let first = output
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("");
     first.strip_prefix("error:").unwrap_or(first).trim()
 }
 
@@ -2789,7 +3169,10 @@ pub fn verdict(ob: &Obligation, output: &str) -> Verdict {
                 "the solver could not decide".into()
             },
         ),
-        _ => Verdict::Unknown(format!("solver error: {}", first.chars().take(120).collect::<String>())),
+        _ => Verdict::Unknown(format!(
+            "solver error: {}",
+            first.chars().take(120).collect::<String>()
+        )),
     }
 }
 
@@ -2847,9 +3230,7 @@ fn decode(ob: &Obligation, text: &str) -> Model {
         }
     }
     for ((map, key), present) in has {
-        if present
-            && let Some(k) = num(key)
-        {
+        if present && let Some(k) = num(key) {
             let v = vals.get(&(map.clone(), key)).copied().unwrap_or(0);
             m.maps.entry(map).or_default().insert(k, v);
         }
@@ -2874,11 +3255,21 @@ pub const RLIMIT_RETRY: u64 = 20_000_000;
 enum Stage {
     Whole,
     Int,
-    Parts { queries: Vec<String>, full: Vec<String>, exact: bool, results: Vec<Option<char>>, retry: bool },
+    Parts {
+        queries: Vec<String>,
+        full: Vec<String>,
+        exact: bool,
+        results: Vec<Option<char>>,
+        retry: bool,
+    },
     // a part was sat without the map-quantified facts: is it with them?
     Confirm(String),
     // a counterexample: look for one with small numbers
-    Minimize { query: String, bounds: Vec<i128>, found: Model },
+    Minimize {
+        query: String,
+        bounds: Vec<i128>,
+        found: Model,
+    },
     Done,
 }
 
@@ -2894,7 +3285,12 @@ pub struct Proof {
 
 impl Proof {
     pub fn new(ob: &Obligation) -> Proof {
-        let mut p = Proof { stage: Stage::Whole, asked: None, verdict: None, queries: 0 };
+        let mut p = Proof {
+            stage: Stage::Whole,
+            asked: None,
+            verdict: None,
+            queries: 0,
+        };
         if let Some(why) = &ob.unsupported {
             p.finish(Verdict::Unknown(why.clone()));
         }
@@ -2912,11 +3308,18 @@ impl Proof {
             && found.globals.iter().all(|(_, _, v)| small(v))
             && found.words.values().all(small)
             && found.ghosts.iter().all(|(_, v)| small(v))
-            && found.maps.values().all(|m| m.iter().all(|(k, v)| small(k) && small(v)));
+            && found
+                .maps
+                .values()
+                .all(|m| m.iter().all(|(k, v)| small(k) && small(v)));
         if all_small {
             self.finish(Verdict::Refuted(found));
         } else {
-            self.stage = Stage::Minimize { query, bounds: vec![8, 100, 10_000], found };
+            self.stage = Stage::Minimize {
+                query,
+                bounds: vec![8, 100, 10_000],
+                found,
+            };
         }
     }
 
@@ -2942,7 +3345,11 @@ impl Proof {
                     let b = bounds[0];
                     self.queries += 1;
                     let bound = small_values(ob, b);
-                    return Some(query.replacen("(check-sat)", &format!("(assert {bound})\n(check-sat)"), 1));
+                    return Some(query.replacen(
+                        "(check-sat)",
+                        &format!("(assert {bound})\n(check-sat)"),
+                        1,
+                    ));
                 }
                 // the same query in integer arithmetic (for nonlinear facts)
                 Stage::Int => match crate::vc_int::translate(&ob.smt) {
@@ -2952,12 +3359,21 @@ impl Proof {
                     }
                     None => self.stage = split_stage(ob),
                 },
-                Stage::Parts { queries, results, retry, .. } => {
+                Stage::Parts {
+                    queries,
+                    results,
+                    retry,
+                    ..
+                } => {
                     if let Some(i) = results.iter().position(|r| r.is_none()) {
                         self.asked = Some(i);
                         self.queries += 1;
                         let q = &queries[i];
-                        return Some(if *retry { with_rlimit(q, RLIMIT_RETRY) } else { q.clone() });
+                        return Some(if *retry {
+                            with_rlimit(q, RLIMIT_RETRY)
+                        } else {
+                            q.clone()
+                        });
                     }
                     // every part has an answer, none of them sat (that ends the proof)
                     if results.iter().all(|r| *r == Some('u')) {
@@ -3008,7 +3424,13 @@ impl Proof {
                     self.finish(Verdict::Refuted(m));
                 }
             }
-            Stage::Parts { exact, results, full, queries, .. } => {
+            Stage::Parts {
+                exact,
+                results,
+                full,
+                queries,
+                ..
+            } => {
                 let Some(i) = self.asked.take() else { return };
                 let first = answer(output);
                 results[i] = Some(match first {
@@ -3041,9 +3463,17 @@ fn small_values(ob: &Obligation, b: i128) -> String {
             Read::Ghost(_) | Read::Word(_) | Read::MapVal { .. } => 32,
             Read::MapHas { .. } => continue,
         };
-        parts.push(format!("(bvsle {} {t}) (bvsle {t} {})", bv(-b, bits), bv(b, bits)));
+        parts.push(format!(
+            "(bvsle {} {t}) (bvsle {t} {})",
+            bv(-b, bits),
+            bv(b, bits)
+        ));
     }
-    if parts.is_empty() { "true".into() } else { format!("(and {})", parts.join(" ")) }
+    if parts.is_empty() {
+        "true".into()
+    } else {
+        format!("(and {})", parts.join(" "))
+    }
 }
 
 fn with_rlimit(q: &str, n: u64) -> String {
@@ -3060,9 +3490,21 @@ fn split_stage(ob: &Obligation) -> Stage {
     match split_queries(&ob.smt) {
         Some((queries, full, exact)) if !queries.is_empty() => {
             let n = queries.len();
-            Stage::Parts { queries, full, exact, results: vec![None; n], retry: false }
+            Stage::Parts {
+                queries,
+                full,
+                exact,
+                results: vec![None; n],
+                retry: false,
+            }
         }
-        _ => Stage::Parts { queries: vec![], full: vec![], exact: true, results: vec![Some('?')], retry: true },
+        _ => Stage::Parts {
+            queries: vec![],
+            full: vec![],
+            exact: true,
+            results: vec![Some('?')],
+            retry: true,
+        },
     }
 }
 
@@ -3101,19 +3543,27 @@ fn sx_conjuncts(s: &Sx, out: &mut Vec<Sx>) {
 // (forall ((q S)) (! (=> (select D q) B) :pattern …)) → (q, S, D, B)
 fn map_forall(s: &Sx) -> Option<(String, Sx, Sx, Sx)> {
     let Sx::List(l) = s else { return None };
-    let [Sx::Atom(f), Sx::List(binds), body] = l.as_slice() else { return None };
+    let [Sx::Atom(f), Sx::List(binds), body] = l.as_slice() else {
+        return None;
+    };
     if f != "forall" || binds.len() != 1 {
         return None;
     }
     let Sx::List(b) = &binds[0] else { return None };
-    let [Sx::Atom(q), sort] = b.as_slice() else { return None };
+    let [Sx::Atom(q), sort] = b.as_slice() else {
+        return None;
+    };
     let body = match body {
         Sx::List(x) if matches!(x.first(), Some(Sx::Atom(a)) if a == "!") => x.get(1)?,
         other => other,
     };
     let Sx::List(imp) = body else { return None };
-    let [Sx::Atom(arrow), Sx::List(sel), inner] = imp.as_slice() else { return None };
-    let [Sx::Atom(select), dom, Sx::Atom(k)] = sel.as_slice() else { return None };
+    let [Sx::Atom(arrow), Sx::List(sel), inner] = imp.as_slice() else {
+        return None;
+    };
+    let [Sx::Atom(select), dom, Sx::Atom(k)] = sel.as_slice() else {
+        return None;
+    };
     if arrow != "=>" || select != "select" || k != q {
         return None;
     }
@@ -3157,10 +3607,13 @@ fn map_keys(s: &Sx, maps: &HashSet<String>, bound: &mut Vec<String>, out: &mut B
             bound.truncate(n);
             return;
         }
-        Some(Sx::Atom(f)) if (f == "select" || f == "store") && l.len() >= 3 && is_map_array(&l[1], maps) => {
-            if !mentions_any(&l[2], bound) {
-                out.insert(show_sx(&l[2]));
-            }
+        Some(Sx::Atom(f))
+            if (f == "select" || f == "store")
+                && l.len() >= 3
+                && is_map_array(&l[1], maps)
+                && !mentions_any(&l[2], bound) =>
+        {
+            out.insert(show_sx(&l[2]));
         }
         _ => {}
     }
@@ -3200,7 +3653,9 @@ fn split_queries(q: &str) -> Option<(Vec<String>, Vec<String>, bool)> {
     let asserts: Vec<&Sx> = cmds.iter().filter(|c| head(c) == "assert").collect();
     let goal = match asserts.last()? {
         Sx::List(l) => match l.get(1)? {
-            Sx::List(n) if matches!(n.first(), Some(Sx::Atom(a)) if a == "not") => n.get(1)?.clone(),
+            Sx::List(n) if matches!(n.first(), Some(Sx::Atom(a)) if a == "not") => {
+                n.get(1)?.clone()
+            }
             _ => return None,
         },
         _ => return None,
@@ -3211,7 +3666,9 @@ fn split_queries(q: &str) -> Option<(Vec<String>, Vec<String>, bool)> {
         if let Sx::List(l) = c {
             let (name, sort) = match head(c).as_str() {
                 "declare-const" => (l.get(1), l.get(2)),
-                "define-fun" if matches!(l.get(2), Some(Sx::List(p)) if p.is_empty()) => (l.get(1), l.get(3)),
+                "define-fun" if matches!(l.get(2), Some(Sx::List(p)) if p.is_empty()) => {
+                    (l.get(1), l.get(3))
+                }
                 _ => (None, None),
             };
             if let (Some(Sx::Atom(n)), Some(s)) = (name, sort) {
@@ -3283,7 +3740,10 @@ fn split_queries(q: &str) -> Option<(Vec<String>, Vec<String>, bool)> {
     for i in 0..sk {
         keys.insert(format!("sk{i}"));
     }
-    let keys: Vec<Sx> = keys.iter().filter_map(|k| parse_sx(k).into_iter().next()).collect();
+    let keys: Vec<Sx> = keys
+        .iter()
+        .filter_map(|k| parse_sx(k).into_iter().next())
+        .collect();
     let mut instances = vec![];
     for (qv, _, dom, body) in &quants {
         for k in &keys {
@@ -3328,7 +3788,11 @@ fn split_queries(q: &str) -> Option<(Vec<String>, Vec<String>, bool)> {
         let _ = writeln!(prefix_full, "(assert {})", show_sx(f));
     }
     let queries = goals.iter().map(|g| part(&prefix, g, exact)).collect();
-    let full = if exact { vec![] } else { goals.iter().map(|g| part(&prefix_full, g, true)).collect() };
+    let full = if exact {
+        vec![]
+    } else {
+        goals.iter().map(|g| part(&prefix_full, g, true)).collect()
+    };
     Some((queries, full, exact))
 }
 
@@ -3338,8 +3802,14 @@ mod tests {
 
     #[test]
     fn conjuncts_flatten() {
-        assert_eq!(conjuncts("(and (and a (f |x y|)) (and b) c)"), vec!["a", "(f |x y|)", "b", "c"]);
+        assert_eq!(
+            conjuncts("(and (and a (f |x y|)) (and b) c)"),
+            vec!["a", "(f |x y|)", "b", "c"]
+        );
         assert_eq!(conjuncts("(or a b)"), vec!["(or a b)"]);
-        assert_eq!(conjuncts("(and (= (and p q) r) s)"), vec!["(= (and p q) r)", "s"]);
+        assert_eq!(
+            conjuncts("(and (= (and p q) r) s)"),
+            vec!["(= (and p q) r)", "s"]
+        );
     }
 }

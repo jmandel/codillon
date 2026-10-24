@@ -106,7 +106,11 @@ fn pow2(w: u32) -> i128 {
 }
 
 fn lit(v: i128) -> String {
-    if v < 0 { format!("(- {})", -v) } else { v.to_string() }
+    if v < 0 {
+        format!("(- {})", -v)
+    } else {
+        v.to_string()
+    }
 }
 
 // Widths 8 and 16 are memory bytes and halves, read as unsigned; all others are signed.
@@ -117,12 +121,20 @@ fn signed_rep(w: u32) -> bool {
 // The integer that a bitvector value of width w stands for.
 fn value(raw: u128, w: u32) -> i128 {
     let raw = raw as i128;
-    if signed_rep(w) && raw >= pow2(w - 1) { raw - pow2(w) } else { raw }
+    if signed_rep(w) && raw >= pow2(w - 1) {
+        raw - pow2(w)
+    } else {
+        raw
+    }
 }
 
 fn range(t: &str, w: u32) -> String {
     if signed_rep(w) {
-        format!("(and (<= {} {t}) (< {t} {}))", lit(-pow2(w - 1)), lit(pow2(w - 1)))
+        format!(
+            "(and (<= {} {t}) (< {t} {}))",
+            lit(-pow2(w - 1)),
+            lit(pow2(w - 1))
+        )
     } else {
         format!("(and (<= 0 {t}) (< {t} {}))", pow2(w))
     }
@@ -146,12 +158,20 @@ fn wrap(t: &str, w: u32) -> String {
 
 // the unsigned reading of a value of width w
 fn unsigned(t: &str, w: u32) -> String {
-    if signed_rep(w) { format!("(ite (< {t} 0) (+ {t} {}) {t})", pow2(w)) } else { t.to_string() }
+    if signed_rep(w) {
+        format!("(ite (< {t} 0) (+ {t} {}) {t})", pow2(w))
+    } else {
+        t.to_string()
+    }
 }
 
 // an unsigned integer in [0, 2^w) into the representation of width w
 fn from_unsigned(t: &str, w: u32) -> String {
-    if signed_rep(w) { format!("(ite (>= {t} {}) (- {t} {}) {t})", pow2(w - 1), pow2(w)) } else { t.to_string() }
+    if signed_rep(w) {
+        format!("(ite (>= {t} {}) (- {t} {}) {t})", pow2(w - 1), pow2(w))
+    } else {
+        t.to_string()
+    }
 }
 
 const INT_PREAMBLE: &str = "\
@@ -170,7 +190,8 @@ const REPLACED: &[&str] = &["ld8", "ld16", "ld32", "ld64", "st8", "st16", "st32"
 // vc.rs's spec arithmetic at width W: sadd_W … (translated inline, without wrapping)
 fn spec_op(f: &str) -> Option<&str> {
     let (op, w) = f.rsplit_once('_')?;
-    (matches!(op, "sadd" | "ssub" | "smul" | "sneg" | "emod" | "ediv") && w.parse::<u32>().is_ok()).then_some(op)
+    (matches!(op, "sadd" | "ssub" | "smul" | "sneg" | "emod" | "ediv") && w.parse::<u32>().is_ok())
+        .then_some(op)
 }
 
 struct Tr {
@@ -183,11 +204,19 @@ type R<T> = Option<T>;
 
 impl Tr {
     fn sort_of_name(&self, n: &str) -> Option<Sort> {
-        self.consts.iter().rev().find(|(m, _)| m == n).map(|(_, s)| s.clone())
+        self.consts
+            .iter()
+            .rev()
+            .find(|(m, _)| m == n)
+            .map(|(_, s)| s.clone())
     }
 
     fn fun_sort(&self, n: &str) -> Option<Sort> {
-        self.funs.iter().rev().find(|(m, _)| m == n).map(|(_, s)| s.clone())
+        self.funs
+            .iter()
+            .rev()
+            .find(|(m, _)| m == n)
+            .map(|(_, s)| s.clone())
     }
 
     // literal value of a term, if it is a bitvector literal
@@ -253,20 +282,28 @@ impl Tr {
         // indexed operators: ((_ extract hi lo) x), ((_ sign_extend k) x), ((as const S) v)
         if let Sx::List(h) = head {
             match h.as_slice() {
-                [Sx::Atom(u), Sx::Atom(op), Sx::Atom(i), Sx::Atom(j)] if u == "_" && op == "extract" => {
+                [Sx::Atom(u), Sx::Atom(op), Sx::Atom(i), Sx::Atom(j)]
+                    if u == "_" && op == "extract" =>
+                {
                     let (hi, lo): (u32, u32) = (i.parse().ok()?, j.parse().ok()?);
                     let (x, srt) = self.term(&l[1])?;
                     let Sort::Bv(w) = srt else { return None };
                     let n = hi - lo + 1;
                     let u = unsigned(&x, w);
                     let slice = if lo == 0 {
-                        if n == w { u } else { format!("(mod {u} {})", pow2(n)) }
+                        if n == w {
+                            u
+                        } else {
+                            format!("(mod {u} {})", pow2(n))
+                        }
                     } else {
                         format!("(mod (div {u} {}) {})", pow2(lo), pow2(n))
                     };
                     return Some((from_unsigned(&slice, n), Sort::Bv(n)));
                 }
-                [Sx::Atom(u), Sx::Atom(op), Sx::Atom(k)] if u == "_" && (op == "sign_extend" || op == "zero_extend") => {
+                [Sx::Atom(u), Sx::Atom(op), Sx::Atom(k)]
+                    if u == "_" && (op == "sign_extend" || op == "zero_extend") =>
+                {
                     let k: u32 = k.parse().ok()?;
                     let (x, srt) = self.term(&l[1])?;
                     let Sort::Bv(w) = srt else { return None };
@@ -304,7 +341,9 @@ impl Tr {
                 let mut guards = vec![];
                 for b in binds {
                     let Sx::List(b) = b else { return None };
-                    let (Sx::Atom(n), s) = (&b[0], &b[1]) else { return None };
+                    let (Sx::Atom(n), s) = (&b[0], &b[1]) else {
+                        return None;
+                    };
                     let srt = sort_of(s)?;
                     if let Sort::Bv(w) = srt {
                         guards.push(range(n, w));
@@ -350,13 +389,21 @@ impl Tr {
                     self.consts.pop();
                 }
                 let (body, _) = body?;
-                let g = if guards.is_empty() { "true".to_string() } else { format!("(and {})", guards.join(" ")) };
+                let g = if guards.is_empty() {
+                    "true".to_string()
+                } else {
+                    format!("(and {})", guards.join(" "))
+                };
                 let inner = if f == "forall" {
                     format!("(=> {g} {body})")
                 } else {
                     format!("(and {g} {body})")
                 };
-                let inner = if rest.is_empty() { inner } else { format!("(! {inner}{rest})") };
+                let inner = if rest.is_empty() {
+                    inner
+                } else {
+                    format!("(! {inner}{rest})")
+                };
                 return Some((format!("({f} ({}) {inner})", names.join(" ")), Sort::Bool));
             }
             "!" => {
@@ -374,7 +421,7 @@ impl Tr {
                     let _ = write!(rest, " {key} ({})", pats.join(" "));
                     i += 2;
                 }
-                return Some((format!("(! {t}{rest})", ), srt));
+                return Some((format!("(! {t}{rest})",), srt));
             }
             "let" => {
                 let Sx::List(binds) = &l[1] else { return None };
@@ -404,14 +451,25 @@ impl Tr {
         };
         let t = |i: usize| a[i].0.clone();
         Some(match f {
-            "and" | "or" | "not" | "=>" => (format!("({f} {})", a.iter().map(|x| x.0.clone()).collect::<Vec<_>>().join(" ")), Sort::Bool),
+            "and" | "or" | "not" | "=>" => (
+                format!(
+                    "({f} {})",
+                    a.iter().map(|x| x.0.clone()).collect::<Vec<_>>().join(" ")
+                ),
+                Sort::Bool,
+            ),
             "=" | "distinct" => (format!("({f} {} {})", t(0), t(1)), Sort::Bool),
             "ite" => (format!("(ite {} {} {})", t(0), t(1), t(2)), a[1].1.clone()),
             "select" => {
-                let Sort::Arr(_, e) = a[0].1.clone() else { return None };
+                let Sort::Arr(_, e) = a[0].1.clone() else {
+                    return None;
+                };
                 (format!("(select {} {})", t(0), t(1)), *e)
             }
-            "store" => (format!("(store {} {} {})", t(0), t(1), t(2)), a[0].1.clone()),
+            "store" => (
+                format!("(store {} {} {})", t(0), t(1), t(2)),
+                a[0].1.clone(),
+            ),
             // spec arithmetic: never wraps
             _ if spec_op(f).is_some() => {
                 let w = w(0)?;
@@ -428,7 +486,9 @@ impl Tr {
             "ld8" => (format!("(ld8 {} {})", t(0), t(1)), Sort::Bv(8)),
             "ld16" => (format!("(ld16 {} {})", t(0), t(1)), Sort::Bv(16)),
             "ld32" => (format!("(ld32 {} {})", t(0), t(1)), Sort::Bv(32)),
-            "st8" | "st16" | "st32" => (format!("({f} {} {} {})", t(0), t(1), t(2)), a[0].1.clone()),
+            "st8" | "st16" | "st32" => {
+                (format!("({f} {} {} {})", t(0), t(1), t(2)), a[0].1.clone())
+            }
             "ld64" | "st64" => return None,
             // machine arithmetic: wraps
             "bvadd" | "bvsub" | "bvmul" => {
@@ -459,8 +519,24 @@ impl Tr {
                 let (x, y) = if signed_rep(w) {
                     (t(0), t(1))
                 } else {
-                    (format!("(ite (>= {} {}) (- {} {}) {})", t(0), pow2(w - 1), t(0), pow2(w), t(0)),
-                     format!("(ite (>= {} {}) (- {} {}) {})", t(1), pow2(w - 1), t(1), pow2(w), t(1)))
+                    (
+                        format!(
+                            "(ite (>= {} {}) (- {} {}) {})",
+                            t(0),
+                            pow2(w - 1),
+                            t(0),
+                            pow2(w),
+                            t(0)
+                        ),
+                        format!(
+                            "(ite (>= {} {}) (- {} {}) {})",
+                            t(1),
+                            pow2(w - 1),
+                            t(1),
+                            pow2(w),
+                            t(1)
+                        ),
+                    )
                 };
                 (format!("({op} {x} {y})"), Sort::Bool)
             }
@@ -472,17 +548,26 @@ impl Tr {
                     _ => ">=",
                 };
                 let w = w(0)?;
-                (format!("({op} {} {})", unsigned(&t(0), w), unsigned(&t(1), w)), Sort::Bool)
+                (
+                    format!("({op} {} {})", unsigned(&t(0), w), unsigned(&t(1), w)),
+                    Sort::Bool,
+                )
             }
             "bvand" => {
                 let w = w(0)?;
-                let mask = |i: usize| self.literal(&l[i + 1]).filter(|(v, _)| *v >= 0 && (v + 1).count_ones() == 1);
+                let mask = |i: usize| {
+                    self.literal(&l[i + 1])
+                        .filter(|(v, _)| *v >= 0 && (v + 1).count_ones() == 1)
+                };
                 let (x, m) = match (mask(1), mask(0)) {
                     (Some((m, _)), _) => (t(0), m),
                     (_, Some((m, _))) => (t(1), m),
                     _ => return None,
                 };
-                (from_unsigned(&format!("(mod {} {})", unsigned(&x, w), m + 1), w), Sort::Bv(w))
+                (
+                    from_unsigned(&format!("(mod {} {})", unsigned(&x, w), m + 1), w),
+                    Sort::Bv(w),
+                )
             }
             "bvshl" | "bvashr" | "bvlshr" => {
                 let w = w(0)?;
@@ -509,19 +594,34 @@ impl Tr {
                 let q = format!(
                     "(ite (>= {x} 0) (ite (>= {y} 0) (div {x} {y}) (- (div {x} (- {y})))) (ite (>= {y} 0) (- (div (- {x}) {y})) (div (- {x}) (- {y}))))"
                 );
-                let r = if f == "bvsdiv" { wrap(&q, w) } else { format!("(- {x} (* {y} {q}))") };
+                let r = if f == "bvsdiv" {
+                    wrap(&q, w)
+                } else {
+                    format!("(- {x} (* {y} {q}))")
+                };
                 (r, Sort::Bv(w))
             }
             "concat" => {
                 let (w0, w1) = (w(0)?, w(1)?);
                 let n = w0 + w1;
-                let z = format!("(+ (* {} {}) {})", unsigned(&t(0), w0), pow2(w1), unsigned(&t(1), w1));
+                let z = format!(
+                    "(+ (* {} {}) {})",
+                    unsigned(&t(0), w0),
+                    pow2(w1),
+                    unsigned(&t(1), w1)
+                );
                 (from_unsigned(&z, n), Sort::Bv(n))
             }
             _ => {
                 // a user function (define-fun-rec) or a defined constant
                 let srt = self.fun_sort(f)?;
-                (format!("({f} {})", a.iter().map(|x| x.0.clone()).collect::<Vec<_>>().join(" ")), srt)
+                (
+                    format!(
+                        "({f} {})",
+                        a.iter().map(|x| x.0.clone()).collect::<Vec<_>>().join(" ")
+                    ),
+                    srt,
+                )
             }
         })
     }
@@ -537,12 +637,16 @@ pub fn translate(smt: &str) -> Option<String> {
     let mut out = String::new();
     for c in &cmds {
         let Sx::List(l) = c else { return None };
-        let Some(Sx::Atom(head)) = l.first() else { return None };
+        let Some(Sx::Atom(head)) = l.first() else {
+            return None;
+        };
         match head.as_str() {
             "set-option" | "check-sat" => {
                 out.push_str(&show(c));
                 out.push('\n');
-                if head == "set-option" && matches!(l.get(1), Some(Sx::Atom(o)) if o == ":produce-models") {
+                if head == "set-option"
+                    && matches!(l.get(1), Some(Sx::Atom(o)) if o == ":produce-models")
+                {
                     out.push_str(INT_PREAMBLE);
                 }
             }
@@ -583,7 +687,12 @@ pub fn translate(smt: &str) -> Option<String> {
                 } else if head != "define-fun-rec" {
                     tr.funs.push((n.clone(), res.clone()));
                 }
-                let _ = writeln!(out, "({head} {n} ({}) {} {body})", ps.join(" "), int_sort(&res));
+                let _ = writeln!(
+                    out,
+                    "({head} {n} ({}) {} {body})",
+                    ps.join(" "),
+                    int_sort(&res)
+                );
             }
             "assert" => {
                 let (t, _) = tr.term(&l[1])?;

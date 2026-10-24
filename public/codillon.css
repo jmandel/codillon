@@ -111,6 +111,7 @@ div.textentry:focus {
 /* the solver could not decide an obligation of this line (never darkred) */
 .spec-unknown-line::before {
     font-style: normal;
+    font-weight: bold;
     color: indigo;
     content: "?        ";
 }

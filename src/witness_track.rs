@@ -100,7 +100,10 @@ impl StateCard {
             self.cells.set_attribute("class", "state-card");
             self.cells.set_attribute(
                 "style",
-                &format!("grid-template-columns: max-content repeat({}, minmax(2.6em, max-content));", columns - 1),
+                &format!(
+                    "grid-template-columns: max-content repeat({}, minmax(2.6em, max-content));",
+                    columns - 1
+                ),
             );
         }
         self.shown = cells;

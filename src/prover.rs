@@ -18,7 +18,7 @@ use anyhow::Result;
 use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen(inline_js = r#"
-let worker = null, ready = null, state = 'idle', failure = '', nextId = 1;
+let worker = null, ready = null, state = 'idle', failure = '', nextId = 1, startedAt = 0, loadMs = -1;
 const pending = new Map();
 function fail(why) {
   state = 'failed';
@@ -30,6 +30,7 @@ function fail(why) {
 }
 function start() {
   state = 'loading';
+  startedAt = performance.now();
   ready = new Promise((resolve, reject) => {
     try {
       worker = new Worker(new URL('z3/z3w-worker.js', document.baseURI), { type: 'module' });
@@ -41,7 +42,7 @@ function start() {
     worker.onmessage = (e) => {
       const d = e.data || {};
       if ('ready' in d) {
-        if (d.ready) { state = 'ready'; resolve(); }
+        if (d.ready) { state = 'ready'; loadMs = performance.now() - startedAt; resolve(); }
         else { fail('the solver did not load: ' + d.error); reject(new Error(failure)); }
         return;
       }
@@ -63,10 +64,13 @@ export function z3_solve(text) {
   return ready.then(() => new Promise((resolve, reject) => {
     const id = nextId++;
     pending.set(id, { resolve, reject });
+    // a fresh context for each query ((reset) in the text does not forget recursive functions)
+    worker.postMessage({ id: nextId++, reset: true });
     worker.postMessage({ id, smtlib: text });
   }));
 }
 export function z3_state() { return state; }
+export function z3_load_ms() { return loadMs; }
 export function z3_failure() { return failure; }
 export function z3_now() { return performance.now(); }
 export function z3_sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
@@ -74,15 +78,16 @@ export function z3_sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 extern "C" {
     fn z3_solve(text: &str) -> js_sys::Promise;
     fn z3_state() -> String;
+    /// How long the solver took to load (worker, module and instance), or -1.
+    pub fn z3_load_ms() -> f64;
     fn z3_failure() -> String;
     pub fn z3_now() -> f64;
     fn z3_sleep(ms: f64) -> js_sys::Promise;
 }
 
-/// Z3's output for a query (each query starts from a fresh context).
+/// Z3's output for a query (each query runs in a fresh context).
 pub async fn solve(smtlib: &str) -> Result<String, String> {
-    let text = format!("(reset)\n{smtlib}");
-    match wasm_bindgen_futures::JsFuture::from(z3_solve(&text)).await {
+    match wasm_bindgen_futures::JsFuture::from(z3_solve(smtlib)).await {
         Ok(v) => Ok(v.as_string().unwrap_or_default()),
         Err(e) => Err(js_sys::Error::from(e).message().into()),
     }
@@ -150,7 +155,11 @@ impl LineInfosMut for LineSnapshot {
 }
 
 /// The obligations of a program, from its lines (before validity repair) and its binary.
-pub fn obligations(lines: &LineSnapshot, wasm_bin: &[u8], plan: &SpecPlan) -> Result<Vec<Obligation>> {
+pub fn obligations(
+    lines: &LineSnapshot,
+    wasm_bin: &[u8],
+    plan: &SpecPlan,
+) -> Result<Vec<Obligation>> {
     let mut lines = lines.clone();
     let raw = RawModule::new(&lines, wasm_bin)?;
     let validized = raw.fix_validity(&mut lines, wasm_bin)?;
@@ -162,6 +171,16 @@ pub fn obligations(lines: &LineSnapshot, wasm_bin: &[u8], plan: &SpecPlan) -> Re
 // Words for verdicts
 
 use crate::vc::{Cut, Model, ObKind, TrapKind};
+
+/// What can go wrong, with where (for the witness track).
+pub fn refuted_where(ob: &Obligation) -> String {
+    let at = ob.at_line + 1;
+    match ob.kind {
+        ObKind::Requires => format!("the callee's precondition can fail at the call on line {at}"),
+        ObKind::Ensures => format!("the postcondition can fail at the return on line {at}"),
+        _ => format!("{} (line {at})", refuted_phrase(ob)),
+    }
+}
 
 /// What can go wrong, for an obligation that was refuted (said at the instruction).
 pub fn refuted_phrase(ob: &Obligation) -> String {
@@ -209,7 +228,11 @@ fn map_text(m: &std::collections::BTreeMap<i128, i128>) -> String {
 
 /// The state a model describes: a call at function entry, or values at a loop head.
 pub fn state_text(plan: &SpecPlan, ob: &Obligation, m: &Model) -> String {
-    let fname = plan.funcs.get(ob.func).map(|f| f.display_name()).unwrap_or_default();
+    let fname = plan
+        .funcs
+        .get(ob.func)
+        .map(|f| f.display_name())
+        .unwrap_or_default();
     let head = match ob.cut {
         Cut::Entry => {
             let args: Vec<String> = m.vars.iter().map(|(_, v)| v.to_string()).collect();
@@ -242,7 +265,11 @@ pub fn state_text(plan: &SpecPlan, ob: &Obligation, m: &Model) -> String {
 
 /// The commentary of a refuted obligation, on its spec line.
 pub fn refuted_text(plan: &SpecPlan, ob: &Obligation, m: &Model) -> String {
-    format!("\u{2696} {} from {} \u{b7} allowed by the spec", short_phrase(ob), state_text(plan, ob, m))
+    format!(
+        "\u{2696} {} from {} \u{b7} allowed by the spec",
+        short_phrase(ob),
+        state_text(plan, ob, m)
+    )
 }
 
 // ---------------------------------------------------------------------------------------
@@ -298,7 +325,10 @@ fn vocabulary(plan: &SpecPlan, field: &str) -> Vec<(i128, String)> {
     names
         .into_iter()
         .filter_map(|n| {
-            let d = plan.defines.iter().find(|d| d.name == n && d.params.is_empty())?;
+            let d = plan
+                .defines
+                .iter()
+                .find(|d| d.name == n && d.params.is_empty())?;
             match &d.body {
                 crate::spec::Expr::Int(v) => Some((*v, n)),
                 _ => None,
@@ -322,7 +352,11 @@ pub fn state_card(plan: &SpecPlan, m: &Model) -> Option<(usize, Vec<CardCell>)> 
     fields.sort_by_key(|f| f.1);
     let slots = fields
         .iter()
-        .map(|(_, a0, stride)| (0..64).take_while(|s| m.words.contains_key(&((a0 + s * stride) as u32))).count())
+        .map(|(_, a0, stride)| {
+            (0..64)
+                .take_while(|s| m.words.contains_key(&((a0 + s * stride) as u32)))
+                .count()
+        })
         .max()
         .unwrap_or(0);
     let mut cells: Vec<CardCell> = vec![];
@@ -347,7 +381,10 @@ pub fn state_card(plan: &SpecPlan, m: &Model) -> Option<(usize, Vec<CardCell>)> 
         }
     }
     for (n, map) in &m.maps {
-        let entries: Vec<String> = map.iter().map(|(k, v)| format!("{k} \u{21a6} {v}")).collect();
+        let entries: Vec<String> = map
+            .iter()
+            .map(|(k, v)| format!("{k} \u{21a6} {v}"))
+            .collect();
         cells.push((format!("${n} = {{{}}}", entries.join(", ")), "card-map"));
     }
     if cells.is_empty() {

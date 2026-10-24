@@ -1372,7 +1372,9 @@ impl<'a> ValidModule<'a> {
                 let imported = |k: fn(&wasmparser::TypeRef) -> bool| {
                     self.imports.iter().filter(|i| k(&i.ty)).count() as u32
                 };
-                if !self.memory.is_empty() && imported(|t| matches!(t, wasmparser::TypeRef::Memory(_))) == 0 {
+                if !self.memory.is_empty()
+                    && imported(|t| matches!(t, wasmparser::TypeRef::Memory(_))) == 0
+                {
                     exports.export("memory", ExportKind::Memory, 0);
                 }
                 let num_global_imports = imported(|t| matches!(t, wasmparser::TypeRef::Global(_)));
@@ -5065,7 +5067,11 @@ pub(crate) mod tests {
             let t_gen = std::time::Instant::now();
             let obligations = crate::vc::generate(&plan, &validized, &types);
             if std::env::var("STATS").is_ok() {
-                eprintln!("    generated {} obligations in {:?}", obligations.len(), t_gen.elapsed());
+                eprintln!(
+                    "    generated {} obligations in {:?}",
+                    obligations.len(),
+                    t_gen.elapsed()
+                );
             }
             let binary = wasm_bin.clone();
             let options = InstrumentOptions {
@@ -5140,12 +5146,28 @@ pub(crate) mod tests {
                 "hashtable",
                 include_str!("../public/examples/hashtable.wat"),
             ),
-            ("hashtable-a", include_str!("../public/examples/hashtable-a.wat")),
-            ("hashtable-b", include_str!("../public/examples/hashtable-b.wat")),
-            ("hashtable-b2", include_str!("../public/examples/hashtable-b2.wat")),
-            ("hashtable-c", include_str!("../public/examples/hashtable-c.wat")),
-            ("hashtable-d", include_str!("../public/examples/hashtable-d.wat")),
+            (
+                "hashtable-a",
+                include_str!("../public/examples/hashtable-a.wat"),
+            ),
+            (
+                "hashtable-b",
+                include_str!("../public/examples/hashtable-b.wat"),
+            ),
+            (
+                "hashtable-b2",
+                include_str!("../public/examples/hashtable-b2.wat"),
+            ),
+            (
+                "hashtable-c",
+                include_str!("../public/examples/hashtable-c.wat"),
+            ),
+            (
+                "hashtable-d",
+                include_str!("../public/examples/hashtable-d.wat"),
+            ),
             ("hello", include_str!("../public/examples/hello.wat")),
+            ("cubes", include_str!("../public/examples/cubes.wat")),
             (
                 "isqrt-args",
                 include_str!("../public/examples/isqrt-args.wat"),
@@ -5421,7 +5443,12 @@ i32.store offset=8
             let r = run_spec(src)?;
             assert_eq!(failures(&r), vec![]);
             assert_eq!(fixture_steps_through(&r, r.log.step_count() - 1), 383);
-            assert!(held(&r, line_of(src, "(@invariant forall $d in 0..CAP: $d < $j ==> passed")) > 0);
+            assert!(
+                held(
+                    &r,
+                    line_of(src, "(@invariant forall $d in 0..CAP: $d < $j ==> passed")
+                ) > 0
+            );
 
             // (first failing check: fixture step, fixture kind, the line it is written on)
             let cases: [(&str, &str, usize, CheckKind, &str); 4] = [
@@ -5753,7 +5780,12 @@ local.get $r
                 .stderr(std::process::Stdio::null())
                 .spawn()
                 .expect("z3 binary (set Z3_BIN, or install z3 in ~/.local/bin)");
-            child.stdin.take().unwrap().write_all(smt.as_bytes()).unwrap();
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(smt.as_bytes())
+                .unwrap();
             let out = child.wait_with_output().unwrap();
             String::from_utf8_lossy(&out.stdout).to_string()
         }
@@ -5764,33 +5796,36 @@ local.get $r
             let next = std::sync::atomic::AtomicUsize::new(0);
             std::thread::scope(|s| {
                 for _ in 0..8 {
-                    s.spawn(|| loop {
-                        let i = next.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                        if i >= obs.len() {
-                            break;
+                    s.spawn(|| {
+                        loop {
+                            let i = next.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            if i >= obs.len() {
+                                break;
+                            }
+                            let t0 = std::time::Instant::now();
+                            let mut proof = crate::vc::Proof::new(&obs[i]);
+                            while let Some(q) = proof.next(&obs[i]) {
+                                let out = solve(&q);
+                                assert!(
+                                    !out.lines().any(|l| l.contains("(error")
+                                        && !l.contains("model is not available")),
+                                    "solver error {out} in\n{q}"
+                                );
+                                proof.feed(&obs[i], &out);
+                            }
+                            let v = proof.verdict().cloned().expect("a verdict");
+                            if std::env::var("STATS").is_ok() {
+                                eprintln!(
+                                    "    stats f{} line {} {}: {} queries, {:.2}s",
+                                    obs[i].func,
+                                    obs[i].at_line + 1,
+                                    obs[i].kind.describe(),
+                                    proof.queries,
+                                    t0.elapsed().as_secs_f64()
+                                );
+                            }
+                            results.lock().unwrap()[i] = Some(v);
                         }
-                        let t0 = std::time::Instant::now();
-                        let mut proof = crate::vc::Proof::new(&obs[i]);
-                        while let Some(q) = proof.next(&obs[i]) {
-                            let out = solve(&q);
-                            assert!(
-                                !out.lines().any(|l| l.contains("(error") && !l.contains("model is not available")),
-                                "solver error {out} in\n{q}"
-                            );
-                            proof.feed(&obs[i], &out);
-                        }
-                        let v = proof.verdict().cloned().expect("a verdict");
-                        if std::env::var("STATS").is_ok() {
-                            eprintln!(
-                                "    stats f{} line {} {}: {} queries, {:.2}s",
-                                obs[i].func,
-                                obs[i].at_line + 1,
-                                obs[i].kind.describe(),
-                                proof.queries,
-                                t0.elapsed().as_secs_f64()
-                            );
-                        }
-                        results.lock().unwrap()[i] = Some(v);
                     });
                 }
             });
@@ -5807,10 +5842,23 @@ local.get $r
             let mut out = String::new();
             for (i, v) in vs {
                 let ob = &r.obligations[*i];
-                let line = |l: usize| src.lines().nth(l).unwrap_or("").trim().chars().take(48).collect::<String>();
+                let line = |l: usize| {
+                    src.lines()
+                        .nth(l)
+                        .unwrap_or("")
+                        .trim()
+                        .chars()
+                        .take(48)
+                        .collect::<String>()
+                };
                 let what = match v {
                     crate::vc::Verdict::Proven => "proven".to_string(),
-                    crate::vc::Verdict::Refuted(m) => format!("REFUTED {:?} {:?} {:?}", m.vars, m.words.iter().filter(|(_, v)| **v != 0).collect::<Vec<_>>(), m.maps),
+                    crate::vc::Verdict::Refuted(m) => format!(
+                        "REFUTED {:?} {:?} {:?}",
+                        m.vars,
+                        m.words.iter().filter(|(_, v)| **v != 0).collect::<Vec<_>>(),
+                        m.maps
+                    ),
                     crate::vc::Verdict::Unknown(w) => format!("unknown: {w}"),
                 };
                 out.push_str(&format!(
@@ -5842,7 +5890,9 @@ local.get $r
                         ob.func,
                         ob.at_line + 1,
                         ob.kind.describe(),
-                        ob.spec_line.map(|l| (l + 1).to_string()).unwrap_or("-".into())
+                        ob.spec_line
+                            .map(|l| (l + 1).to_string())
+                            .unwrap_or("-".into())
                     )
                 })
                 .collect()
@@ -5883,7 +5933,10 @@ local.get $r
                     text.push('\n');
                 }
             }
-            let path = concat!(env!("CARGO_MANIFEST_DIR"), "/src/testdata/proof_verdicts.txt");
+            let path = concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/src/testdata/proof_verdicts.txt"
+            );
             if std::env::var("UPDATE_VERDICTS").is_ok() {
                 std::fs::write(path, &text)?;
             }
@@ -5931,13 +5984,35 @@ local.get $r
                 let t = std::time::Instant::now();
                 let r = run_spec(src)?;
                 let vs = prove(&r);
-                eprintln!("== {name} ({} obligations, {:?})", r.obligations.len(), t.elapsed());
+                eprintln!(
+                    "== {name} ({} obligations, {:?})",
+                    r.obligations.len(),
+                    t.elapsed()
+                );
                 eprint!("{}", describe_verdicts(src, &r, &vs));
                 if std::env::var("DUMP").is_ok() {
                     for ob in &r.obligations {
-                        let _ = std::fs::write(format!("/home/jmandel/hobby/.agent-scratch/codalon-viz/z3/q-{name}-{:x}.smt2", ob.hash), format!("; f{} {} line {}\n{}", ob.func, ob.kind.describe(), ob.at_line, ob.smt));
+                        let _ = std::fs::write(
+                            format!(
+                                "/home/jmandel/hobby/.agent-scratch/codalon-viz/z3/q-{name}-{:x}.smt2",
+                                ob.hash
+                            ),
+                            format!(
+                                "; f{} {} line {}\n{}",
+                                ob.func,
+                                ob.kind.describe(),
+                                ob.at_line,
+                                ob.smt
+                            ),
+                        );
                         if let Some(q) = &crate::vc_int::translate(&ob.smt) {
-                            let _ = std::fs::write(format!("/home/jmandel/hobby/.agent-scratch/codalon-viz/z3/q-{name}-{:x}.int.smt2", ob.hash), q);
+                            let _ = std::fs::write(
+                                format!(
+                                    "/home/jmandel/hobby/.agent-scratch/codalon-viz/z3/q-{name}-{:x}.int.smt2",
+                                    ob.hash
+                                ),
+                                q,
+                            );
                         }
                     }
                 }

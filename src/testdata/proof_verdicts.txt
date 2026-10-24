@@ -408,6 +408,11 @@ f5 line 220 no trap (memory access in bounds) (spec line -): P
 f5 line 227 postcondition (spec line 162): P
 f5 line 227 postcondition (spec line 164): R
 == hello
+== cubes
+f0 line 7 precondition at the call (spec line 10): P
+f0 line 7 precondition at the call (spec line 10): P
+f0 line 7 precondition at the call (spec line 11): P
+f1 line 16 assertion (spec line 15): U
 == isqrt-args
 f0 line 5 precondition at the call (spec line 8): R
 f1 line 14 invariant on entry (spec line 15): P

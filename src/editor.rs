@@ -128,12 +128,15 @@ impl PendingAnimations {
     }
 }
 
+// A run to make: binary, version, entry, arguments, and the state it starts from.
+type PendingRun = (Vec<u8>, usize, String, Vec<RunArg>, Option<Rc<Seed>>);
+
 struct Editor {
     component: ComponentType,
     factory: ElementFactory,
     action_history: ActionHistory,
     storage: Option<StorageHandle>,
-    pending_binary: Option<(Vec<u8>, usize, String, Vec<RunArg>, Option<Rc<Seed>>)>, // binary, version, entry, args, state
+    pending_binary: Option<PendingRun>,
     current_binary: Rc<Vec<u8>>,
     replay: Option<(usize, Vec<i128>)>, // a witness loaded as the run: (function, input)
     replay_seed: Option<Rc<Seed>>,      // … and the state it starts from (a solver's model)
@@ -529,7 +532,8 @@ impl Editor {
     fn recheck_specs(&mut self) {
         let plan = self.spec_plan.clone();
         let seed = self.replay.as_ref().and(self.replay_seed.clone());
-        self.spec_results = Rc::new(RUN_LOG.with(|log| check_run_from(&plan, log, seed.as_deref())));
+        self.spec_results =
+            Rc::new(RUN_LOG.with(|log| check_run_from(&plan, log, seed.as_deref())));
     }
 
     // Show what the checks say as of `step`: ⚖ on failed spec lines (with the predicate,
@@ -841,7 +845,8 @@ impl Editor {
                 && !matches!(self.witness, WitnessSearch::Found(_))
                 && self.proofs.verdicts.iter().all(|v| v.is_some()));
         let card = if showing_static {
-            self.static_witness().and_then(|(_, m)| crate::prover::state_card(&self.spec_plan, m))
+            self.static_witness()
+                .and_then(|(_, m)| crate::prover::state_card(&self.spec_plan, m))
         } else {
             None
         };
@@ -903,7 +908,12 @@ impl Editor {
                     .unwrap_or(0)
             })
             .collect();
-        let ghost_names: Vec<&String> = self.spec_plan.ghost_globals.iter().map(|(n, _)| n).collect();
+        let ghost_names: Vec<&String> = self
+            .spec_plan
+            .ghost_globals
+            .iter()
+            .map(|(n, _)| n)
+            .collect();
         let mut ghosts: Vec<(String, crate::spec::Val)> = m
             .ghosts
             .iter()
@@ -1034,7 +1044,9 @@ impl Editor {
                 loop {
                     crate::prover::sleep(PROOF_DELAY_MS).await;
                     let ed = holder.borrow();
-                    if ed.proofs.request.is_none() || now_ms() - ed.proofs.requested_at >= PROOF_DELAY_MS {
+                    if ed.proofs.request.is_none()
+                        || now_ms() - ed.proofs.requested_at >= PROOF_DELAY_MS
+                    {
                         break;
                     }
                 }
@@ -1043,7 +1055,8 @@ impl Editor {
                     return;
                 };
                 let t_gen = now_ms();
-                let obs = crate::prover::obligations(&input.lines, &input.wasm, &input.plan).unwrap_or_default();
+                let obs = crate::prover::obligations(&input.lines, &input.wasm, &input.plan)
+                    .unwrap_or_default();
                 let gen_ms = now_ms() - t_gen;
                 let obs = Rc::new(obs);
                 {
@@ -1052,7 +1065,10 @@ impl Editor {
                         continue;
                     }
                     let p = &mut ed.proofs;
-                    p.verdicts = obs.iter().map(|ob| p.cache.get(&ob.hash).cloned()).collect();
+                    p.verdicts = obs
+                        .iter()
+                        .map(|ob| p.cache.get(&ob.hash).cloned())
+                        .collect();
                     p.obligations = obs.clone();
                     p.started_at = now_ms();
                     p.first_at = None;
@@ -1062,7 +1078,13 @@ impl Editor {
                     ed.refresh_proofs();
                 }
                 for (i, ob) in obs.iter().enumerate() {
-                    if holder.borrow().proofs.verdicts.get(i).is_some_and(|v| v.is_some()) {
+                    if holder
+                        .borrow()
+                        .proofs
+                        .verdicts
+                        .get(i)
+                        .is_some_and(|v| v.is_some())
+                    {
                         continue;
                     }
                     let mut proof = crate::vc::Proof::new(ob);
@@ -1104,15 +1126,7 @@ impl Editor {
                 let mut ed = holder.borrow_mut();
                 if ed.proofs.generation == generation {
                     ed.proofs.finished_at = Some(now_ms());
-                    let p = &ed.proofs;
-                    log_1(&format!(
-                        "Codillon proofs: {} obligations (generated in {:.0} ms), {} queries, first verdict after {:.0} ms, all after {:.0} ms",
-                        p.obligations.len(),
-                        p.generate_ms,
-                        p.queries,
-                        p.first_at.unwrap_or(p.started_at) - p.started_at,
-                        now_ms() - p.started_at
-                    ).into());
+
                     ed.refresh_proofs();
                 }
             }
@@ -1137,7 +1151,10 @@ impl Editor {
         let plan = &self.spec_plan;
         let mut by_line: HashMap<usize, Vec<usize>> = HashMap::new();
         for (i, ob) in p.obligations.iter().enumerate() {
-            by_line.entry(ob.spec_line.unwrap_or(ob.at_line)).or_default().push(i);
+            by_line
+                .entry(ob.spec_line.unwrap_or(ob.at_line))
+                .or_default()
+                .push(i);
         }
         let mut at_labels: Vec<(usize, String)> = vec![];
         for (line, idxs) in by_line {
@@ -1153,9 +1170,15 @@ impl Editor {
                     m.failed = Some(crate::prover::refuted_text(plan, ob, model));
                 }
                 if ob.at_line != line {
-                    at_labels.push((ob.at_line, format!("\u{2696} {}", crate::prover::refuted_phrase(ob))));
+                    at_labels.push((
+                        ob.at_line,
+                        format!("\u{2696} {}", crate::prover::refuted_phrase(ob)),
+                    ));
                 }
-            } else if idxs.iter().any(|&i| !matches!(p.verdicts.get(i), Some(Some(_)))) {
+            } else if idxs
+                .iter()
+                .any(|&i| !matches!(p.verdicts.get(i), Some(Some(_))))
+            {
                 m.proof = ProofMark::Pending;
             } else if let Some(why) = idxs.iter().find_map(|&i| match p.verdicts.get(i) {
                 Some(Some(crate::vc::Verdict::Unknown(w))) => Some(w.clone()),
@@ -1184,18 +1207,34 @@ impl Editor {
             return None;
         }
         let done = p.verdicts.iter().filter(|v| v.is_some()).count();
-        let count = |f: &dyn Fn(&crate::vc::Verdict) -> bool| p.verdicts.iter().flatten().filter(|v| f(v)).count();
+        let count = |f: &dyn Fn(&crate::vc::Verdict) -> bool| {
+            p.verdicts.iter().flatten().filter(|v| f(v)).count()
+        };
         let proven = count(&|v| matches!(v, crate::vc::Verdict::Proven));
         let refuted = count(&|v| matches!(v, crate::vc::Verdict::Refuted(_)));
         let unknown = count(&|v| matches!(v, crate::vc::Verdict::Unknown(_)));
         let plural = |k: usize, w: &str| format!("{k} {w}{}", if k == 1 { "" } else { "s" });
+        let timing = match (p.first_at, p.finished_at) {
+            (Some(first), Some(end)) => format!(
+                " \u{b7} solver loaded in {:.0} ms \u{b7} {n} obligations generated in {:.0} ms; {} queries; first verdict after {:.0} ms, all after {:.0} ms",
+                crate::prover::z3_load_ms(),
+                p.generate_ms,
+                p.queries,
+                first - p.started_at,
+                end - p.started_at
+            ),
+            _ => String::new(),
+        };
         let text = match solver_state() {
             SolverState::Failed(why) if done < n => format!(
                 "{why} \u{b7} {} not yet proven (checked on runs only)",
                 plural(n - done, "obligation")
             ),
             SolverState::Loading | SolverState::Idle if done < n => {
-                format!("loading the solver\u{2026} {} to prove", plural(n - done, "obligation"))
+                format!(
+                    "loading the solver\u{2026} {} to prove",
+                    plural(n - done, "obligation")
+                )
             }
             _ if done < n => format!("proving\u{2026} {done} of {}", plural(n, "obligation")),
             _ if proven == n => format!("all {} proven", plural(n, "obligation")),
@@ -1203,26 +1242,31 @@ impl Editor {
                 let (i, m) = self.static_witness()?;
                 let ob = &p.obligations[i];
                 let state = crate::prover::state_text(&self.spec_plan, ob, m);
-                let summary = format!("{proven} of {} proven, {refuted} refuted, {unknown} not decided", n);
+                let summary = format!(
+                    "{proven} of {} proven, {refuted} refuted, {unknown} not decided",
+                    n
+                );
                 return Some(if self.static_replay(i).is_some() {
                     (
                         TrackState::NotReplayed,
                         format!(
-                            "\u{2696} the spec allows {state}, and then {} (line {}) \u{b7} not replayed \u{2014} click to replay",
-                            crate::prover::refuted_phrase(ob),
-                            ob.at_line + 1
+                            "\u{2696} the spec allows {state}, and then {} \u{b7} not replayed \u{2014} click to replay",
+                            crate::prover::refuted_where(ob)
                         ),
-                        format!("{summary}. A state the solver found; a run may never reach it."),
+                        format!(
+                            "{summary}. A state the solver found; a run may never reach it.{timing}"
+                        ),
                     )
                 } else {
                     (
                         TrackState::NotReplayed,
                         format!(
-                            "\u{2696} at the loop head the spec allows {state}, and then {} (line {}) \u{b7} a mid-run state, not replayable",
-                            crate::prover::refuted_phrase(ob),
-                            ob.at_line + 1
+                            "\u{2696} at the loop head the spec allows {state}, and then {} \u{b7} a mid-run state, not replayable",
+                            crate::prover::refuted_where(ob)
                         ),
-                        format!("{summary}. A state the solver found; a run may never reach it."),
+                        format!(
+                            "{summary}. A state the solver found; a run may never reach it.{timing}"
+                        ),
                     )
                 });
             }
@@ -1234,10 +1278,18 @@ impl Editor {
                 if unknown > 0 {
                     parts.push(format!("{unknown} not decided"));
                 }
-                format!("{} \u{b7} {}", plural(n, "obligation"), parts.join(" \u{b7} "))
+                format!(
+                    "{} \u{b7} {}",
+                    plural(n, "obligation"),
+                    parts.join(" \u{b7} ")
+                )
             }
         };
-        Some((TrackState::Note, text, "Z3 (single-threaded WebAssembly), per obligation".into()))
+        Some((
+            TrackState::Note,
+            text,
+            format!("Z3 5.3.1 (WebAssembly, in a worker){timing}"),
+        ))
     }
 
     fn reset_execution_state(&mut self) {
