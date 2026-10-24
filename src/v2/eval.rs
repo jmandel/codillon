@@ -219,6 +219,9 @@ pub struct Interp<'m> {
     pub max_depth: u32,
     /// the function that was running when the step budget or the depth limit ran out
     pub ran_out_in: Option<usize>,
+    /// the whole call stack (outermost first) at that moment
+    pub ran_out_stack: Vec<usize>,
+    stack: Vec<usize>,
 }
 
 impl<'m> Interp<'m> {
@@ -236,6 +239,8 @@ impl<'m> Interp<'m> {
             depth: 0,
             max_depth: DEPTH_LIMIT.with(|d| d.get()),
             ran_out_in: None,
+            ran_out_stack: vec![],
+            stack: vec![],
         }
     }
 
@@ -254,7 +259,9 @@ impl<'m> Interp<'m> {
             return Err(EvalErr::Unsupported(format!("{} is imported", func.name())));
         }
         if self.depth > self.max_depth {
-            self.ran_out_in.get_or_insert(f);
+            self.stack.push(f);
+            self.note_ran_out(f);
+            self.stack.pop();
             return Err(EvalErr::Budget);
         }
         if self.tables[f].is_none() {
@@ -268,9 +275,25 @@ impl<'m> Interp<'m> {
         }
         let nres = func.value_results().len();
         self.depth += 1;
+        self.stack.push(f);
         let r = self.run(f, &tab, &locs, &mut locals, nres);
+        self.stack.pop();
         self.depth -= 1;
         r
+    }
+
+    fn note_ran_out(&mut self, f: usize) {
+        if self.ran_out_in.is_none() {
+            self.ran_out_in = Some(f);
+            self.ran_out_stack = self.stack.clone();
+        }
+    }
+
+    /// After a budget or depth failure: the innermost frame on the stack at that moment that
+    /// `blame` accepts. A runaway is charged to the implementation whenever *any* of its frames
+    /// is live, wherever the counter happened to trip (research/22 B2).
+    pub fn ran_out_blaming(&self, blame: &dyn Fn(usize) -> bool) -> Option<usize> {
+        self.ran_out_stack.iter().rev().copied().find(|&g| blame(g))
     }
 
     fn capture(&self, acts: &[ShadowAct], locals: &[u64], st: &[u64], shadows: &mut [u64]) {
@@ -352,7 +375,7 @@ impl<'m> Interp<'m> {
             }
             self.steps += 1;
             if self.steps > self.budget {
-                self.ran_out_in.get_or_insert(f);
+                self.note_ran_out(f);
                 return Err(EvalErr::Budget);
             }
             let (line, ins) = (body[pc].0, &body[pc].1);

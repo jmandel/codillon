@@ -338,8 +338,9 @@ fn fable_f3_global_set_in_a_lemma_is_an_error() {
 
 /// The runaway is blamed only if the budget runs out *inside* an LLM-owned function. A spin loop
 /// that spends most of its steps inside a student predicate is blamed on the student.
+/// Fixed (B2): an LLM frame on the stack when the budget trips is blamed, wherever the counter
+/// lands, so every k is rejected with `$isqrt` named.
 #[test]
-#[ignore = "HOLE (research/22 B2): the budget trips inside the student predicate, so nobody is blamed"]
 fn fable_f5_spin_loop_that_lives_in_a_student_predicate() {
     let start = session_start("isqrt");
     let s = SessionStart::new(&start);
@@ -365,6 +366,13 @@ fn fable_f5_spin_loop_that_lives_in_a_student_predicate() {
         if j.accepted {
             accepted_any = Some(k);
         }
+        assert!(
+            j.strict
+                .iter()
+                .any(|r| r.line == 31 && r.msg.starts_with("$isqrt(") && r.msg.contains("does not finish")),
+            "k={k}: {:?}",
+            j.strict
+        );
     }
     assert!(accepted_any.is_none(), "accepted a body that never returns (k={accepted_any:?})");
 }

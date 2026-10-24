@@ -247,9 +247,20 @@ fn small(m: &Module, f: usize, args: &[u64]) -> bool {
 /// The partial-correctness theorem (§6) says nothing about a body that never returns, so in
 /// vericoding a submission must also *run*: `f` is run on up to `per` small inputs that satisfy
 /// its precondition, each within [`FINISH_BUDGET`] steps and [`FINISH_DEPTH`] calls. The first
-/// input on which it runs out *inside a function `blame` accepts* (the implementation, not a
-/// costly spec predicate), with that function. Traps and other errors are not this check's
-/// business.
+/// input on which it runs out *while a function `blame` accepts is on the call stack*, with the
+/// innermost such frame. Traps and other errors are not this check's business.
+///
+/// Blame rule (research/22 B2): the implementation is charged whenever one of its frames is live
+/// when the step budget or depth limit trips, not only when its frame is the innermost. The
+/// innermost-frame rule let a spin loop that calls a student predicate each iteration escape
+/// whenever the counter happened to land in the predicate; a per-function share of self-steps
+/// (or charging a predicate call as one step) is dodged the same way by calling the predicate on
+/// arguments that make it expensive, since the LLM chooses them. With the stack rule, where the
+/// counter lands is irrelevant. The only runaways not charged are those with no implementation
+/// frame live: student code run by `$main` or a harness on its own (a deep or costly spec
+/// predicate checking a result). The cost: an implementation that calls a student predicate
+/// which alone exceeds the budget on a small input is rejected, loudly, which beats a silent
+/// accept.
 pub fn runs_away(
     m: &Module,
     f: usize,
@@ -266,8 +277,7 @@ pub fn runs_away(
             let mut it = Interp::for_run(m, None);
             it.budget = FINISH_BUDGET;
             if let Err(EvalErr::Budget) = it.call(f, &args)
-                && let Some(g) = it.ran_out_in
-                && blame(g)
+                && let Some(g) = it.ran_out_blaming(blame)
             {
                 return Some((args, g));
             }
@@ -644,8 +654,8 @@ impl Bench {
         let m = Module::parse_lines(lines);
         let out = check_module(&m, true);
         let plan = RuntimePlan::new(&m, &out);
-        // a runaway is the implementation's only if it ran out in an implementation function (a
-        // deep or costly spec predicate is not the implementation's doing)
+        // a runaway is the implementation's if an implementation frame was live when it ran out
+        // (a deep or costly spec predicate checking a result is not the implementation's doing)
         let spec = super::vericode::student_bodies(&m);
         let mut runs = vec![];
         let mut runs_away = vec![];
@@ -663,8 +673,8 @@ impl Bench {
                     runs.push((func.name(), args, it.steps));
                 } else if matches!(r, Err(EvalErr::Budget))
                     && it
-                        .ran_out_in
-                        .is_some_and(|g| !spec.contains(&m.funcs[g].name()))
+                        .ran_out_blaming(&|g| !spec.contains(&m.funcs[g].name()))
+                        .is_some()
                 {
                     // one is enough to report, and each costs the whole budget
                     runs_away.push(format!("{}{}", func.name(), show_args(&args)));
