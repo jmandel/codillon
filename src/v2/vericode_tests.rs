@@ -472,3 +472,73 @@ fn live_loop_handles_bad_replies() {
     }
     assert!(live.next_body("m").is_none());
 }
+
+// ---------------- review 19 blocking findings (probes A13, A16, A19) ----------------
+
+/// B1 (A19): a lemma with an unsatisfiable refinement on a value parameter derived ⊥ and handed
+/// its result to $gcd for free. The lemma line now owes a Refinement cup for each refined value
+/// parameter (R13/R33), so the call site's cup is unfed and the submission is not accepted.
+#[test]
+fn b1_lemma_value_param_refinements_are_cups() {
+    let g = example("gcd");
+    let s = st(&g);
+    let mut t = g.clone();
+    assert!(t[137].contains("unfold $gcd_ref $x $y") && t[138].contains("prove 3"));
+    t[137] = "  lemma $vac2 $x $a $b".into();
+    t[138] = "  nop".into();
+    t.push("(func $vac2 (export \"lemma:vac2\") (param $x (i32 | (i32.lt_u v 0))) (param $a i32) (param $b i32) (result (fact (i32.eq $x (call $gcd_ref $a $b))))".into());
+    t.push("  prove 1".into());
+    t.push("  unreachable".into());
+    t.push(")".into());
+    let j = s.judge(&t);
+    assert!(!j.accepted, "A19 accepted: {:?}", j.summary());
+    let gcd = j.out.funcs.iter().find(|f| f.name == "$gcd").unwrap();
+    assert!(!gcd.verified);
+    let cup = gcd
+        .cups
+        .iter()
+        .find(|c| c.line == 138 && matches!(c.kind, super::out::CupKind::Refinement { .. }))
+        .expect("a Refinement cup on the lemma line");
+    assert_eq!(cup.verdict, super::out::Verdict::RuntimeChecked, "{cup:?}");
+    // A16: the same through the harness is a locked-line edit anyway
+    let mut t = g.clone();
+    t[151] = "  lemma $vac $g".into();
+    t.push("(func $vac (export \"lemma:vac\") (param $g (i32 | (i32.lt_u v 0))) (result (fact (i32.const 0)))".into());
+    t.push("  unreachable".into());
+    t.push(")".into());
+    assert!(!s.judge(&t).accepted);
+}
+
+/// B2 (A13): a lemma named like the student's predicate, placed before it, shadowed it.
+/// Duplicate names are now a parse error, and the judge names the shadow.
+#[test]
+fn b2_duplicate_function_names_are_rejected() {
+    let g = example("gcd");
+    let s = st(&g);
+    let mut t = g.clone();
+    let orig = t
+        .iter()
+        .position(|l| l.starts_with("(func $is_gcd"))
+        .unwrap();
+    let hdr = t[orig].replace("(func $is_gcd", "(func $is_gcd (export \"lemma:shadow\")");
+    t.insert(orig, ")".into());
+    t.insert(orig, "  i32.const 1".into());
+    t.insert(orig, hdr);
+    let m = super::ast::Module::parse_lines(&t);
+    assert!(
+        m.errors
+            .iter()
+            .any(|(_, e)| e.contains("duplicate function name $is_gcd")),
+        "{:?}",
+        m.errors
+    );
+    let j = s.judge(&t);
+    assert!(!j.accepted && j.crossed());
+    assert!(
+        j.boundary
+            .iter()
+            .any(|r| r.msg.contains("redefines $is_gcd")),
+        "{:?}",
+        j.boundary
+    );
+}

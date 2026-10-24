@@ -1027,6 +1027,23 @@ impl Module {
         }
         m.funcs = imports;
         m.funcs.extend(defined);
+        // names resolve to one function: a second definition would shadow (or be shadowed)
+        for (i, f) in m.funcs.iter().enumerate() {
+            if let Some(n) = &f.header.name
+                && let Some(first) = m.funcs[..i]
+                    .iter()
+                    .find(|g| g.header.name.as_deref() == Some(n.as_str()))
+            {
+                m.errors.push((
+                    f.header_line,
+                    format!(
+                        "duplicate function name {n} (also defined at line {})",
+                        first.header_line
+                    ),
+                ));
+            }
+        }
+        m.errors.sort_by_key(|e| e.0);
         m
     }
 

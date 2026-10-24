@@ -1554,14 +1554,30 @@ impl<'a, 'm> Pass<'a, 'm> {
         }
         let bind = self.call_atom_bind(g, &vals);
         let mut reqs = vec![];
+        let mut vi = 0usize;
         for (pi, p) in lf.header.params.iter().enumerate() {
-            if let Decl::Fact(e) = &p.decl {
-                let a = self.inst_atom(e, &bind, None);
-                reqs.push(CupReq {
-                    kind: CupKind::FactParam { param: pi as u32 },
-                    operand: None,
-                    atom: a,
-                });
+            match &p.decl {
+                // a refined value parameter is sugar for a fact parameter (§1.3): the lemma line
+                // owes it a cup exactly as `call` does (R13, R33) — never assumed for free
+                Decl::Val(r) => {
+                    if let Some(e) = &r.refine {
+                        let a = self.inst_atom(e, &bind, Some(vals[vi]));
+                        reqs.push(CupReq {
+                            kind: CupKind::Refinement { param: pi as u32 },
+                            operand: None,
+                            atom: a,
+                        });
+                    }
+                    vi += 1;
+                }
+                Decl::Fact(e) => {
+                    let a = self.inst_atom(e, &bind, None);
+                    reqs.push(CupReq {
+                        kind: CupKind::FactParam { param: pi as u32 },
+                        operand: None,
+                        atom: a,
+                    });
+                }
             }
         }
         if g == self.f {

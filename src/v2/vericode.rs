@@ -287,7 +287,19 @@ impl SessionStart {
                 _ => {}
             }
         }
-        for f in &m.funcs {
+        for (i, f) in m.funcs.iter().enumerate() {
+            // identity, not name membership: a second function with a known name is a shadow
+            let dup = m.funcs[..i].iter().any(|g| g.name() == f.name());
+            if dup {
+                out.push(Reason {
+                    line: f.header_line,
+                    msg: format!(
+                        "redefines {}: a function name may be defined once",
+                        f.name()
+                    ),
+                });
+                continue;
+            }
             if self.funcs.contains(&f.name()) {
                 continue;
             }
