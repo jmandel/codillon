@@ -99,6 +99,11 @@ macro_rules! field {
     };
 }
 
+#[path = "vericode_html.rs"]
+mod vericode_html;
+#[path = "vericode_ui.rs"]
+mod vericode_ui;
+
 pub const LINE_SPACING: usize = 45;
 const STORAGE_ID: &str = "codillon_content";
 const SCHEDULE_STORE_MS: i32 = 500;
@@ -127,6 +132,9 @@ struct Editor {
     /// the v2 kernel's result for the current text (design 16): per-cup verdicts, chips, the
     /// runtime-check plan of gradual mode. Phase D draws from this.
     v2: Option<Rc<V2State>>,
+    /// vericoding mode (design 16 §7), when on
+    vc: Option<vericode_ui::VcState>,
+    vc_touch: u64,
     previous_instrumented_binary_hash: u64,
     worker_running: bool,
     pending_save: Option<Closure<dyn Fn()>>,
@@ -153,7 +161,9 @@ struct LinkState {
     loaded_text: String,         // the program text as loaded from the link
     pending_step: Option<StepRequest>,
     load_generation: usize,
-    args: Option<Vec<i128>>, // #args=… for $main
+    args: Option<Vec<i128>>,                             // #args=… for $main
+    strict: bool, // #strict=1: runtime-checked cups are errors (§4.1)
+    pending_vc: Option<(Option<String>, Option<usize>)>, // #mode=vericode / #session=, #turn=
 }
 
 /// The v2 kernel's view of the current text.
@@ -219,6 +229,7 @@ fn measure_code(text: &str) -> Option<f32> {
     })
 }
 
+#[derive(Clone)]
 pub struct EditorHolder(Rc<RefCell<Editor>>);
 
 impl EditorHolder {
@@ -656,6 +667,7 @@ impl Editor {
                 lp.wide = end > room;
             }
         }
+        self.vc_decorate(&mut scene);
         self.image_mut().set_proof_layers(&scene.under, &scene.over);
         for (i, lp) in scene.lines.into_iter().enumerate() {
             self.line_mut(i).set_proof(lp);
@@ -704,7 +716,7 @@ impl Editor {
             })
             .collect();
         let module = crate::v2::ast::Module::parse_lines(&texts);
-        let out = crate::v2::kernel::check_module(&module, true);
+        let out = crate::v2::kernel::check_module(&module, !self.link.strict);
         let plan = Rc::new(crate::v2::runtime::RuntimePlan::new(&module, &out));
         let state = Rc::new(V2State {
             out: std::cell::RefCell::new(out),
@@ -900,7 +912,8 @@ impl Editor {
             .absolute_offset_to_position(absolute_new_cursor_pos)?;
 
         // Is the new module well-formed and "validizable"? Otherwise, revert this entire change.
-        match self.on_change() {
+        // In vericoding mode, an edit that changes the student's spec is refused the same way.
+        match self.vc_guard(start_line).and_then(|_| self.on_change()) {
             Ok(()) => {
                 self.line(fixup_line).set_cursor_position(new_cursor_pos)?;
                 // Store new edit
@@ -1142,6 +1155,7 @@ impl Editor {
             self.animations.arrow = self.image_mut().set_arrow_location(false, None);
         }
 
+        self.vc_touched();
         self.schedule_save(); // schedule save to local storage
         self.share_mut().inner_mut().reset_label();
         self.schedule_animation_if_needed();
@@ -1583,6 +1597,8 @@ impl Editor {
             pending_binary: None,
             main_params: vec![],
             v2: None,
+            vc: None,
+            vc_touch: 0,
             previous_instrumented_binary_hash: 0,
             worker_running: false,
             pending_save: None,
@@ -1670,6 +1686,7 @@ impl Editor {
         self.window
             .set_onhashchange(move || e.borrow_mut().load_from_location(false));
 
+        self.vc_install_toggle();
         self.load_from_location(true);
 
         let height = LINE_SPACING * self.text().len();
@@ -1692,6 +1709,18 @@ impl Editor {
         self.link.load_generation += 1;
         self.link.embed = params.embed;
         self.link.args = params.args.clone();
+        self.link.strict = params.strict;
+        self.link.pending_vc = params
+            .vericode
+            .then(|| (params.session.clone(), params.turn));
+        if let Some(name) = params.session.clone() {
+            // a recorded session brings its own program
+            self.link.example = None;
+            self.set_contents(&format!(";; loading session {name}"), None);
+            self.vc_load_session(&name, params.turn);
+            self.link.pending_vc = None;
+            return;
+        }
         self.link.storage_key = params.storage_key(STORAGE_ID);
         self.link.example = None;
         self.share_mut().inner_mut().set_embed(params.embed);
@@ -1756,6 +1785,14 @@ impl Editor {
         self.previous_instrumented_binary_hash = 0; // force a fresh run (for the step request)
         self.on_change().expect("well-formed initial contents");
         self.link.loaded_text = self.buffer_as_text();
+        if self.link.pending_vc.take().is_some() || self.vc.is_some() {
+            // vericoding starts from what was just loaded: that is the student's spec
+            self.vc_set_mode(false);
+            self.vc_set_mode(true);
+            // (at startup the body is rebuilt after this: draw the panel again once it is)
+            let holder = self.holder();
+            vericode_ui::later(move || holder.borrow().vc_render());
+        }
         let height = LINE_SPACING * self.text().len();
         self.image_mut()
             .set_attribute("height", &height.to_string());

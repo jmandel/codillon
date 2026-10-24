@@ -80,6 +80,40 @@ fn stopwatch(cx: f32, cy: f32) -> String {
     )
 }
 
+/// Vericoding: a small padlock left of the code (a refused edit: quiet; a rejected submission:
+/// darkred), in the proof layer's visual language.
+pub fn lock_glyph(line: u32, indent: u16, red: bool) -> String {
+    let x = code_x(indent) - 13.0;
+    let y = y_mid(line) - 4.0;
+    let col = if red { DARKRED } else { "#6c6880" };
+    format!(
+        "<g class=\"pv-lock\" stroke=\"{col}\" fill=\"none\" stroke-width=\"1.3\">\
+<path d=\"M{:.1} {:.1}v-2.6a2.9 2.9 0 0 1 5.8 0v2.6\"/>\
+<rect x=\"{:.1}\" y=\"{:.1}\" width=\"8.4\" height=\"6.6\" rx=\"1.2\" fill=\"#fffff0\"/>\
+<circle cx=\"{:.1}\" cy=\"{:.1}\" r=\"0.9\" fill=\"{col}\" stroke=\"none\"/></g>",
+        x - 2.9,
+        y,
+        x - 4.2,
+        y,
+        x,
+        y + 3.2
+    )
+}
+
+/// Vericoding: the wash behind a line whose surviving mutant is in focus, with the mutated text
+/// as a ghost to its left (dashed purple-gray: a weakness of the spec, not a violation).
+pub fn mutant_wash(line: u32, indent: u16, to: &str) -> String {
+    let x = code_x(indent) - 6.0;
+    let y = y_mid(line) - 19.0;
+    format!(
+        "<rect x=\"{x:.1}\" y=\"{y:.1}\" width=\"520\" height=\"38\" rx=\"6\" class=\"pv-mutant\"/>\
+<text x=\"{:.1}\" y=\"{:.1}\" class=\"pv-mutant-text\">μ {}</text>",
+        x + 4.0,
+        y - 2.0,
+        esc(to)
+    )
+}
+
 pub fn y_mid(line: u32) -> f32 {
     (line.saturating_sub(1)) as f32 * LS + 30.5
 }

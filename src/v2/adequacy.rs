@@ -11,6 +11,9 @@ use super::vericode::Owner;
 
 // ---------------- harness inputs (§6.3 rule 4) ----------------
 
+/// Interpreter call depth while adequacy runs (inputs whose run needs more are left out).
+const ADEQ_DEPTH: u32 = 150;
+
 const EDGES: [i64; 16] = [
     0,
     1,
@@ -206,6 +209,10 @@ fn with_body<S: AsRef<str>>(lines: &[S], m: &Module, f: usize, body: &[String]) 
 
 /// §7.2 vacuity, for each harness and each function with a refined parameter or result.
 pub fn vacuity<S: AsRef<str>>(lines: &[S]) -> Vec<VacuityRow> {
+    super::eval::with_depth_limit(ADEQ_DEPTH, || vacuity_inner(lines))
+}
+
+fn vacuity_inner<S: AsRef<str>>(lines: &[S]) -> Vec<VacuityRow> {
     let m = Module::parse_lines(lines);
     let mut rows = vec![];
     for (f, func) in m.funcs.iter().enumerate() {
@@ -477,6 +484,10 @@ pub struct Bench {
 
 impl Bench {
     pub fn new<S: AsRef<str>>(lines: &[S], per_harness: usize) -> Bench {
+        super::eval::with_depth_limit(ADEQ_DEPTH, || Self::new_inner(lines, per_harness))
+    }
+
+    fn new_inner<S: AsRef<str>>(lines: &[S], per_harness: usize) -> Bench {
         let m = Module::parse_lines(lines);
         let out = check_module(&m, true);
         let plan = RuntimePlan::new(&m, &out);
@@ -508,6 +519,11 @@ fn show_args(a: &[u64]) -> String {
 /// Decide one mutant: run every harness input on the instrumented mutant (gradual mode: its
 /// unfed cups are checks); if none tells it apart, ask whether the kernel still proves it.
 pub fn fate<S: AsRef<str>>(lines: &[S], mt: &Mutant, bench: &Bench) -> Fate {
+    // a mutant can recurse without end: keep every run far from the host's stack (wasm: 1 MiB)
+    super::eval::with_depth_limit(ADEQ_DEPTH, || fate_inner(lines, mt, bench))
+}
+
+fn fate_inner<S: AsRef<str>>(lines: &[S], mt: &Mutant, bench: &Bench) -> Fate {
     let mut l2: Vec<String> = lines.iter().map(|s| s.as_ref().to_string()).collect();
     l2[mt.line as usize - 1] = mt.text.clone();
     let m = Module::parse_lines(&l2);

@@ -8,6 +8,20 @@ use super::term::mask;
 
 pub const EVAL_BUDGET: u32 = 100_000;
 
+thread_local! {
+    /// The call-depth limit of every interpreter made on this thread (adequacy lowers it while it
+    /// runs mutants and their checks, so a runaway recursion is a budget failure, not a crash).
+    pub static DEPTH_LIMIT: std::cell::Cell<u32> = const { std::cell::Cell::new(2000) };
+}
+
+/// Run `f` with a lower interpreter depth limit on this thread.
+pub fn with_depth_limit<T>(limit: u32, f: impl FnOnce() -> T) -> T {
+    let old = DEPTH_LIMIT.with(|d| d.replace(limit));
+    let r = f();
+    DEPTH_LIMIT.with(|d| d.set(old));
+    r
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum EvalErr {
     Trap(String),
@@ -201,6 +215,8 @@ pub struct Interp<'m> {
     pub checks_run: u32,
     tables: Vec<Option<Vec<(usize, usize)>>>,
     depth: u32,
+    /// call depth limit (a deeper run is a budget failure, never a host stack overflow)
+    pub max_depth: u32,
 }
 
 impl<'m> Interp<'m> {
@@ -216,6 +232,7 @@ impl<'m> Interp<'m> {
             checks_run: 0,
             tables: vec![None; m.funcs.len()],
             depth: 0,
+            max_depth: DEPTH_LIMIT.with(|d| d.get()),
         }
     }
 
@@ -233,7 +250,7 @@ impl<'m> Interp<'m> {
         if func.imported {
             return Err(EvalErr::Unsupported(format!("{} is imported", func.name())));
         }
-        if self.depth > 2000 {
+        if self.depth > self.max_depth {
             return Err(EvalErr::Budget);
         }
         if self.tables[f].is_none() {

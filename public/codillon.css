@@ -608,3 +608,395 @@ span.comment[data-commentary][data-tone="quiet"]::after {
 .pv-trunk {
     stroke-width: 1.8;
 }
+
+/* ---- vericoding mode (design 16 §7) ---- */
+
+.vc-toggle {
+    position: fixed;
+    top: 3px;
+    left: 40px;
+    z-index: 20;
+    font-family: 'MLMSansDemiCond10-Regular';
+    font-size: 9pt;
+    letter-spacing: 0.04em;
+    color: #483D8B;
+    background: #fffff0;
+    border: 1px solid #b9b4d4;
+    border-radius: 9px;
+    padding: 1px 8px 2px 8px;
+    cursor: pointer;
+}
+
+body.vc-on .vc-toggle {
+    color: white;
+    background: #483D8B;
+    border-color: #483D8B;
+}
+
+.embed .vc-toggle {
+    display: none;
+}
+
+body.vc-on {
+    margin-right: 404px;
+}
+
+.vc-panel {
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: 372px;
+    overflow-y: auto;
+    z-index: 15;
+    padding: 8px 12px 40px 14px;
+    background: #fffff0;
+    border-left: 1px solid #d8d4ea;
+    font-family: 'MLMRoman10-Regular';
+    font-size: 11pt;
+    line-height: 1.3;
+    color: #2b2640;
+    white-space: normal;
+}
+
+.vc-panel h3 {
+    font-family: 'MLMSansDemiCond10-Regular';
+    font-weight: normal;
+    font-size: 10pt;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #483D8B;
+    margin: 16px 0 4px 0;
+    border-bottom: 1px solid #e3dff2;
+}
+
+.vc-panel h3 .vc-dim {
+    text-transform: none;
+    letter-spacing: 0;
+    margin-left: 6px;
+}
+
+.vc-panel p {
+    margin: 4px 0;
+}
+
+.vc-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.vc-title {
+    font-family: 'MLMSansDemiCond10-Regular';
+    font-size: 13pt;
+    color: #483D8B;
+    flex: 1;
+}
+
+.vc-dim {
+    color: #6c6880;
+    font-size: 10pt;
+}
+
+.vc-btn {
+    font-family: 'MLMSansDemiCond10-Regular';
+    font-size: 9.5pt;
+    color: #483D8B;
+    background: #fffff0;
+    border: 1px solid #b9b4d4;
+    border-radius: 9px;
+    padding: 1px 8px 2px 8px;
+    margin: 2px 4px 2px 0;
+    cursor: pointer;
+}
+
+.vc-btn.vc-primary {
+    color: white;
+    background: #483D8B;
+    border-color: #483D8B;
+}
+
+.vc-btn.vc-off {
+    opacity: 0.45;
+    pointer-events: none;
+}
+
+.vc-btn.vc-link {
+    border-style: dashed;
+}
+
+.vc-btn.vc-x {
+    border: none;
+    font-size: 13pt;
+    padding: 0 4px;
+}
+
+.vc-seg .vc-btn {
+    margin: 0;
+    border-radius: 0;
+}
+
+.vc-seg .vc-btn:first-child {
+    border-radius: 9px 0 0 9px;
+}
+
+.vc-seg .vc-btn:last-child {
+    border-radius: 0 9px 9px 0;
+    border-left: none;
+}
+
+.vc-seg .vc-btn.vc-on {
+    color: white;
+    background: #6A5ACD;
+    border-color: #6A5ACD;
+}
+
+.vc-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 2px;
+}
+
+.vc-own {
+    font-size: 10pt;
+    color: #4b4566;
+}
+
+.vc-lockmark, .vc-openmark {
+    display: inline-block;
+    width: 9px;
+    height: 9px;
+    margin-right: 4px;
+    vertical-align: -1px;
+}
+
+.vc-lockmark {
+    background: #ebe7f7;
+    border: 1px solid #b9b4d4;
+}
+
+.vc-openmark {
+    border: 1px dashed #b9b4d4;
+}
+
+.vc-task {
+    font-size: 10.5pt;
+}
+
+.vc-verdict {
+    font-family: 'MLMSansDemiCond10-Regular';
+    font-size: 10.5pt;
+    padding: 3px 6px;
+    border: 1px dashed #b9b4d4;
+}
+
+.vc-verdict.vc-ok, .vc-k.vc-ok {
+    color: #483D8B;
+}
+
+.vc-verdict.vc-ok {
+    border: 1px solid #483D8B;
+}
+
+.vc-verdict.vc-bad {
+    color: darkred;
+    border: 1px solid darkred;
+}
+
+.vc-k.vc-bad {
+    color: darkred;
+}
+
+.vc-k.vc-open {
+    color: #5f5a7a;
+}
+
+.vc-log {
+    list-style: none;
+    padding: 0;
+    margin: 6px 0;
+}
+
+.vc-log > li {
+    border-left: 2px solid #e3dff2;
+    padding: 2px 0 6px 8px;
+    margin-bottom: 6px;
+}
+
+.vc-turn {
+    font-size: 10.5pt;
+}
+
+.vc-n {
+    font-family: 'MLMSansDemiCond10-Regular';
+    color: white;
+    background: #6c6880;
+    border-radius: 7px;
+    padding: 0 5px;
+    margin-right: 5px;
+    font-size: 9pt;
+}
+
+.vc-who {
+    font-family: 'MLMSansDemiCond10-Regular';
+    color: #6c6880;
+    font-size: 9.5pt;
+}
+
+.vc-edits {
+    font-size: 9.5pt;
+    color: #6c6880;
+}
+
+.vc-k {
+    font-family: 'MLMSansDemiCond10-Regular';
+    font-size: 10pt;
+    margin-top: 2px;
+}
+
+.vc-reasons, .vc-vac, .vc-surv, .vc-cups ul {
+    list-style: none;
+    padding: 0;
+    margin: 2px 0;
+    font-size: 10pt;
+}
+
+.vc-reasons li {
+    color: #5a2230;
+}
+
+.vc-ln {
+    display: inline-block;
+    min-width: 26px;
+    font-family: 'MLMSansDemiCond10-Regular';
+    color: #8a85a3;
+    font-size: 9pt;
+}
+
+.vc-cups summary {
+    font-size: 9.5pt;
+    color: #6c6880;
+    cursor: pointer;
+}
+
+.vc-lane {
+    margin-left: 26px;
+    font-size: 9pt;
+    color: #6A5ACD;
+}
+
+.vc-vac li {
+    margin: 2px 0;
+}
+
+.vc-vac li.vc-bad {
+    color: darkred;
+    border: 1px solid darkred;
+    padding: 3px;
+}
+
+.vc-vac li.vc-warn {
+    color: #6c4a00;
+    border: 1px dashed #b9a06a;
+    padding: 3px;
+}
+
+.vc-mut {
+    font-family: 'MLMSansDemiCond10-Regular';
+    font-size: 10.5pt;
+}
+
+.vc-ops {
+    font-size: 9.5pt;
+}
+
+.vc-surv li {
+    cursor: pointer;
+    padding: 1px 2px;
+}
+
+.vc-surv li:hover, .vc-surv li.vc-focus {
+    background: #ebe7f7;
+}
+
+.vc-surv code {
+    font-family: 'MLMRoman10-Regular';
+    font-size: 10pt;
+    color: #2b2640;
+}
+
+.vc-still {
+    font-family: 'MLMSansDemiCond10-Regular';
+    font-size: 8.5pt;
+    color: white;
+    background: #6A5ACD;
+    border-radius: 7px;
+    padding: 0 5px;
+}
+
+.vc-form {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin: 4px 0;
+}
+
+.vc-form input {
+    font-family: 'MLMRoman10-Regular';
+    font-size: 10.5pt;
+    padding: 2px 4px;
+    border: 1px solid #b9b4d4;
+    background: white;
+}
+
+.vc-form .vc-btn {
+    align-self: flex-start;
+}
+
+/* locked (student-owned) lines: the gutter number turns lavender */
+.line.locked-line::before {
+    color: #a39dc4;
+}
+
+/* vericoding commentary: a refused edit (quiet, with the padlock), a rejected submission
+   (darkred), a surviving mutant (dashed purple-gray) */
+span.comment[data-commentary][data-tone="lock"]::after {
+    color: #4b4566;
+    border: 1px solid #b9b4d4;
+    background: #f6f4fc;
+}
+
+span.comment[data-commentary][data-tone="mutant"]::after {
+    color: #483D8B;
+    border: 1px dashed #6A5ACD;
+}
+
+.pv-mutant {
+    fill: #ebe7f7;
+    stroke: #6A5ACD;
+    stroke-width: 1;
+    stroke-dasharray: 3 2;
+    opacity: 0.8;
+}
+
+.pv-mutant-text {
+    font-family: 'MLMSansDemiCond10-Regular';
+    font-size: 9px;
+    fill: #483D8B;
+}
+
+@media (max-width: 900px) {
+    body.vc-on {
+        margin-right: 0;
+        margin-bottom: 48vh;
+    }
+    .vc-panel {
+        top: auto;
+        left: 0;
+        width: auto;
+        height: 46vh;
+        border-left: none;
+        border-top: 1px solid #d8d4ea;
+    }
+}

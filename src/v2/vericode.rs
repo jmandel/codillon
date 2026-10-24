@@ -230,7 +230,7 @@ impl SessionStart {
                     let msg = if now.iter().any(|x| x.1 == a.1) {
                         format!("adds a line to the locked spec: `{}`", b.1)
                     } else {
-                        format!("edited a locked line: {} (was `{}`)", b.0, a.1)
+                        format!("edited locked line {} (was `{}`)", b.0, a.1)
                     };
                     return Some(Reason { line: b.0, msg });
                 }
@@ -399,7 +399,8 @@ impl Judgement {
         if self.accepted {
             format!("accepted: {} verified", list(&self.touched))
         } else if !self.boundary.is_empty() {
-            format!("rejected: {}", self.boundary[0].msg)
+            let m = &self.boundary[0].msg;
+            format!("rejected: {}", m.split(" (was `").next().unwrap_or(m))
         } else if !self.malformed.is_empty() {
             format!("rejected: {}", self.malformed[0].msg)
         } else {

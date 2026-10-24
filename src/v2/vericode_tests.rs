@@ -59,7 +59,7 @@ fn the_judge_enforces_the_boundary() {
     let j = s.judge(&w);
     assert!(!j.accepted && j.crossed(), "{:?}", j.boundary);
     assert_eq!(j.boundary[0].line, 35);
-    assert!(j.boundary[0].msg.starts_with("edited a locked line: 35"));
+    assert!(j.boundary[0].msg.starts_with("edited locked line 35"));
     // an assume in the body
     let w = apply_edits(
         &lines,
@@ -257,6 +257,7 @@ fn b4_kills_come_from_the_spec_not_own_invariants() {
         let lines = example(ex);
         let m = super::ast::Module::parse_lines(&lines);
         let out = super::kernel::check_module(&m, true);
+        eprintln!("ADEQ start {ex}");
         let res = run_mutation(ex);
         let (mut spec, mut own, mut away, mut surv, mut proven, mut invalid) = (0, 0, 0, 0, 0, 0);
         for (mt, f) in &res {
@@ -458,7 +459,7 @@ fn live_loop_with_a_mock_transport() {
         sent[2]["last_round"]["verdict"]
             .as_str()
             .unwrap()
-            .starts_with("rejected: edited a locked line")
+            .starts_with("rejected: edited locked line")
     );
     // with lanes: the third request's failing prove has its hypotheses in line_errors
     assert!(

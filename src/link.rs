@@ -7,6 +7,10 @@
 //                    raw-DEFLATE compression of the UTF-8 program text
 //   step=<n|last|fail>  position the step slider after the first run
 //   embed=1          iframe mode (no page margins; height posted to the parent; no saving)
+//   mode=vericode    vericoding mode (design 16 §7): spec locked, adequacy panel, sessions
+//   session=<name>   load the recorded session `examples/v2/sessions/<name>.json` (vericoding)
+//   turn=<n>         play the session's first n turns
+//   strict=1         strict mode: runtime-checked cups are errors (§4.1)
 
 use anyhow::{Result, bail};
 
@@ -30,6 +34,10 @@ pub struct LinkParams {
     pub embed: bool,
     pub fit: Option<bool>,       // fit=1: scale the editor to the frame width
     pub args: Option<Vec<i128>>, // arguments for $main (#args=1,2; default zeros)
+    pub vericode: bool,
+    pub session: Option<String>,
+    pub turn: Option<usize>,
+    pub strict: bool,
 }
 
 impl LinkParams {
@@ -58,6 +66,13 @@ impl LinkParams {
                 }
                 "embed" => ret.embed = value == "1" || value.is_empty(),
                 "fit" => ret.fit = Some(value == "1" || value.is_empty()),
+                "mode" => ret.vericode = value == "vericode",
+                "session" if is_example_name(value) && !value.contains('/') => {
+                    ret.session = Some(value.to_string());
+                    ret.vericode = true;
+                }
+                "turn" => ret.turn = value.parse().ok(),
+                "strict" => ret.strict = value == "1" || value.is_empty(),
                 "args" => {
                     ret.args = value
                         .split(',')
