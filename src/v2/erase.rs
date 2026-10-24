@@ -60,7 +60,6 @@ fn erase_toks(code: &str, t: &Toks, lo: usize, hi: usize, mut pos: usize, out: &
     while i < hi {
         let (tok, span) = &t[i];
         out.push_str(&code[pos..span.start]);
-        pos = span.start;
         if *tok != Tok::Open {
             out.push_str(&code[span.clone()]);
             pos = span.end;

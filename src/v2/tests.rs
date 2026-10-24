@@ -258,4 +258,254 @@ mod solver_units {
         let r = prove(&mut t, &[lt(x, c16), lt(y, c16)], &le(xy, c224));
         assert!(!matches!(r, Outcome::Valid { .. }), "{r:?}");
     }
+
+    fn eqa(t: &mut Terms, a: TermId, b: TermId) -> Atom {
+        t.mk_eq(a, b, true)
+    }
+
+    #[test]
+    fn wraparound_is_explicit() {
+        let mut t = Terms::default();
+        let x = t.leaf(ValTy::I32, "$x", None);
+        let z = t.konst(ValTy::I32, 0);
+        let one = t.konst(ValTy::I32, 1);
+        let c8 = t.konst(ValTy::I32, 8);
+        let x0 = t.op(IOp::Add, ValTy::I32, &[x, z]);
+        // add(x, 0) = x needs the result-range side constraint (review issue 4)
+        let g = eqa(&mut t, x0, x);
+        assert!(matches!(prove(&mut t, &[], &g), Outcome::Valid { .. }));
+        // x < x + 1 is false at x = 2^32 − 1 (the wrap stays in the problem)
+        let x1 = t.op(IOp::Add, ValTy::I32, &[x, one]);
+        match prove(&mut t, &[], &lt(x, x1)) {
+            Outcome::NotImplied(m) => assert!(m.contains(&("u($x)".into(), 4294967295)), "{m:?}"),
+            r => panic!("{r:?}"),
+        }
+        // …but holds when the interval pre-pass removes the wrap: u(x) < 8
+        match prove(&mut t, &[lt(x, c8)], &lt(x, x1)) {
+            Outcome::Valid { wraps } => assert!(!wraps.is_empty()),
+            r => panic!("{r:?}"),
+        }
+        // i64 squares of i32 values do not wrap: ext(r)·ext(r) ≥ 0 trivially, and (r+1)² = r² + 2r + 1
+        let r = t.leaf(ValTy::I32, "$r", None);
+        let e = t.op(IOp::ExtendI32U, ValTy::I32, &[r]);
+        let one64 = t.konst(ValTy::I64, 1);
+        let e1 = t.op(IOp::Add, ValTy::I64, &[e, one64]);
+        let sq = t.op(IOp::Mul, ValTy::I64, &[e, e]);
+        let sq1 = t.op(IOp::Mul, ValTy::I64, &[e1, e1]);
+        // (2^32)^2 wraps to 0 in i64, so it needs a bound on r
+        assert!(!matches!(prove(&mut t, &[], &lt(sq, sq1)), Outcome::Valid { .. }));
+        let c65535 = t.konst(ValTy::I32, 65535);
+        assert!(matches!(prove(&mut t, &[le(r, c65535)], &lt(sq, sq1)), Outcome::Valid { .. }));
+        // the same in i32 wraps at r = 65535 (the isqrt lesson): not valid
+        let r1 = t.op(IOp::Add, ValTy::I32, &[r, one]);
+        let sq32 = t.op(IOp::Mul, ValTy::I32, &[r, r]);
+        let sq32b = t.op(IOp::Mul, ValTy::I32, &[r1, r1]);
+        assert!(!matches!(prove(&mut t, &[], &lt(sq32, sq32b)), Outcome::Valid { .. }));
+    }
+
+    #[test]
+    fn case_splits_and_counterexamples() {
+        let mut t = Terms::default();
+        let x = t.leaf(ValTy::I32, "$x", None);
+        let y = t.leaf(ValTy::I32, "$y", None);
+        let z = t.konst(ValTy::I32, 0);
+        // ne is a two-way split: x ≠ 0 ∧ x ≤ 0 ⇒ False
+        let ne = t.mk_eq(x, z, false);
+        assert!(matches!(prove(&mut t, &[ne.clone(), le(x, z)], &Atom::False), Outcome::Valid { .. }));
+        // select is an ite split: select(x, y, x<y) ≥ … the minimum is ≤ both
+        let c = t.op(IOp::LtU, ValTy::I32, &[x, y]);
+        let mn = t.intern(crate::v2::term::Key::Ite(c, x, y), ValTy::I32);
+        assert!(matches!(prove(&mut t, &[], &le(mn, x)), Outcome::Valid { .. }));
+        assert!(matches!(prove(&mut t, &[], &le(mn, y)), Outcome::Valid { .. }));
+        // a countermodel names program values
+        match prove(&mut t, &[ne], &lt(y, x)) {
+            Outcome::NotImplied(m) => assert!(!m.is_empty()),
+            r => panic!("{r:?}"),
+        }
+        // parity: and(x, 1) = 0 ⇒ x ≠ 1
+        let one = t.konst(ValTy::I32, 1);
+        let a = t.op(IOp::And, ValTy::I32, &[x, one]);
+        let ev = t.mk_eq(a, z, true);
+        let g = t.mk_eq(x, one, false);
+        assert!(matches!(prove(&mut t, &[ev], &g), Outcome::Valid { .. }));
+    }
+
+    #[test]
+    fn caps_are_deterministic() {
+        // more than 64 terms in one atom
+        let mut t = Terms::default();
+        let mut sum = t.konst(ValTy::I64, 0);
+        for i in 0..70 {
+            let x = t.leaf(ValTy::I32, format!("$x{i}"), None);
+            let e = t.op(IOp::ExtendI32U, ValTy::I32, &[x]);
+            sum = t.op(IOp::Add, ValTy::I64, &[sum, e]);
+        }
+        let big = t.konst(ValTy::I64, 1 << 40);
+        match prove(&mut t, &[], &lt(sum, big)) {
+            Outcome::Cap(s) => assert!(s.contains("cap 64"), "{s}"),
+            r => panic!("{r:?}"),
+        }
+        // more than 256 cases: a chain of unresolvable i32 wraps
+        let mut t = Terms::default();
+        let mut acc = t.leaf(ValTy::I32, "$a", None);
+        let mut leaves = vec![];
+        for i in 0..10 {
+            let x = t.leaf(ValTy::I32, format!("$x{i}"), None);
+            leaves.push(x);
+            acc = t.op(IOp::Add, ValTy::I32, &[acc, x]);
+        }
+        let _ = leaves;
+        // valid in every case, but 2^10 cases must be closed
+        let max = t.konst(ValTy::I32, 0xffff_ffff);
+        let r1 = prove(&mut t, &[], &le(acc, max));
+        let r2 = prove(&mut t, &[], &le(acc, max));
+        assert_eq!(r1, r2);
+        match r1 {
+            Outcome::Cap(s) => assert!(s.contains("cases"), "{s}"),
+            r => panic!("{r:?}"),
+        }
+    }
+}
+
+// ---------------- Fable review §A counterexamples: none may prove ----------------
+
+/// Check `src`; return (verdict, diag) of every cup on lines marked `;; @cup`, and line errors.
+fn marked(src: &str) -> (Vec<(u32, Verdict, String)>, Vec<(u32, String)>) {
+    let out = check_module(&Module::parse(src), true);
+    let lines: Vec<u32> = src.lines().enumerate().filter(|(_, l)| l.contains(";; @cup")).map(|(i, _)| i as u32 + 1).collect();
+    assert!(!lines.is_empty());
+    let cups = out.cups().filter(|c| lines.contains(&c.line)).map(|c| (c.line, c.verdict, c.diag.clone().unwrap_or_default())).collect();
+    let errs = out.funcs.iter().flat_map(|f| f.line_errors.clone()).collect();
+    (cups, errs)
+}
+
+fn none_proven(src: &str) {
+    let (cups, errs) = marked(src);
+    assert!(!cups.is_empty(), "no cups on marked lines");
+    for (l, v, d) in &cups {
+        assert!(!matches!(v, Verdict::Proven | Verdict::Assumed), "line {l} is {v:?} ({d}); errors {errs:?}");
+    }
+}
+
+#[test]
+fn fable_a1_predicate_reading_a_mutable_global() {
+    let src = r#"(global $g (mut i32) (i32.const 1))
+(func $gnz (result i32)
+  global.get $g
+)
+(func $div_by_g (param $a (i32 | (call $gnz))) (result i32)
+  local.get $a
+  global.get $g
+  prove 1
+  i32.div_u ;; @cup
+)
+(func $a1 (param $n i32) (result i32)
+  call $gnz
+  if (result i32)
+    i32.const 0
+    global.set $g
+    local.get $n
+    call $div_by_g ;; @cup
+  else
+    i32.const 0
+  end
+)"#;
+    none_proven(src);
+    let (_, errs) = marked(src);
+    assert!(errs.iter().any(|(_, e)| e.contains("must be pure")), "{errs:?}");
+}
+
+#[test]
+fn fable_a2_globals_get_phi_at_loop_heads() {
+    none_proven(
+        r#"(global $g (mut i32) (i32.const 7))
+(func $a2 (result i32)
+  global.get $g
+  i32.eqz
+  if (result i32)
+    i32.const 0
+  else
+    loop $L
+      i32.const 10
+      global.get $g
+      i32.div_u ;; @cup
+      drop
+      i32.const 0
+      global.set $g
+      br $L
+    end
+    unreachable
+  end
+)"#,
+    );
+}
+
+#[test]
+fn fable_a3_edge_prove_output_stays_on_the_edge() {
+    none_proven(
+        r#"(func $a3 (param $n i32) (param $d i32) (result i32)
+  block $b (fact (i32.ne $d 0))
+    local.get $d
+    i32.eqz
+    i32.eqz
+    prove 0
+    br_if $b
+    local.get $n
+    local.get $d
+    i32.div_u ;; @cup
+    return
+  end
+  i32.const 1
+)"#,
+    );
+}
+
+#[test]
+fn fable_a4_virtual_rem_u_is_guarded() {
+    none_proven(
+        r#"(func $gcd_ref (param $a i32) (param $b i32) (result i32)
+  local.get $b
+  i32.eqz
+  if (result i32)
+    local.get $a
+  else
+    local.get $b
+    local.get $a
+    local.get $b
+    i32.rem_u
+    prove 0
+    call $gcd_ref
+  end
+)
+(func $gcd_ref_m (export "measure:gcd_ref") (param $a i32) (param $b i32) (result i32)
+  local.get $b
+)
+(func $a4 (param $n i32) (param $y i32) (result i32)
+  unfold $gcd_ref $n $y
+  local.get $n
+  local.get $y
+  prove 1
+  i32.div_u ;; @cup
+)
+(func $a4c (param $n i32) (result i32)
+  local.get $n
+  local.get $n
+  prove 0
+  i32.div_u ;; @cup
+)"#,
+    );
+}
+
+#[test]
+fn constant_zero_divisor_in_a_proposition_is_opaque() {
+    // (div_u x 0) in a fact must not make every case unsatisfiable (review A4 residue)
+    none_proven(
+        r#"(func $z (param $x i32) (param $y i32) (result i32)
+  local.get $x
+  local.get $y
+  assume (fact (i32.eq (i32.div_u $x (i32.const 0)) (i32.const 3)))
+  prove 1
+  i32.div_u ;; @cup
+)"#,
+    );
 }

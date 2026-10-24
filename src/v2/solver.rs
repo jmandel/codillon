@@ -288,7 +288,7 @@ impl<'a> Solver<'a> {
             if k > 0 {
                 var.hi = var.hi.min(fdiv(-l.c, k));
             } else {
-                var.lo = var.lo.max(-fdiv(l.c, -k));
+                var.lo = var.lo.max(-fdiv(-l.c, -k)); // x ≥ ⌈c/|k|⌉
             }
             if var.lo > var.hi {
                 return Err(Stop::Infeasible);
@@ -1036,6 +1036,10 @@ impl<'a> Solver<'a> {
                 x += c * val.get(y).copied().unwrap_or(0);
             }
             val.insert(*v, x);
+        }
+        // variables fixed by their interval never reached elimination: report them too
+        for (v, var) in self.vars.iter().enumerate() {
+            val.entry(v as VarId).or_insert(var.lo);
         }
         let mut model: Vec<(VarId, i128)> = val.into_iter().collect();
         model.sort();
