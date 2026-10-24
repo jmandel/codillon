@@ -91,7 +91,8 @@ pub enum Cut {
 /// A value to read from a model, to show the state it describes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Read {
-    Var { name: String, signed: bool }, // a param, local or global (bitvector)
+    Var { name: String, bits: u32 },    // a param or local (bitvector)
+    Global { index: usize, name: String, bits: u32 },
     Ghost(String),                      // an integer ghost
     Word(u32),                          // a 32-bit word of memory
     MapHas { map: String, key: usize }, // key: index of the read giving the key
@@ -107,15 +108,14 @@ pub struct Obligation {
     pub at_line: usize,
     pub smt: String,
     pub hash: u64,
-    /// The same query in integer arithmetic (for nonlinear facts), tried when bit-blasting
-    /// gives no answer.
-    pub smt_int: Option<String>,
     /// Something was over-approximated: a model may be spurious (sat → unknown).
     pub approximate: bool,
     /// The obligation could not be encoded (always unknown).
     pub unsupported: Option<String>,
     pub cut: Cut,
     pub reads: Vec<Read>,
+    /// The SMT terms of the reads (the query's get-value).
+    pub terms: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------------------
@@ -346,11 +346,11 @@ impl<'a> Gen<'a> {
             at_line,
             smt: String::new(),
             hash: 0,
-            smt_int: None,
             approximate: st.approx,
             unsupported: None,
             cut: st.cut.clone(),
             reads: vec![],
+            terms: vec![],
         };
         self.obligations.push((
             ob,
@@ -1730,11 +1730,11 @@ impl<'a> Gen<'a> {
                 at_line,
                 smt: String::new(),
                 hash: 0,
-                smt_int: None,
-                approximate: st.approx,
+                    approximate: st.approx,
                 unsupported: None,
                 cut: st.cut.clone(),
                 reads: vec![],
+                terms: vec![],
             };
             match r {
                 Ok(goal) => {
@@ -2129,50 +2129,53 @@ fn bound_name(cx: &SpecCx) -> String {
     format!("qb{}", cx.binders.iter().filter(|(b, _)| b == "#q").count())
 }
 
-// The conjuncts of an SMT term, flattening nested (and …).
+// The conjuncts of an SMT term, flattening nested (and …), in one pass.
 fn conjuncts(t: &str) -> Vec<&str> {
     let t = t.trim();
-    let Some(inner) = t.strip_prefix("(and ").and_then(|r| r.strip_suffix(')')) else {
+    if !t.starts_with("(and ") {
         return vec![t];
-    };
-    let b = inner.as_bytes();
+    }
+    let b = t.as_bytes();
     let mut out = vec![];
-    let (mut i, mut depth, mut start) = (0, 0i32, None);
+    // for each open list: is it an (and …), and where it starts if it is a conjunct
+    let mut stack: Vec<(bool, Option<usize>)> = vec![];
+    let in_and = |stack: &Vec<(bool, Option<usize>)>| stack.last().is_some_and(|(a, _)| *a);
+    let mut i = 0;
     while i < b.len() {
         match b[i] {
-            b'|' => {
-                start.get_or_insert(i);
-                i += 1;
-                while i < b.len() && b[i] != b'|' {
-                    i += 1;
-                }
-            }
             b'(' => {
-                start.get_or_insert(i);
-                depth += 1;
-            }
-            b')' => depth -= 1,
-            c if c.is_ascii_whitespace() => {
-                if depth == 0
-                    && let Some(s) = start.take()
-                {
-                    out.extend(conjuncts(&inner[s..i]));
+                let is_and = t[i + 1..].starts_with("and ") && (stack.is_empty() || in_and(&stack));
+                let start = (!is_and && in_and(&stack)).then_some(i);
+                stack.push((is_and, start));
+                if is_and {
+                    i += 4;
                 }
             }
-            _ => {
-                start.get_or_insert(i);
+            b')' => {
+                if let Some((_, Some(s))) = stack.pop() {
+                    out.push(&t[s..=i]);
+                }
             }
-        }
-        if depth == 0
-            && b[i] == b')'
-            && let Some(s) = start.take()
-        {
-            out.extend(conjuncts(&inner[s..=i]));
+            c if c.is_ascii_whitespace() => {}
+            _ => {
+                // an atom (or |quoted symbol|)
+                let s = i;
+                if b[i] == b'|' {
+                    i += 1;
+                    while i < b.len() && b[i] != b'|' {
+                        i += 1;
+                    }
+                } else {
+                    while i + 1 < b.len() && !b[i + 1].is_ascii_whitespace() && b[i + 1] != b'(' && b[i + 1] != b')' {
+                        i += 1;
+                    }
+                }
+                if in_and(&stack) {
+                    out.push(&t[s..=i.min(b.len() - 1)]);
+                }
+            }
         }
         i += 1;
-    }
-    if let Some(s) = start {
-        out.extend(conjuncts(&inner[s..]));
     }
     out
 }
@@ -2554,15 +2557,15 @@ pub fn generate(plan: &SpecPlan, module: &ValidModule, types: &TypedModule) -> V
                 if v.w == W::B32 {
                     keys.push((reads.len(), v.t.clone()));
                 }
-                reads.push(Read::Var { name: name.clone(), signed: true });
+                reads.push(Read::Var { name: name.clone(), bits: if v.w == W::B32 { 32 } else { 64 } });
                 terms.push(v.t.clone());
             }
             for (gi, v) in cut.globals.iter().enumerate() {
-                let Some(Some(name)) = plan.global_names.get(gi) else { continue };
                 if v.w == W::Opaque {
                     continue;
                 }
-                reads.push(Read::Var { name: name.clone(), signed: true });
+                let name = plan.global_names.get(gi).cloned().flatten().unwrap_or(format!("global {gi}"));
+                reads.push(Read::Global { index: gi, name, bits: if v.w == W::B32 { 32 } else { 64 } });
                 terms.push(v.t.clone());
             }
             if mem_bytes > 0 {
@@ -2618,9 +2621,9 @@ pub fn generate(plan: &SpecPlan, module: &ValidModule, types: &TypedModule) -> V
                 let _ = writeln!(q, "(get-value ({}))", terms.join(" "));
             }
             ob.hash = fnv(&q);
-            ob.smt_int = crate::vc_int::translate(&q);
             ob.smt = q;
             ob.reads = reads;
+            ob.terms = terms;
             out.push(ob);
         }
     }
@@ -2641,6 +2644,7 @@ pub enum Verdict {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Model {
     pub vars: Vec<(String, i128)>,
+    pub globals: Vec<(usize, String, i128)>,
     pub words: BTreeMap<u32, i128>,
     pub ghosts: Vec<(String, i128)>,
     pub maps: BTreeMap<String, BTreeMap<i128, i128>>,
@@ -2749,12 +2753,19 @@ fn signed(v: i128, w: u32) -> i128 {
     }
 }
 
+// The answer to check-sat: the first line of the output. (The browser build reports a
+// later error, e.g. get-value after unsat, by prefixing the whole output with "error:".)
+fn answer(output: &str) -> &str {
+    let first = output.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("");
+    first.strip_prefix("error:").unwrap_or(first).trim()
+}
+
 /// Read Z3's answer to an obligation's query.
 pub fn verdict(ob: &Obligation, output: &str) -> Verdict {
     if let Some(why) = &ob.unsupported {
         return Verdict::Unknown(why.clone());
     }
-    let first = output.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("");
+    let first = answer(output);
     match first {
         "unsat" => Verdict::Proven,
         "sat" => {
@@ -2763,7 +2774,12 @@ pub fn verdict(ob: &Obligation, output: &str) -> Verdict {
                     "a counterexample was found, but the program was only approximated".into(),
                 );
             }
-            let rest: String = output.lines().skip_while(|l| l.trim() != "sat").skip(1).collect::<Vec<_>>().join("\n");
+            let rest: String = output
+                .lines()
+                .skip_while(|l| l.trim().trim_start_matches("error:") != "sat")
+                .skip(1)
+                .collect::<Vec<_>>()
+                .join("\n");
             Verdict::Refuted(decode(ob, &rest))
         }
         "unknown" => Verdict::Unknown(
@@ -2803,6 +2819,11 @@ fn decode(ob: &Obligation, text: &str) -> Model {
             Read::Var { name, .. } => {
                 if let Some(v) = num(i) {
                     m.vars.push((name.clone(), v));
+                }
+            }
+            Read::Global { index, name, .. } => {
+                if let Some(v) = num(i) {
+                    m.globals.push((*index, name.clone(), v));
                 }
             }
             Read::Ghost(n) => {
@@ -2856,6 +2877,8 @@ enum Stage {
     Parts { queries: Vec<String>, full: Vec<String>, exact: bool, results: Vec<Option<char>>, retry: bool },
     // a part was sat without the map-quantified facts: is it with them?
     Confirm(String),
+    // a counterexample: look for one with small numbers
+    Minimize { query: String, bounds: Vec<i128>, found: Model },
     Done,
 }
 
@@ -2882,6 +2905,21 @@ impl Proof {
         self.verdict.as_ref()
     }
 
+    // A counterexample was found by `query`: try again with every value it shows small.
+    fn minimize(&mut self, query: String, found: Model) {
+        let small = |v: &i128| v.abs() <= 8;
+        let all_small = found.vars.iter().all(|(_, v)| small(v))
+            && found.globals.iter().all(|(_, _, v)| small(v))
+            && found.words.values().all(small)
+            && found.ghosts.iter().all(|(_, v)| small(v))
+            && found.maps.values().all(|m| m.iter().all(|(k, v)| small(k) && small(v)));
+        if all_small {
+            self.finish(Verdict::Refuted(found));
+        } else {
+            self.stage = Stage::Minimize { query, bounds: vec![8, 100, 10_000], found };
+        }
+    }
+
     fn finish(&mut self, v: Verdict) {
         self.verdict = Some(v);
         self.stage = Stage::Done;
@@ -2900,10 +2938,17 @@ impl Proof {
                     self.queries += 1;
                     return Some(with_rlimit(q, RLIMIT_RETRY));
                 }
-                Stage::Int => match &ob.smt_int {
+                Stage::Minimize { query, bounds, .. } => {
+                    let b = bounds[0];
+                    self.queries += 1;
+                    let bound = small_values(ob, b);
+                    return Some(query.replacen("(check-sat)", &format!("(assert {bound})\n(check-sat)"), 1));
+                }
+                // the same query in integer arithmetic (for nonlinear facts)
+                Stage::Int => match crate::vc_int::translate(&ob.smt) {
                     Some(q) => {
                         self.queries += 1;
-                        return Some(q.clone());
+                        return Some(q);
                     }
                     None => self.stage = split_stage(ob),
                 },
@@ -2938,22 +2983,34 @@ impl Proof {
             Stage::Done => {}
             Stage::Whole => match verdict(ob, output) {
                 Verdict::Unknown(_) => self.stage = Stage::Int,
+                Verdict::Refuted(m) => self.minimize(ob.smt.clone(), m),
                 v => self.finish(v),
             },
             Stage::Int => match verdict(ob, output) {
                 Verdict::Unknown(_) => self.stage = split_stage(ob),
                 v => self.finish(v),
             },
-            Stage::Confirm(_) => {
-                let v = match verdict(ob, output) {
-                    Verdict::Refuted(m) => Verdict::Refuted(m),
-                    _ => Verdict::Unknown("a counterexample to a weakened query, which may not be one".into()),
-                };
-                self.finish(v);
+            Stage::Confirm(q) => {
+                let q = with_rlimit(q, RLIMIT_RETRY);
+                match verdict(ob, output) {
+                    Verdict::Refuted(m) => self.minimize(q, m),
+                    _ => self.finish(Verdict::Unknown(
+                        "a counterexample to a weakened query, which may not be one".into(),
+                    )),
+                }
             }
-            Stage::Parts { exact, results, full, .. } => {
+            Stage::Minimize { bounds, found, .. } => {
+                bounds.remove(0);
+                if let Verdict::Refuted(m) = verdict(ob, output) {
+                    self.finish(Verdict::Refuted(m));
+                } else if bounds.is_empty() {
+                    let m = std::mem::take(found);
+                    self.finish(Verdict::Refuted(m));
+                }
+            }
+            Stage::Parts { exact, results, full, queries, .. } => {
                 let Some(i) = self.asked.take() else { return };
-                let first = output.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("");
+                let first = answer(output);
                 results[i] = Some(match first {
                     "unsat" => 'u',
                     "sat" => 's',
@@ -2961,8 +3018,11 @@ impl Proof {
                 });
                 if first == "sat" {
                     if *exact {
-                        let v = verdict(ob, output);
-                        self.finish(v);
+                        let q = queries[i].clone();
+                        match verdict(ob, output) {
+                            Verdict::Refuted(m) => self.minimize(q, m),
+                            v => self.finish(v),
+                        }
                     } else {
                         self.stage = Stage::Confirm(full[i].clone());
                     }
@@ -2970,6 +3030,20 @@ impl Proof {
             }
         }
     }
+}
+
+// Every value a model shows within ±b.
+fn small_values(ob: &Obligation, b: i128) -> String {
+    let mut parts = vec![];
+    for (r, t) in ob.reads.iter().zip(&ob.terms) {
+        let bits = match r {
+            Read::Var { bits, .. } | Read::Global { bits, .. } => *bits,
+            Read::Ghost(_) | Read::Word(_) | Read::MapVal { .. } => 32,
+            Read::MapHas { .. } => continue,
+        };
+        parts.push(format!("(bvsle {} {t}) (bvsle {t} {})", bv(-b, bits), bv(b, bits)));
+    }
+    if parts.is_empty() { "true".into() } else { format!("(and {})", parts.join(" ")) }
 }
 
 fn with_rlimit(q: &str, n: u64) -> String {
@@ -3256,4 +3330,16 @@ fn split_queries(q: &str) -> Option<(Vec<String>, Vec<String>, bool)> {
     let queries = goals.iter().map(|g| part(&prefix, g, exact)).collect();
     let full = if exact { vec![] } else { goals.iter().map(|g| part(&prefix_full, g, true)).collect() };
     Some((queries, full, exact))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn conjuncts_flatten() {
+        assert_eq!(conjuncts("(and (and a (f |x y|)) (and b) c)"), vec!["a", "(f |x y|)", "b", "c"]);
+        assert_eq!(conjuncts("(or a b)"), vec!["(or a b)"]);
+        assert_eq!(conjuncts("(and (= (and p q) r) s)"), vec!["(= (and p q) r)", "s"]);
+    }
 }

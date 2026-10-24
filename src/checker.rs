@@ -1206,6 +1206,24 @@ impl Replay {
         }
     }
 
+    /// Start from a given state rather than all zero: words of memory, globals and ghost
+    /// globals (a counterexample the solver found, replayed from function entry).
+    pub fn seed(&mut self, seed: &Seed) {
+        for (addr, v) in &seed.words {
+            for (i, b) in (*v as u32).to_le_bytes().iter().enumerate() {
+                self.memory.insert(*addr as u64 + i as u64, *b);
+            }
+        }
+        for (g, v) in &seed.globals {
+            if let Some(slot) = self.globals.get_mut(*g) {
+                *slot = Some(*v);
+            }
+        }
+        for (name, v) in &seed.ghosts {
+            self.ghosts.insert(name.clone(), v.clone());
+        }
+    }
+
     /// Has any check failed so far?
     pub fn failed(&self) -> bool {
         self.failed
@@ -1602,8 +1620,23 @@ impl Replay {
 }
 
 /// Evaluate every checkpoint of `plan` along the run recorded in `log`.
+/// The state a replayed counterexample starts from (see Replay::seed).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Seed {
+    pub words: Vec<(u32, i128)>,
+    pub globals: Vec<(usize, i128)>,
+    pub ghosts: Vec<(String, Val)>,
+}
+
 pub fn check_run(plan: &Rc<SpecPlan>, log: &RunLog) -> CheckResults {
+    check_run_from(plan, log, None)
+}
+
+pub fn check_run_from(plan: &Rc<SpecPlan>, log: &RunLog, seed: Option<&Seed>) -> CheckResults {
     let mut replay = Replay::new(plan.clone());
+    if let Some(seed) = seed {
+        replay.seed(seed);
+    }
     if !plan.has_checks() {
         return replay.finish();
     }

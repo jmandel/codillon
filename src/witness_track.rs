@@ -61,3 +61,50 @@ impl WitnessTrack {
 }
 
 delegate_element_component!(WitnessTrack, contents, HtmlDivElement);
+
+// The state card, under the track: a counterexample's memory as a strip of slots (one
+// column per slot, one row per field) and its ghost maps.
+type CardCellSpan = DomStruct<(DomText, ()), web_sys::HtmlSpanElement>;
+
+pub struct StateCard {
+    cells: crate::dom_vec::DomVec<CardCellSpan, HtmlDivElement>,
+    factory: ElementFactory,
+    shown: Vec<(String, &'static str)>,
+}
+
+impl StateCard {
+    pub fn new(factory: &ElementFactory) -> Self {
+        let mut cells = crate::dom_vec::DomVec::new(factory.div());
+        cells.set_attribute("class", "state-card hidden");
+        Self {
+            cells,
+            factory: factory.clone(),
+            shown: vec![],
+        }
+    }
+
+    pub fn set(&mut self, card: Option<(usize, Vec<(String, &'static str)>)>) {
+        let (columns, cells) = card.unwrap_or((1, vec![]));
+        if cells == self.shown {
+            return;
+        }
+        self.cells.truncate(0);
+        for (text, class) in &cells {
+            let mut span = DomStruct::new((DomText::new(text), ()), self.factory.span());
+            span.set_attribute("class", class);
+            self.cells.push(span);
+        }
+        if cells.is_empty() {
+            self.cells.set_attribute("class", "state-card hidden");
+        } else {
+            self.cells.set_attribute("class", "state-card");
+            self.cells.set_attribute(
+                "style",
+                &format!("grid-template-columns: max-content repeat({}, minmax(2.6em, max-content));", columns - 1),
+            );
+        }
+        self.shown = cells;
+    }
+}
+
+delegate_element_component!(StateCard, cells, HtmlDivElement);

@@ -177,10 +177,26 @@ pub struct SpecMark {
     pub unknown: Option<String>, // why some check could not be evaluated
     pub assumed: bool,          // an (@assume …) line: taken without proof, checked at run time
     pub note: Option<String>,   // a remark on the run (e.g. it stopped at the step budget)
+    pub proof: ProofMark,       // what the solver says of the obligations of this line
+}
+
+/// The static verdict on a line's obligations (a refutation's commentary is in `failed`).
+#[derive(Default, Clone, PartialEq, Debug)]
+pub enum ProofMark {
+    #[default]
+    None, // no obligations here, or no solver verdicts yet
+    Pending,
+    Proven,
+    Unknown(String),
+    Refuted,
 }
 
 impl SpecMark {
     fn held_label(&self) -> Option<String> {
+        // proven: silence (the run's count says less than the proof)
+        if self.proof == ProofMark::Proven && self.failed.is_none() && !self.assumed {
+            return None;
+        }
         if self.assumed && self.held > 0 {
             return Some(format!("assumed \u{2218}{}", self.held));
         }
@@ -401,6 +417,12 @@ impl CodeLine {
             }
         } else if self.info.invalid.is_some() {
             "line invalid-line"
+        } else if matches!(self.spec_mark.proof, ProofMark::Unknown(_)) {
+            match self.info.kind {
+                LineKind::Other(_) => "line spec-unknown-line meta-line",
+                LineKind::Instr(_) => "line spec-unknown-line instr-line",
+                _ => "line spec-unknown-line spec-line",
+            }
         } else {
             match self.info.kind {
                 LineKind::Malformed(_) => "line malformed-line",
@@ -791,8 +813,15 @@ impl CodeLine {
             Some(label) => instr_span.set_attribute("data-held", &label),
             None => instr_span.remove_attribute("data-held"),
         }
-        match &mark.unknown {
-            Some(reason) => instr_span.set_attribute("title", reason),
+        let why = match (&mark.unknown, &mark.proof) {
+            (Some(a), ProofMark::Unknown(b)) => Some(format!("{a}; {b}")),
+            (Some(a), _) => Some(a.clone()),
+            (None, ProofMark::Unknown(b)) => Some(b.clone()),
+            (None, ProofMark::Pending) => Some("the proof is pending".to_string()),
+            _ => None,
+        };
+        match why {
+            Some(reason) => instr_span.set_attribute("title", &reason),
             None => instr_span.remove_attribute("title"),
         }
         self.spec_mark = mark;

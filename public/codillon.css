@@ -108,6 +108,13 @@ div.textentry:focus {
     content: "\2696        ";
 }
 
+/* the solver could not decide an obligation of this line (never darkred) */
+.spec-unknown-line::before {
+    font-style: normal;
+    color: indigo;
+    content: "?        ";
+}
+
 .line:has(span.instr[data-synthetic-before])::before {
     color: darkred;
     content: "\1d160        ";
@@ -497,10 +504,60 @@ span.instr[data-held]::after {
     min-width: 0;
 }
 
+/* commentary takes the room left on its row and never widens the page */
+.line > span.comment[data-commentary] {
+    contain: inline-size;
+}
+
 span.comment[data-commentary]::after {
     max-width: calc(100% - 12px);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
     box-sizing: border-box;
+}
+
+/* a counterexample's state, under the witness track: memory as a strip of slots, then
+   the ghost maps */
+.state-card {
+    display: grid;
+    gap: 2px 3px;
+    margin: 0 8px 6px 24px;
+    font-family: 'MLMSansDemiCond10-Regular';
+    font-size: 10.5pt;
+    color: darkred;
+    width: fit-content;
+}
+
+.state-card.hidden {
+    display: none;
+}
+
+.state-card span {
+    padding: 0 5px;
+    text-align: center;
+}
+
+.state-card .card-head {
+    color: slategray;
+}
+
+.state-card .card-field {
+    text-align: right;
+    font-style: italic;
+}
+
+.state-card .card-value, .state-card .card-named {
+    border: 1px solid #d8b4b4;
+    background-color: #fffdf6;
+}
+
+.state-card .card-named {
+    font-size: 9pt;
+}
+
+.state-card .card-map {
+    grid-column: 1 / -1;
+    text-align: left;
+    padding-left: 0;
 }

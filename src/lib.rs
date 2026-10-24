@@ -7,6 +7,7 @@ pub mod jet;
 pub mod utils;
 pub mod vc;
 pub mod vc_int;
+pub mod prover;
 
 pub mod action_history;
 pub mod autocomplete;

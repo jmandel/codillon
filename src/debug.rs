@@ -751,7 +751,12 @@ fn js_args(args: &[RunArg]) -> js_sys::Array {
 
 /// Run the instrumented module: call its export `entry` ("main", or "f<index>") with
 /// `args`, recording into the run log. A module without functions runs nothing.
-pub async fn run_binary(binary: &[u8], entry: &str, args: &[RunArg]) -> Result<()> {
+pub async fn run_binary(
+    binary: &[u8],
+    entry: &str,
+    args: &[RunArg],
+    seed: Option<&crate::checker::Seed>,
+) -> Result<()> {
     use js_sys::{Function, Reflect};
     RUN_LOG.with(|r| r.reset());
     let imports = INSTRUMENTATION_IMPORTS.with(|imports| imports.clone());
@@ -761,6 +766,9 @@ pub async fn run_binary(binary: &[u8], entry: &str, args: &[RunArg]) -> Result<(
         .fmt_err()?;
     let instance = Reflect::get(&js_value, &JsValue::from_str("instance")).fmt_err()?;
     let exports = Reflect::get(&instance, &JsValue::from_str("exports")).fmt_err()?;
+    if let Some(seed) = seed {
+        set_state(&exports, seed)?;
+    }
 
     let main = Reflect::get(&exports, &JsValue::from_str(entry)).fmt_err()?;
     let Some(main) = wasm_bindgen::JsCast::dyn_ref::<Function>(&main) else {
@@ -776,6 +784,38 @@ pub async fn run_binary(binary: &[u8], entry: &str, args: &[RunArg]) -> Result<(
         }
         Err(e) => log.finish(Err(extract_error(&e))),
     })
+}
+
+// Set up a counterexample's state in a fresh instance: words of memory, and globals
+// (exported by the instrumentation as "memory" and "g0", "g1", …).
+fn set_state(exports: &JsValue, seed: &crate::checker::Seed) -> Result<()> {
+    use js_sys::Reflect;
+    if !seed.words.is_empty() {
+        let memory = Reflect::get(exports, &JsValue::from_str("memory")).fmt_err()?;
+        let buffer = Reflect::get(&memory, &JsValue::from_str("buffer")).fmt_err()?;
+        let buffer: js_sys::ArrayBuffer = wasm_bindgen::JsCast::dyn_into(buffer).fmt_err()?;
+        let len = buffer.byte_length() as usize;
+        let view = js_sys::DataView::new(&buffer, 0, len);
+        for (addr, v) in &seed.words {
+            if (*addr as usize) + 4 <= view.byte_length() {
+                view.set_int32_endian(*addr as usize, *v as i32, true);
+            }
+        }
+    }
+    for (g, v) in &seed.globals {
+        let global = Reflect::get(exports, &JsValue::from_str(&format!("g{g}"))).fmt_err()?;
+        if global.is_undefined() {
+            continue;
+        }
+        let current = Reflect::get(&global, &JsValue::from_str("value")).fmt_err()?;
+        let value = if current.is_bigint() {
+            JsValue::from(js_sys::BigInt::from(*v as i64))
+        } else {
+            JsValue::from_f64(*v as i32 as f64)
+        };
+        Reflect::set(&global, &JsValue::from_str("value"), &value).fmt_err()?;
+    }
+    Ok(())
 }
 
 // The integer results of a call (a number, a BigInt, or an array of them for several).

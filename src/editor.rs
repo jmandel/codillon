@@ -4,8 +4,9 @@ use crate::{
     action_history::{ActionHistory, Edit},
     autocomplete::Autocomplete,
     checker::{
-        CheckKind, CheckResults, Outcome, RefinedSlot, SlotEnv, SpecPlan, StreamingCheck, Verdict,
-        WITNESS_BUDGET, build_plan, candidates, check_run, refined_slots, search_targets,
+        CheckKind, CheckResults, Outcome, RefinedSlot, Seed, SlotEnv, SpecPlan, StreamingCheck,
+        Verdict, WITNESS_BUDGET, build_plan, candidates, check_run_from, refined_slots,
+        search_targets,
     },
     debug::{
         ExecutionState, ExecutionStatus, RUN_LOG, RunArg, TerminationType, compile_module,
@@ -20,8 +21,9 @@ use crate::{
         NodeRef, RangeLike, ReactiveComponent, StorageHandle, WebOffset, WindowHandle, WithElement,
         compare_document_position, fetch_text, get_selection, now_ms, set_selection_range,
     },
-    line::{Activity, CodeLine, LineInfo, Position, PositionRange, SpecMark},
+    line::{Activity, CodeLine, LineInfo, Position, PositionRange, ProofMark, SpecMark},
     link::{LinkParams, ProgramSource, StepRequest, args_fragment, decode_program, share_fragment},
+    prover::{LineSnapshot, SolverState, solver_state},
     refine::refined_draw,
     save_status::SaveStatus,
     share::ShareButton,
@@ -131,9 +133,10 @@ struct Editor {
     factory: ElementFactory,
     action_history: ActionHistory,
     storage: Option<StorageHandle>,
-    pending_binary: Option<(Vec<u8>, usize, String, Vec<RunArg>)>, // binary, version, entry, args
+    pending_binary: Option<(Vec<u8>, usize, String, Vec<RunArg>, Option<Rc<Seed>>)>, // binary, version, entry, args, state
     current_binary: Rc<Vec<u8>>,
     replay: Option<(usize, Vec<i128>)>, // a witness loaded as the run: (function, input)
+    replay_seed: Option<Rc<Seed>>,      // … and the state it starts from (a solver's model)
     witness: WitnessSearch,
     witness_version: usize, // the version the search ran (or runs) for
     previous_instrumented_binary_hash: u64,
@@ -154,7 +157,33 @@ struct Editor {
     spec_plan: Rc<SpecPlan>,
     spec_results: Rc<CheckResults>,
     refined_slots: Vec<RefinedSlot>,
+    proofs: Proofs,
 }
+
+/// The static half: the program's obligations (vc.rs) and what Z3 says of each.
+#[derive(Default)]
+struct Proofs {
+    generation: usize, // bumped by every edit; a proof of an older generation stops
+    request: Option<(usize, Rc<ProofInput>)>,
+    requested_at: f64,
+    running: bool,
+    obligations: Rc<Vec<crate::vc::Obligation>>,
+    verdicts: Vec<Option<crate::vc::Verdict>>,
+    cache: HashMap<u64, crate::vc::Verdict>, // by query hash, across edits
+    started_at: f64,
+    first_at: Option<f64>,
+    finished_at: Option<f64>,
+    queries: usize,
+}
+
+struct ProofInput {
+    lines: LineSnapshot,
+    wasm: Vec<u8>,
+    plan: Rc<SpecPlan>,
+}
+
+/// How long typing must pause before the obligations are generated and proved.
+const PROOF_DELAY_MS: f64 = 350.0;
 
 // State derived from the URL fragment (see link.rs).
 #[derive(Default)]
@@ -498,7 +527,8 @@ impl Editor {
     // Re-evaluate the specification checks along the current run log.
     fn recheck_specs(&mut self) {
         let plan = self.spec_plan.clone();
-        self.spec_results = Rc::new(RUN_LOG.with(|log| check_run(&plan, log)));
+        let seed = self.replay.as_ref().and(self.replay_seed.clone());
+        self.spec_results = Rc::new(RUN_LOG.with(|log| check_run_from(&plan, log, seed.as_deref())));
     }
 
     // Show what the checks say as of `step`: ⚖ on failed spec lines (with the predicate,
@@ -567,6 +597,7 @@ impl Editor {
                 m.failed = Some(labels.join("; "));
             }
         }
+        self.overlay_proofs(&mut marks);
         for idx in 0..self.text().len() {
             let mark = marks.remove(&idx).unwrap_or_default();
             if *self.line(idx).spec_mark() != mark {
@@ -581,7 +612,8 @@ impl Editor {
 
     fn execute(&mut self, binary: &[u8], version: usize) {
         let (entry, args) = self.run_config();
-        self.pending_binary = Some((binary.to_vec(), version, entry, args));
+        let seed = self.replay.as_ref().and(self.replay_seed.clone());
+        self.pending_binary = Some((binary.to_vec(), version, entry, args, seed));
         if self.worker_running {
             return;
         }
@@ -591,12 +623,12 @@ impl Editor {
 
         wasm_bindgen_futures::spawn_local(async move {
             loop {
-                let Some((binary, version, entry, args)) =
+                let Some((binary, version, entry, args, seed)) =
                     holder.borrow_mut().pending_binary.take()
                 else {
                     break;
                 };
-                run_binary(&binary, &entry, &args)
+                run_binary(&binary, &entry, &args, seed.as_deref())
                     .await
                     .unwrap_or_else(|e| log_1(&format!("Codillon runtime error: {e}").into()));
 
@@ -712,7 +744,22 @@ impl Editor {
     fn show_witness(&mut self) {
         use crate::witness_track::TrackState;
         let budget = crate::debug::MAX_STEPS;
+        let proof = self.proof_status();
         let (state, text, title) = match (&self.witness, &self.replay) {
+            (_, Some((f, args))) if self.replay_seed.is_some() => (
+                TrackState::Replayed,
+                format!(
+                    "\u{2696} replaying the solver's counterexample {} \u{2014} click to return to your run",
+                    self.func_label(*f, args)
+                ),
+                "A state the specification allows, set up in a fresh instance (memory, globals and ghosts from the solver's model)".to_string(),
+            ),
+            // with obligations, the proofs speak for the program (unless a run found a witness)
+            (WitnessSearch::Idle | WitnessSearch::Searching { .. } | WitnessSearch::NoneFound { .. }, None)
+                if proof.is_some() =>
+            {
+                proof.unwrap()
+            }
             (WitnessSearch::Found(w), Some((f, args))) => {
                 let call = self.func_label(*f, args);
                 match &w.verdict {
@@ -787,20 +834,92 @@ impl Editor {
             .track_mut()
             .inner_mut()
             .set(state, &text, &title);
+        // the solver's counterexample, drawn when the track shows it (or it is the run)
+        let showing_static = self.replay_seed.is_some()
+            || (self.replay.is_none()
+                && !matches!(self.witness, WitnessSearch::Found(_))
+                && self.proofs.verdicts.iter().all(|v| v.is_some()));
+        let card = if showing_static {
+            self.static_witness().and_then(|(_, m)| crate::prover::state_card(&self.spec_plan, m))
+        } else {
+            None
+        };
+        self.slider_mut().inner_mut().card_mut().set(card);
     }
 
     // Clicking the witness track: replay the witness, or return to the user's run.
     fn toggle_replay(&mut self) {
         if self.replay.is_some() {
             self.replay = None;
+            self.replay_seed = None;
             self.rerun(None);
         } else if let WitnessSearch::Found(w) = &self.witness {
             self.replay = Some((w.func, w.args.clone()));
+            self.replay_seed = None;
+            self.rerun(Some(StepRequest::Fail));
+        } else if let Some((i, _)) = self.static_witness()
+            && let Some((f, args, seed)) = self.static_replay(i)
+        {
+            self.replay = Some((f, args));
+            self.replay_seed = Some(Rc::new(seed));
             self.rerun(Some(StepRequest::Fail));
         } else {
             return;
         }
         self.show_witness();
+    }
+
+    // The first refuted obligation, and the model the solver gave for it.
+    fn static_witness(&self) -> Option<(usize, &crate::vc::Model)> {
+        let p = &self.proofs;
+        p.verdicts.iter().enumerate().find_map(|(i, v)| match v {
+            Some(crate::vc::Verdict::Refuted(m)) => Some((i, m)),
+            _ => None,
+        })
+    }
+
+    // A refuted obligation's model as a run: the function, its arguments, and the state
+    // to set up first (function-entry states only; a loop-head state is not replayable).
+    fn static_replay(&self, i: usize) -> Option<(usize, Vec<i128>, Seed)> {
+        let ob = self.proofs.obligations.get(i)?;
+        let Some(crate::vc::Verdict::Refuted(m)) = self.proofs.verdicts.get(i)?.as_ref() else {
+            return None;
+        };
+        if ob.cut != crate::vc::Cut::Entry {
+            return None;
+        }
+        let fp = self.spec_plan.funcs.get(ob.func)?;
+        if fp.vars[..fp.nparams].iter().any(|v| v.width == 0) {
+            return None; // float parameters
+        }
+        let args: Vec<i128> = fp.vars[..fp.nparams]
+            .iter()
+            .map(|v| {
+                v.name
+                    .as_ref()
+                    .and_then(|n| m.vars.iter().find(|(x, _)| x == n))
+                    .map(|(_, val)| *val)
+                    .unwrap_or(0)
+            })
+            .collect();
+        let ghost_names: Vec<&String> = self.spec_plan.ghost_globals.iter().map(|(n, _)| n).collect();
+        let mut ghosts: Vec<(String, crate::spec::Val)> = m
+            .ghosts
+            .iter()
+            .filter(|(n, _)| ghost_names.contains(&n))
+            .map(|(n, v)| (n.clone(), crate::spec::Val::Int(*v)))
+            .collect();
+        for (n, map) in &m.maps {
+            if ghost_names.contains(&n) {
+                ghosts.push((n.clone(), crate::spec::Val::Map(Rc::new(map.clone()))));
+            }
+        }
+        let seed = Seed {
+            words: m.words.iter().map(|(a, v)| (*a, *v)).collect(),
+            globals: m.globals.iter().map(|(g, _, v)| (*g, *v)).collect(),
+            ghosts,
+        };
+        Some((ob.func, args, seed))
     }
 
     // After a run of a new version: search edge inputs for a counterexample, one fresh
@@ -882,6 +1001,238 @@ impl Editor {
                 ed.show_witness();
             }
         });
+    }
+
+    // ---------------------------------------------------------------------------------
+    // Proofs
+
+    // After an edit: prove the program's obligations once typing pauses.
+    fn request_proofs(&mut self, lines: LineSnapshot, wasm: Vec<u8>) {
+        let plan = self.spec_plan.clone();
+        let p = &mut self.proofs;
+        p.generation += 1;
+        if !plan.has_checks() {
+            p.request = None;
+            p.obligations = Rc::new(vec![]);
+            p.verdicts.clear();
+            return;
+        }
+        p.request = Some((p.generation, Rc::new(ProofInput { lines, wasm, plan })));
+        p.requested_at = now_ms();
+        if !p.running {
+            p.running = true;
+            self.run_prover();
+        }
+    }
+
+    fn run_prover(&self) {
+        let holder = self.holder();
+        wasm_bindgen_futures::spawn_local(async move {
+            'requests: loop {
+                // wait for typing to pause
+                loop {
+                    crate::prover::sleep(PROOF_DELAY_MS).await;
+                    let ed = holder.borrow();
+                    if ed.proofs.request.is_none() || now_ms() - ed.proofs.requested_at >= PROOF_DELAY_MS {
+                        break;
+                    }
+                }
+                let Some((generation, input)) = holder.borrow_mut().proofs.request.take() else {
+                    holder.borrow_mut().proofs.running = false;
+                    return;
+                };
+                let obs = crate::prover::obligations(&input.lines, &input.wasm, &input.plan).unwrap_or_default();
+                let obs = Rc::new(obs);
+                {
+                    let mut ed = holder.borrow_mut();
+                    if ed.proofs.generation != generation {
+                        continue;
+                    }
+                    let p = &mut ed.proofs;
+                    p.verdicts = obs.iter().map(|ob| p.cache.get(&ob.hash).cloned()).collect();
+                    p.obligations = obs.clone();
+                    p.started_at = now_ms();
+                    p.first_at = None;
+                    p.finished_at = None;
+                    p.queries = 0;
+                    ed.refresh_proofs();
+                }
+                for (i, ob) in obs.iter().enumerate() {
+                    if holder.borrow().proofs.verdicts.get(i).is_some_and(|v| v.is_some()) {
+                        continue;
+                    }
+                    let mut proof = crate::vc::Proof::new(ob);
+                    while let Some(q) = proof.next(ob) {
+                        let out = crate::prover::solve(&q).await;
+                        let mut ed = holder.borrow_mut();
+                        if ed.proofs.generation != generation {
+                            continue 'requests; // edited: start over (finished verdicts are cached)
+                        }
+                        match out {
+                            Ok(out) => {
+                                ed.proofs.queries += 1;
+                                proof.feed(ob, &out);
+                            }
+                            Err(_) => {
+                                // the solver failed to load: verdicts stay pending
+                                ed.refresh_proofs();
+                                ed.proofs.running = false;
+                                return;
+                            }
+                        }
+                    }
+                    let mut ed = holder.borrow_mut();
+                    if ed.proofs.generation != generation {
+                        continue 'requests;
+                    }
+                    if let Some(v) = proof.verdict().cloned() {
+                        if ed.proofs.cache.len() > 4000 {
+                            ed.proofs.cache.clear();
+                        }
+                        ed.proofs.cache.insert(ob.hash, v.clone());
+                        ed.proofs.verdicts[i] = Some(v);
+                    }
+                    if ed.proofs.first_at.is_none() {
+                        ed.proofs.first_at = Some(now_ms());
+                    }
+                    ed.refresh_proofs();
+                }
+                let mut ed = holder.borrow_mut();
+                if ed.proofs.generation == generation {
+                    ed.proofs.finished_at = Some(now_ms());
+                    let p = &ed.proofs;
+                    log_1(&format!(
+                        "Codillon proofs: {} obligations, {} queries, first verdict after {:.0} ms, all after {:.0} ms",
+                        p.obligations.len(),
+                        p.queries,
+                        p.first_at.unwrap_or(p.started_at) - p.started_at,
+                        now_ms() - p.started_at
+                    ).into());
+                    ed.refresh_proofs();
+                }
+            }
+        });
+    }
+
+    fn refresh_proofs(&mut self) {
+        let step = self.current_step();
+        self.apply_spec_marks(step);
+        self.show_witness();
+        self.schedule_animation_if_needed();
+    }
+
+    // What the solver says, onto the lines: proven is silence (no count), refuted is ⚖
+    // with the state the spec allows, undecided is an indigo ?, and pending leaves the
+    // run's marks as they are.
+    fn overlay_proofs(&self, marks: &mut HashMap<usize, SpecMark>) {
+        let p = &self.proofs;
+        if p.obligations.is_empty() {
+            return;
+        }
+        let plan = &self.spec_plan;
+        let mut by_line: HashMap<usize, Vec<usize>> = HashMap::new();
+        for (i, ob) in p.obligations.iter().enumerate() {
+            by_line.entry(ob.spec_line.unwrap_or(ob.at_line)).or_default().push(i);
+        }
+        let mut at_labels: Vec<(usize, String)> = vec![];
+        for (line, idxs) in by_line {
+            let m = marks.entry(line).or_default();
+            let refuted = idxs.iter().find_map(|&i| match p.verdicts.get(i) {
+                Some(Some(crate::vc::Verdict::Refuted(model))) => Some((i, model)),
+                _ => None,
+            });
+            if let Some((i, model)) = refuted {
+                let ob = &p.obligations[i];
+                m.proof = ProofMark::Refuted;
+                if m.failed.is_none() {
+                    m.failed = Some(crate::prover::refuted_text(plan, ob, model));
+                }
+                if ob.at_line != line {
+                    at_labels.push((ob.at_line, format!("\u{2696} {}", crate::prover::refuted_phrase(ob))));
+                }
+            } else if idxs.iter().any(|&i| !matches!(p.verdicts.get(i), Some(Some(_)))) {
+                m.proof = ProofMark::Pending;
+            } else if let Some(why) = idxs.iter().find_map(|&i| match p.verdicts.get(i) {
+                Some(Some(crate::vc::Verdict::Unknown(w))) => Some(w.clone()),
+                _ => None,
+            }) {
+                m.proof = ProofMark::Unknown(format!("not proven: {why}"));
+            } else {
+                m.proof = ProofMark::Proven;
+            }
+        }
+        for (line, label) in at_labels {
+            let m = marks.entry(line).or_default();
+            if m.failed.is_none() {
+                m.failed = Some(label);
+                m.proof = ProofMark::Refuted;
+            }
+        }
+    }
+
+    // The proofs, in a line of the witness track (None: nothing to say).
+    fn proof_status(&self) -> Option<(crate::witness_track::TrackState, String, String)> {
+        use crate::witness_track::TrackState;
+        let p = &self.proofs;
+        let n = p.obligations.len();
+        if n == 0 {
+            return None;
+        }
+        let done = p.verdicts.iter().filter(|v| v.is_some()).count();
+        let count = |f: &dyn Fn(&crate::vc::Verdict) -> bool| p.verdicts.iter().flatten().filter(|v| f(v)).count();
+        let proven = count(&|v| matches!(v, crate::vc::Verdict::Proven));
+        let refuted = count(&|v| matches!(v, crate::vc::Verdict::Refuted(_)));
+        let unknown = count(&|v| matches!(v, crate::vc::Verdict::Unknown(_)));
+        let plural = |k: usize, w: &str| format!("{k} {w}{}", if k == 1 { "" } else { "s" });
+        let text = match solver_state() {
+            SolverState::Failed(why) if done < n => format!(
+                "{why} \u{b7} {} not yet proven (checked on runs only)",
+                plural(n - done, "obligation")
+            ),
+            SolverState::Loading | SolverState::Idle if done < n => {
+                format!("loading the solver\u{2026} {} to prove", plural(n - done, "obligation"))
+            }
+            _ if done < n => format!("proving\u{2026} {done} of {}", plural(n, "obligation")),
+            _ if proven == n => format!("all {} proven", plural(n, "obligation")),
+            _ if refuted > 0 => {
+                let (i, m) = self.static_witness()?;
+                let ob = &p.obligations[i];
+                let state = crate::prover::state_text(&self.spec_plan, ob, m);
+                let summary = format!("{proven} of {} proven, {refuted} refuted, {unknown} not decided", n);
+                return Some(if self.static_replay(i).is_some() {
+                    (
+                        TrackState::NotReplayed,
+                        format!(
+                            "\u{2696} the spec allows {state}, and then {} (line {}) \u{b7} not replayed \u{2014} click to replay",
+                            crate::prover::refuted_phrase(ob),
+                            ob.at_line + 1
+                        ),
+                        format!("{summary}. A state the solver found; a run may never reach it."),
+                    )
+                } else {
+                    (
+                        TrackState::NotReplayed,
+                        format!(
+                            "\u{2696} at the loop head the spec allows {state}, and then {} (line {}) \u{b7} a mid-run state, not replayable",
+                            crate::prover::refuted_phrase(ob),
+                            ob.at_line + 1
+                        ),
+                        format!("{summary}. A state the solver found; a run may never reach it."),
+                    )
+                });
+            }
+            _ => {
+                let mut parts = vec![format!("{proven} proven")];
+                if refuted > 0 {
+                    parts.push(format!("{refuted} refuted"));
+                }
+                if unknown > 0 {
+                    parts.push(format!("{unknown} not decided"));
+                }
+                format!("{} \u{b7} {}", plural(n, "obligation"), parts.join(" \u{b7} "))
+            }
+        };
+        Some((TrackState::Note, text, "Z3 (single-threaded WebAssembly), per obligation".into()))
     }
 
     fn reset_execution_state(&mut self) {
@@ -1267,6 +1618,7 @@ impl Editor {
     fn on_change(&mut self) -> Result<()> {
         // repair syntax
         fix_syntax(self);
+        let lines = LineSnapshot((0..self.len()).map(|i| self.info(i).clone()).collect());
 
         let wasm_bin = str_to_binary(self.active_as_text())?;
         let raw_module = RawModule::new(self, &wasm_bin)?;
@@ -1291,13 +1643,14 @@ impl Editor {
         }
         self.refined_slots = refined_slots(&plan, &validized, &types, &self.slot_connections);
         self.spec_plan = Rc::new(plan);
+        self.request_proofs(lines, wasm_bin.clone());
 
         self.update_displayed_types(&validized, &types)?;
 
         // instrumentation
         let options = InstrumentOptions {
             record_stores: self.spec_plan.uses_memory,
-            export_all: !search_targets(&self.spec_plan).is_empty(),
+            export_all: self.spec_plan.has_checks(),
         };
         let instrumented_binary = &validized.build_instrumented_binary_with(&types, &options)?;
         self.current_binary = Rc::new(instrumented_binary.clone());
@@ -1781,6 +2134,7 @@ impl Editor {
             pending_binary: None,
             current_binary: Default::default(),
             replay: None,
+            replay_seed: None,
             witness: Default::default(),
             witness_version: 0,
             previous_instrumented_binary_hash: 0,
@@ -1801,6 +2155,7 @@ impl Editor {
             spec_plan: Default::default(),
             spec_results: Default::default(),
             refined_slots: vec![],
+            proofs: Default::default(),
         };
 
         let text = ret.textbox_mut();

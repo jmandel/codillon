@@ -1368,6 +1368,17 @@ impl<'a> ValidModule<'a> {
                 for i in 0..self.functions.len() as u32 {
                     exports.export(&format!("f{i}"), ExportKind::Func, num_func_imports + i);
                 }
+                // memory and globals, so that a counterexample's state can be set up
+                let imported = |k: fn(&wasmparser::TypeRef) -> bool| {
+                    self.imports.iter().filter(|i| k(&i.ty)).count() as u32
+                };
+                if !self.memory.is_empty() && imported(|t| matches!(t, wasmparser::TypeRef::Memory(_))) == 0 {
+                    exports.export("memory", ExportKind::Memory, 0);
+                }
+                let num_global_imports = imported(|t| matches!(t, wasmparser::TypeRef::Global(_)));
+                for i in 0..self.globals.len() as u32 {
+                    exports.export(&format!("g{i}"), ExportKind::Global, num_global_imports + i);
+                }
             }
             module.section(&exports);
         }
@@ -5051,7 +5062,11 @@ pub(crate) mod tests {
             let types = validized.to_types_table(&wasm_bin)?;
             indent_and_frame(&mut editor, &validized, &types, None);
             let plan = build_plan(&editor, &validized, &types);
+            let t_gen = std::time::Instant::now();
             let obligations = crate::vc::generate(&plan, &validized, &types);
+            if std::env::var("STATS").is_ok() {
+                eprintln!("    generated {} obligations in {:?}", obligations.len(), t_gen.elapsed());
+            }
             let binary = wasm_bin.clone();
             let options = InstrumentOptions {
                 record_stores: plan.uses_memory,
@@ -5813,6 +5828,34 @@ local.get $r
 
         #[test]
         #[ignore]
+        fn bench_generate() -> Result<()> {
+            let src = include_str!("../public/examples/hashtable.wat");
+            let mut editor = load(src);
+            fix_syntax(&mut editor);
+            let mut text = String::new();
+            for line in editor.lines.iter() {
+                for i in 0..line.info.num_well_formed_strs() {
+                    text.push_str(line.info.well_formed_str(i, &line.instr_text));
+                    text.push(' ');
+                }
+                text.push('\n');
+            }
+            let wasm_bin = str_to_binary(text)?;
+            let raw = RawModule::new(&editor, &wasm_bin)?;
+            let validized = raw.fix_validity(&mut editor, &wasm_bin)?;
+            let types = validized.to_types_table(&wasm_bin)?;
+            indent_and_frame(&mut editor, &validized, &types, None);
+            let plan = build_plan(&editor, &validized, &types);
+            let t = std::time::Instant::now();
+            for _ in 0..20 {
+                std::hint::black_box(crate::vc::generate(&plan, &validized, &types));
+            }
+            eprintln!("generate: {:?} each", t.elapsed() / 20);
+            Ok(())
+        }
+
+        #[test]
+        #[ignore]
         fn explore_proofs() -> Result<()> {
             let only = std::env::var("ONLY").unwrap_or_default();
             for (name, src) in EXAMPLES {
@@ -5827,7 +5870,7 @@ local.get $r
                 if std::env::var("DUMP").is_ok() {
                     for ob in &r.obligations {
                         let _ = std::fs::write(format!("/home/jmandel/hobby/.agent-scratch/codalon-viz/z3/q-{name}-{:x}.smt2", ob.hash), format!("; f{} {} line {}\n{}", ob.func, ob.kind.describe(), ob.at_line, ob.smt));
-                        if let Some(q) = &ob.smt_int {
+                        if let Some(q) = &crate::vc_int::translate(&ob.smt) {
                             let _ = std::fs::write(format!("/home/jmandel/hobby/.agent-scratch/codalon-viz/z3/q-{name}-{:x}.int.smt2", ob.hash), q);
                         }
                     }
