@@ -59,6 +59,7 @@ fn review_adv_programs() {
                             hyp_lines,
                             ..
                         } => format!("prove@{prove_line} hyps{hyp_lines:?}"),
+                        Feed::Auto { hyp_lines, .. } => format!("auto hyps{hyp_lines:?}"),
                         Feed::Eval { steps } => format!("eval({steps})"),
                         Feed::DeadCode { ended_at } => format!("dead@{ended_at}"),
                         Feed::Unfed => "UNFED".into(),

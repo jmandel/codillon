@@ -706,6 +706,20 @@ fn how(c: &CupOut, disp: &dyn Fn(u32) -> u32) -> String {
                 )
             }
         }
+        Feed::Auto { hyp_lines, .. } => {
+            if hyp_lines.is_empty() {
+                "proved automatically (holds for every value)".into()
+            } else {
+                let mut ls: Vec<u32> = hyp_lines.to_vec();
+                ls.sort_unstable();
+                ls.dedup();
+                format!(
+                    "proved automatically from line{} {}",
+                    if ls.len() > 1 { "s" } else { "" },
+                    join_lines(&ls, &|x| x)
+                )
+            }
+        }
         Feed::Eval { .. } => "by evaluation".into(),
         Feed::DeadCode { ended_at } => format!("dead code (the arm ended at line {ended_at})"),
         Feed::Unfed => c.diag.clone().unwrap_or_else(|| "nothing feeds it".into()),
@@ -856,6 +870,15 @@ fn build_func(
                     )
                 });
                 e.2.push(i);
+            }
+            Feed::Auto { hyps, .. } => {
+                for fact in hyps {
+                    chip_targets.entry(*fact).or_default().push(Target {
+                        x,
+                        y: y - h,
+                        dashed,
+                    });
+                }
             }
             Feed::DeadCode { ended_at } => dead_wires.push((*ended_at, i)),
             Feed::Unfed => {

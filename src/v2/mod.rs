@@ -18,6 +18,8 @@ pub mod term;
 pub mod vericode;
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
+mod auto_tests;
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod explain_tests;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod fable_gfix_probes;

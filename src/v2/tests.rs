@@ -120,6 +120,9 @@ fn ours(out: &ModuleOut) -> Vec<CupKey> {
                     Some(*prove_line as u64),
                     hyp_lines.iter().map(|x| *x as u64).collect(),
                 ),
+                Feed::Auto { hyp_lines, .. } => {
+                    (None, hyp_lines.iter().map(|x| *x as u64).collect())
+                }
                 Feed::DeadCode { ended_at } => (Some(*ended_at as u64), vec![]),
                 _ => (None, vec![]),
             };

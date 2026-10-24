@@ -88,6 +88,13 @@ pub enum Feed {
         hyp_lines: SmallVec<[u32; 8]>,
         wraps_removed: SmallVec<[WrapNote; 4]>,
     },
+    /// R5a: fed automatically by the decision procedure from the relevant in-scope facts,
+    /// minimized to the ones the proof uses (lane order, parallel `hyp_lines`)
+    Auto {
+        hyps: SmallVec<[FactId; 8]>,
+        hyp_lines: SmallVec<[u32; 8]>,
+        wraps_removed: SmallVec<[WrapNote; 4]>,
+    },
     Eval {
         steps: u32,
     },
@@ -102,6 +109,7 @@ impl Feed {
         match self {
             Feed::Lookup { .. } => "lookup",
             Feed::Prove { .. } => "prove",
+            Feed::Auto { .. } => "auto",
             Feed::Eval { .. } => "eval",
             Feed::DeadCode { .. } => "dead",
             Feed::Unfed => "none",
@@ -159,7 +167,7 @@ pub struct CupOut {
 /// Why a `prove` succeeded, for the editor (design 16 §3.3: "shown on hover of the `prove`").
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ProveExplain {
-    /// positions in `Feed::Prove::hyps` that the proof needs (a minimal subset)
+    /// positions in `Feed::Prove::hyps` / `Feed::Auto::hyps` that the proof needs (a minimal subset)
     pub used: SmallVec<[u8; 8]>,
     /// the used hypotheses contradict each other: the goal holds ex falso, and the prove line
     /// can never run

@@ -10,6 +10,9 @@ use super::term::{Atom, Key, NO_EPOCH, TermId, Terms};
 use smallvec::SmallVec;
 use std::collections::{BTreeSet, HashMap};
 
+mod auto;
+use auto::AutoOutcome;
+
 pub type FactId = u32;
 pub type CupId = u32;
 
@@ -541,6 +544,8 @@ impl<'a, 'm> Pass<'a, 'm> {
             }
         }
         let mut fed = vec![false; ids.len()];
+        // cups an explicit `prove` took (R32): R5a never second-guesses them
+        let mut taken = vec![false; ids.len()];
         let mut produced: Vec<(usize, FactId)> = vec![];
         if let Some(end) = self.dead {
             for &c in &ids {
@@ -596,6 +601,7 @@ impl<'a, 'm> Pass<'a, 'm> {
                 continue;
             }
             let p = self.pending.remove(0);
+            taken[i] = true;
             let c = ids[i] as usize;
             if let Some(msg) = &p.failed {
                 self.cups[c].diag = Some(format!("the prove at line {} failed: {msg}", p.line));
@@ -626,6 +632,7 @@ impl<'a, 'm> Pass<'a, 'm> {
                     self.cups[c].verdict = Verdict::Proven;
                     self.cup_deps[c] = hyps.iter().map(|e| Dep::Fact(e.fact)).collect();
                     fed[i] = true;
+                    self.probe_ex_falso(line, &hyps);
                     let f =
                         self.new_fact(r.atom.clone(), line, "prove", vec![Dep::Cup(c as CupId)]);
                     produced.push((i, f));
@@ -658,6 +665,44 @@ impl<'a, 'm> Pass<'a, 'm> {
                 if p.failed.is_none() {
                     self.line_errors
                         .push((p.line, "prove has nothing to feed".into()));
+                }
+            }
+        }
+        // R5a: the decision procedure on the relevant in-scope facts
+        for (i, r) in reqs.iter().enumerate() {
+            if fed[i] || taken[i] {
+                continue;
+            }
+            let c = ids[i] as usize;
+            match self.auto_feed(&r.atom, edge) {
+                AutoOutcome::Fed { used, wraps } => {
+                    if self.cx.explain {
+                        let atoms: Vec<Atom> = used
+                            .iter()
+                            .map(|e| self.facts[e.fact as usize].atom.clone())
+                            .collect();
+                        self.cups[c].explain = Some(self.explain_prove(&atoms, &r.atom));
+                    }
+                    self.cups[c].feed = Feed::Auto {
+                        hyps: used.iter().map(|e| e.fact).collect(),
+                        hyp_lines: used.iter().map(|e| e.line).collect(),
+                        wraps_removed: wraps.into_iter().collect(),
+                    };
+                    self.cups[c].verdict = Verdict::Proven;
+                    self.cups[c].diag = None;
+                    self.cup_deps[c] = used.iter().map(|e| Dep::Fact(e.fact)).collect();
+                    fed[i] = true;
+                    self.probe_ex_falso(line, &used);
+                    let f = self.new_fact(r.atom.clone(), line, "auto", vec![Dep::Cup(c as CupId)]);
+                    produced.push((i, f));
+                }
+                AutoOutcome::Failed(why) => {
+                    if let Some(w) = why {
+                        self.cups[c].diag = Some(match self.cups[c].diag.take() {
+                            Some(d) => format!("{d}; {w}"),
+                            None => w,
+                        });
+                    }
                 }
             }
         }
@@ -711,6 +756,18 @@ impl<'a, 'm> Pass<'a, 'm> {
         }
         produced.sort_by_key(|x| x.0);
         (ids, produced.into_iter().map(|x| x.1).collect())
+    }
+
+    /// On a probed (locked) line, a cup fed from facts that contradict each other means the line is
+    /// reachable only ex falso (research/22 B3; research/24 §6), even when the whole lane exceeds
+    /// the caps of [`Pass::lane_is_false`].
+    fn probe_ex_falso(&mut self, line: u32, hyps: &[Entry]) {
+        if self.cx.probe.contains(&line)
+            && !self.false_ctx_lines.contains(&line)
+            && self.contradictory(hyps)
+        {
+            self.false_ctx_lines.push(line);
+        }
     }
 
     /// Feed the cups of a line and enter what prove/evaluation produced (the common case).
