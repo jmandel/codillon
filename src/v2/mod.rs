@@ -9,6 +9,7 @@ pub mod info;
 pub mod kernel;
 pub mod llm;
 pub mod out;
+pub mod reach;
 pub mod runtime;
 pub mod sexpr;
 pub mod solver;

@@ -1,4 +1,5 @@
-//! Native tests for the editor-only explanations: why a `prove` holds (solver::explain).
+//! Native tests for the editor-only explanations: why a `prove` holds (solver::explain) and the
+//! regions a decided branch makes unreachable (reach.rs).
 
 use super::ast::Module;
 use super::kernel::{check_module, check_module_with};
@@ -66,6 +67,11 @@ fn prove_after_always_taken_br_if_is_explained() {
     assert!(why.contains("mul($x, 2) is even"), "{why}");
     assert!(why.contains("and(mul($x, 2), 1) = 0"), "{why}");
     assert!(why.contains("contradicts ①"), "{why}");
+    // the lines after the br_if never run
+    assert_eq!(f.never_runs.len(), 1);
+    let r = &f.never_runs[0];
+    assert_eq!((r.from, r.to, r.cause), (14, 15, 13));
+    assert_eq!(r.why, "br_if on line 13 always branches");
 }
 
 /// Every successful prove in the examples gets 1–3 lines; an explanation names only
@@ -107,6 +113,7 @@ fn explaining_changes_no_verdict() {
         let (a, b) = (check_module(&m, true), check_module_with(&m, true, true));
         assert_eq!(a.errors, b.errors, "{ex}");
         for (fa, fb) in a.funcs.iter().zip(&b.funcs) {
+            assert!(fa.never_runs.is_empty(), "{ex}");
             assert_eq!(fa.verified, fb.verified, "{ex}");
             assert_eq!(fa.line_errors, fb.line_errors, "{ex}");
             assert_eq!(fa.dead_lines, fb.dead_lines, "{ex}");
@@ -120,4 +127,66 @@ fn explaining_changes_no_verdict() {
             }
         }
     }
+}
+
+fn never(src: &str) -> Vec<(u32, u32, u32, String)> {
+    explained(src)
+        .funcs
+        .iter()
+        .flat_map(|f| f.never_runs.iter())
+        .map(|r| (r.from, r.to, r.cause, r.why.clone()))
+        .collect()
+}
+
+#[test]
+fn decided_if_arms_never_run() {
+    // (x & 1) < 2 always: the else arm never runs
+    let src = "(func $g (param $x i32) (result i32)
+  local.get $x
+  i32.const 1
+  i32.and
+  i32.const 2
+  i32.lt_u
+  if (result i32)
+    i32.const 1
+  else
+    i32.const 2
+  end
+)";
+    assert_eq!(
+        never(src),
+        vec![(
+            10,
+            10,
+            9,
+            "the condition of the if on line 7 is always true".to_string()
+        )]
+    );
+    // a constant 0 condition: the then arm never runs
+    let src = "(func $h (result i32)
+  i32.const 0
+  if (result i32)
+    i32.const 1
+    i32.const 2
+    i32.add
+  else
+    i32.const 2
+  end
+)";
+    assert_eq!(
+        never(src),
+        vec![(
+            4,
+            6,
+            3,
+            "the condition of the if on line 3 is always false".to_string()
+        )]
+    );
+    // an input-dependent condition decides nothing
+    let src = "(func $k (param $x i32)
+  local.get $x
+  br_if 0
+  nop
+)";
+    assert!(never(src).is_empty());
 }

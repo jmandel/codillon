@@ -104,7 +104,7 @@ pub struct ModCtx<'m> {
     /// initializer (R14) and every other function's unproven `global.set` cups (R9); `None` when
     /// the global has no usable refinement
     pub global_deps: Vec<Option<Vec<Dep>>>,
-    /// editor only: explain each successful `prove`
+    /// editor only: explain each successful `prove` and find regions that never run
     pub explain: bool,
 }
 
@@ -2531,6 +2531,11 @@ impl<'a, 'm> Pass<'a, 'm> {
         if unproven {
             deps.push(Dep::Assume(func.header_line, false));
         }
+        let never_runs = if self.cx.explain {
+            self.never_runs()
+        } else {
+            vec![]
+        };
         let chips = self
             .facts
             .iter()
@@ -2556,6 +2561,7 @@ impl<'a, 'm> Pass<'a, 'm> {
             births: self.births,
             func: self.f as u32,
             dead_lines: self.dead_lines,
+            never_runs,
         };
         (out, deps)
     }
@@ -2583,6 +2589,23 @@ impl<'a, 'm> Pass<'a, 'm> {
             lines: e.lines,
         }
     }
+
+    /// Regions a decided branch condition makes unreachable (reach.rs).
+    fn never_runs(&mut self) -> Vec<super::out::NeverRuns> {
+        let facts: Vec<(u32, &'static str, Atom)> = self
+            .facts
+            .iter()
+            .map(|f| (f.line, f.kind, f.atom.clone()))
+            .collect();
+        let body = &self.cx.m.funcs[self.f].body;
+        super::reach::never_runs(body, facts.iter().map(|(l, k, a)| (*l, *k, a)), |a| {
+            let (terms, mut env) = self.solver_env();
+            matches!(
+                Solver::new(terms, &mut env).prove(std::slice::from_ref(a), &Atom::False),
+                Outcome::Valid { .. }
+            )
+        })
+    }
 }
 
 /// Check a whole module (design 16 §5): one pass per function, lemmas first so their callers know
@@ -2591,7 +2614,8 @@ pub fn check_module(m: &Module, gradual: bool) -> super::out::ModuleOut {
     check_module_with(m, gradual, false)
 }
 
-/// `check_module`, and for the editor (`explain`): why each `prove` succeeded. The extra output is informational; verdicts are the same either way.
+/// `check_module`, and for the editor (`explain`): why each `prove` succeeded and which regions
+/// never run. The extra output is informational; verdicts are the same either way.
 pub fn check_module_with(m: &Module, gradual: bool, explain: bool) -> super::out::ModuleOut {
     let info = super::info::analyze(m);
     let mem = m.memory_min.map(|p| p.saturating_mul(65536).min(1 << 32));
