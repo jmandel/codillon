@@ -903,12 +903,30 @@ fn dump_example_out() {
     let src = std::fs::read_to_string(&p).unwrap();
     let out = check_module(&Module::parse(&src), true);
     for f in &out.funcs {
-        println!("FUNC {} {}..{} verified={} strict={}", f.name, f.header_line, f.end_line, f.verified, f.strict_clean);
+        println!(
+            "FUNC {} {}..{} verified={} strict={}",
+            f.name, f.header_line, f.end_line, f.verified, f.strict_clean
+        );
         for (i, ch) in f.chips.iter().enumerate() {
-            println!("  chip#{i} L{} [{}] {} fray={:?}", ch.line, ch.origin, ch.text, ch.frayed_at);
+            println!(
+                "  chip#{i} L{} [{}] {} fray={:?}",
+                ch.line, ch.origin, ch.text, ch.frayed_at
+            );
         }
         for c in &f.cups {
-            println!("  cup L{} op={:?} {} ⟨{}⟩ {} feed={:?} deps={:?} assm={:?} wit={:?} diag={:?}", c.line, c.operand, c.kind.name(), c.goal, c.verdict.name(), c.feed, c.depends_on_checks, c.assumptions, c.witness, c.diag);
+            println!(
+                "  cup L{} op={:?} {} ⟨{}⟩ {} feed={:?} deps={:?} assm={:?} wit={:?} diag={:?}",
+                c.line,
+                c.operand,
+                c.kind.name(),
+                c.goal,
+                c.verdict.name(),
+                c.feed,
+                c.depends_on_checks,
+                c.assumptions,
+                c.witness,
+                c.diag
+            );
         }
         for e in &f.line_errors {
             println!("  ERR {:?}", e);

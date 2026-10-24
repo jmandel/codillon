@@ -372,12 +372,12 @@ impl CodeLine {
             match self.info.kind {
                 LineKind::Malformed(_) => "line malformed-line",
                 // a proof declaration erases to a comment but keeps its number
-                LineKind::Empty if self.info.erased.is_some() => {
-                    "line spec-line numbered-line"
-                }
+                LineKind::Empty if self.info.erased.is_some() => "line spec-line numbered-line",
                 LineKind::Empty => "line",
                 LineKind::Other(_) => "line meta-line numbered-line",
-                LineKind::Instr(_) if self.is_proof_line() => "line instr-line spec-line numbered-line",
+                LineKind::Instr(_) if self.is_proof_line() => {
+                    "line instr-line spec-line numbered-line"
+                }
                 LineKind::Instr(_) => "line instr-line numbered-line",
             }
         }
@@ -401,9 +401,10 @@ impl CodeLine {
     pub fn is_proof_line(&self) -> bool {
         let t = self.instr().get().trim_start();
         self.info.erased.is_some()
-            && ["prove", "lemma", "unfold", "assume"]
-                .iter()
-                .any(|k| t.strip_prefix(k).is_some_and(|r| r.is_empty() || r.starts_with(char::is_whitespace)))
+            && ["prove", "lemma", "unfold", "assume"].iter().any(|k| {
+                t.strip_prefix(k)
+                    .is_some_and(|r| r.is_empty() || r.starts_with(char::is_whitespace))
+            })
     }
 
     /// Install what the proof kernel says about this line.
@@ -417,7 +418,9 @@ impl CodeLine {
     /// Is this line counted in the gutter's line numbers?
     pub fn is_numbered(&self) -> bool {
         let c = self.class();
-        c.contains("numbered-line") || c.contains("invalid-line") || c.contains("runtime-error-line")
+        c.contains("numbered-line")
+            || c.contains("invalid-line")
+            || c.contains("runtime-error-line")
     }
 
     pub fn shake(&mut self) {
@@ -736,7 +739,9 @@ impl CodeLine {
 
         // otherwise, snap change
         self.info.indent = Some(val);
-        self.animation_state.indent.snap((indent_px(4 + val) + LANE_PX) as f64);
+        self.animation_state
+            .indent
+            .snap((indent_px(4 + val) + LANE_PX) as f64);
         self.contents.get_mut().0.set_attribute(
             "style",
             &format!(

@@ -284,8 +284,8 @@ impl FrameLine {
             X_OFFSET_PX - indent_px(BLOCK_BOUNDARY_INDENT)
         } as f64;
 
-        let x_max = x_offset
-            + (indent_px(info.indent + BLOCK_BOUNDARY_INDENT) + LANE_PX - MARGIN) as f64;
+        let x_max =
+            x_offset + (indent_px(info.indent + BLOCK_BOUNDARY_INDENT) + LANE_PX - MARGIN) as f64;
         let total_dist = (x_max - x_left).max(0.0);
 
         let x_right = if let Some(actual_indent) = animated_indent

@@ -591,6 +591,8 @@ impl Editor {
         let Some(v2) = self.v2.clone() else {
             return;
         };
+        let perf = web_sys::window().and_then(|w| w.performance());
+        let t0 = perf.as_ref().map(|p| p.now());
         let edges = self.image().input_right_edges();
         let geom: Vec<crate::proof_view::LineGeom> = self
             .text()
@@ -616,10 +618,12 @@ impl Editor {
                 .copied()
                 .unwrap_or(k)
         };
-        let failure = RUN_LOG.with(|r| r.v2_failure()).map(|f| crate::proof_view::RunFailure {
-            line: f.line,
-            message: f.message,
-        });
+        let failure = RUN_LOG
+            .with(|r| r.v2_failure())
+            .map(|f| crate::proof_view::RunFailure {
+                line: f.line,
+                message: f.message,
+            });
         let mut scene = {
             let out = v2.out.borrow();
             crate::proof_view::build(&out, &geom, failure.as_ref(), &disp)
@@ -641,6 +645,12 @@ impl Editor {
         self.image_mut().set_proof_layers(&scene.under, &scene.over);
         for (i, lp) in scene.lines.into_iter().enumerate() {
             self.line_mut(i).set_proof(lp);
+        }
+        // the drawing's cost, for the QA harness (window.codillonProofMs)
+        if let (Some(p), Some(t0)) = (perf, t0)
+            && let Some(w) = web_sys::window()
+        {
+            let _ = js_sys::Reflect::set(&w, &"codillonProofMs".into(), &(p.now() - t0).into());
         }
     }
 

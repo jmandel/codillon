@@ -291,7 +291,10 @@ impl RuntimePlan {
             let mut named: Vec<String> = vec![];
             for ((t, _, ty), v) in c.sends.iter().zip(vals) {
                 let name = terms.render(*t);
-                if !name.starts_with('$') || name.contains('(') || named.iter().any(|n| n.starts_with(&format!("{name} ="))) {
+                if !name.starts_with('$')
+                    || name.contains('(')
+                    || named.iter().any(|n| n.starts_with(&format!("{name} =")))
+                {
                     continue;
                 }
                 let shown = match ty {

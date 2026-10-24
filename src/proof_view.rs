@@ -309,6 +309,9 @@ struct Target {
     dashed: bool,
 }
 
+/// A prove line's hypotheses (fact ids), their lines, the goal cups it feeds, its wrap notes.
+type ProveFeed = (Vec<u32>, Vec<u32>, Vec<usize>, String);
+
 struct ChipDraw {
     line: u32,
     x: f32,
@@ -375,10 +378,21 @@ pub fn build(
 
     for f in &out.funcs {
         build_func(
-            f, &ctx, failure, disp, &mut under, &mut over, &mut titles, &mut notes, &mut quiets,
+            f,
+            &ctx,
+            failure,
+            disp,
+            &mut under,
+            &mut over,
+            &mut titles,
+            &mut notes,
+            &mut quiets,
         );
         // the header badge
-        if let Some(lp) = scene.lines.get_mut(f.header_line.saturating_sub(1) as usize) {
+        if let Some(lp) = scene
+            .lines
+            .get_mut(f.header_line.saturating_sub(1) as usize)
+        {
             let checks = f
                 .cups
                 .iter()
@@ -456,13 +470,22 @@ fn how(c: &CupOut, disp: &dyn Fn(u32) -> u32) -> String {
     };
     if !c.assumptions.is_empty() {
         let ls: Vec<u32> = c.assumptions.iter().map(|o| o.line).collect();
-        let _ = write!(s, "; assuming line{} {}", if ls.len() > 1 { "s" } else { "" }, join_lines(&ls, &|x| x));
+        let _ = write!(
+            s,
+            "; assuming line{} {}",
+            if ls.len() > 1 { "s" } else { "" },
+            join_lines(&ls, &|x| x)
+        );
     }
     if !c.depends_on_checks.is_empty() {
         let _ = write!(
             s,
             "; relative to checks at line{} {}",
-            if c.depends_on_checks.len() > 1 { "s" } else { "" },
+            if c.depends_on_checks.len() > 1 {
+                "s"
+            } else {
+                ""
+            },
             join_lines(&c.depends_on_checks, &|x| x)
         );
     }
@@ -471,7 +494,11 @@ fn how(c: &CupOut, disp: &dyn Fn(u32) -> u32) -> String {
 }
 
 fn verdict_word(c: &CupOut, failed_here: bool) -> String {
-    let star = if c.depends_on_checks.is_empty() { "" } else { "*" };
+    let star = if c.depends_on_checks.is_empty() {
+        ""
+    } else {
+        "*"
+    };
     match c.verdict {
         Verdict::RuntimeChecked if failed_here => "refuted by the run".into(),
         Verdict::RuntimeChecked if c.ghost => "unfed (ghost code is never checked)".into(),
@@ -560,7 +587,7 @@ fn build_func(
     let mut chip_targets: HashMap<u32, Vec<Target>> = HashMap::new();
     let mut hints: HashMap<u32, (u32, f32, f32)> = HashMap::new();
     // prove lines: (hyps, hyp lines, goal cups)
-    let mut proves: HashMap<u32, (Vec<u32>, Vec<u32>, Vec<usize>, String)> = HashMap::new();
+    let mut proves: HashMap<u32, ProveFeed> = HashMap::new();
     let mut dead_wires: Vec<(u32, usize)> = vec![];
     for (i, c) in f.cups.iter().enumerate() {
         let (x, y, h) = cup_pos[i];
@@ -636,7 +663,11 @@ fn build_func(
             });
         }
         // the prove's output, below the rule, wired to the goal cup(s) on the next line
-        let ox = if k > 0 { x0 + step * 0.5 } else { frac_x(ctx.indent(*pl)) };
+        let ox = if k > 0 {
+            x0 + step * 0.5
+        } else {
+            frac_x(ctx.indent(*pl))
+        };
         let oy = y_mid(*pl) + 7.5;
         for g in goals {
             let (gx, gy, gh) = cup_pos[*g];
@@ -646,27 +677,54 @@ fn build_func(
                 oy + 12.0,
                 gy - gh - 12.0,
                 gy - gh,
-                if glook == Look::Assumed { " pv-dash" } else { "" }
+                if glook == Look::Assumed {
+                    " pv-dash"
+                } else {
+                    ""
+                }
             );
         }
         let _ = write!(
             sockets,
             "<path d=\"{}\" fill=\"{}\" stroke=\"{DARK_PURPLE}\" stroke-width=\"0.8\" {}/>",
             diamond(ox, oy, 4.2),
-            if glook == Look::Assumed { "url(#pv-hatch)" } else { PURPLE },
-            if glook == Look::Assumed { "opacity=\"0.7\"" } else { "" }
+            if glook == Look::Assumed {
+                "url(#pv-hatch)"
+            } else {
+                PURPLE
+            },
+            if glook == Look::Assumed {
+                "opacity=\"0.7\""
+            } else {
+                ""
+            }
         );
         let hyp_text: Vec<String> = hyps
             .iter()
             .zip(hyp_lines)
             .enumerate()
             .map(|(j, (h, l))| {
-                let t = f.chips.get(*h as usize).map(|c| c.text.as_str()).unwrap_or("?");
+                let t = f
+                    .chips
+                    .get(*h as usize)
+                    .map(|c| c.text.as_str())
+                    .unwrap_or("?");
                 format!("{}: ⟨{t}⟩ (line {l})", j + 1)
             })
             .collect();
-        let goal_text: Vec<String> = goals.iter().map(|g| format!("⟨{}⟩", f.cups[*g].goal)).collect();
-        let mut t = format!("prove {k}: {} ⟹ {}", if k == 0 { "no hypotheses".into() } else { hyp_text.join(", ") }, goal_text.join(", "));
+        let goal_text: Vec<String> = goals
+            .iter()
+            .map(|g| format!("⟨{}⟩", f.cups[*g].goal))
+            .collect();
+        let mut t = format!(
+            "prove {k}: {} ⟹ {}",
+            if k == 0 {
+                "no hypotheses".into()
+            } else {
+                hyp_text.join(", ")
+            },
+            goal_text.join(", ")
+        );
         if !wraps.is_empty() {
             let _ = write!(t, "\nwraps: {wraps}");
         }
@@ -712,11 +770,7 @@ fn build_func(
     }
 
     // place the drawn chips: lower row, right to left from the code
-    let mut drawn: Vec<u32> = chip_targets
-        .keys()
-        .chain(hints.keys())
-        .copied()
-        .collect();
+    let mut drawn: Vec<u32> = chip_targets.keys().chain(hints.keys()).copied().collect();
     drawn.sort();
     drawn.dedup();
     let mut per_line: HashMap<u32, usize> = HashMap::new();
@@ -812,7 +866,11 @@ fn build_func(
             let fy = y_mid(m) - 4.0;
             let bad = c.hint.is_some();
             // the ribbon carries on (faint, or solid when a cup needed it) to the fray
-            let from = if c.targets.is_empty() { c.y } else { thi.max(c.y) };
+            let from = if c.targets.is_empty() {
+                c.y
+            } else {
+                thi.max(c.y)
+            };
             if fy - 11.0 > from {
                 let _ = write!(
                     under,
@@ -822,7 +880,13 @@ fn build_func(
                 );
             }
             let mut d = String::new();
-            for (a, len) in [(-0.95f32, 10.0f32), (-0.45, 12.0), (0.0, 9.0), (0.45, 12.0), (0.95, 10.0)] {
+            for (a, len) in [
+                (-0.95f32, 10.0f32),
+                (-0.45, 12.0),
+                (0.0, 9.0),
+                (0.45, 12.0),
+                (0.95, 10.0),
+            ] {
                 let (sx, sy) = (tx, fy - 11.0);
                 let vx = a.sin();
                 let vy = a.cos();
@@ -911,20 +975,30 @@ fn build_func(
                 y - h + 3.0
             );
         }
-        titles
-            .entry(c.line)
-            .or_default()
-            .push(format!("⟨{}⟩ {}: {}", c.goal, verdict_word(c, failed_here), how(c, disp)));
+        titles.entry(c.line).or_default().push(format!(
+            "⟨{}⟩ {}: {}",
+            c.goal,
+            verdict_word(c, failed_here),
+            how(c, disp)
+        ));
         match lk {
             Look::Refuted if !failed_here => {
                 let w = match &c.witness {
-                    Some(Witness::Eval { value }) => format!("refuted: ⟨{}⟩ evaluates to {value}", c.goal),
+                    Some(Witness::Eval { value }) => {
+                        format!("refuted: ⟨{}⟩ evaluates to {value}", c.goal)
+                    }
                     Some(Witness::Run { args, .. }) => format!(
                         "refuted by a run on ({}): ⟨{}⟩",
-                        args.iter().map(|a| a.to_string()).collect::<Vec<_>>().join(", "),
+                        args.iter()
+                            .map(|a| a.to_string())
+                            .collect::<Vec<_>>()
+                            .join(", "),
                         c.goal
                     ),
-                    None => c.diag.clone().unwrap_or_else(|| format!("refuted: ⟨{}⟩", c.goal)),
+                    None => c
+                        .diag
+                        .clone()
+                        .unwrap_or_else(|| format!("refuted: ⟨{}⟩", c.goal)),
                 };
                 notes.entry(c.line).or_default().push(w);
             }
@@ -951,7 +1025,9 @@ mod tests {
 
     #[test]
     fn parses_failed_prove_hypotheses() {
-        let h = parse_hyps("not implied by [$gcd_ref($x, $y) = ite(eqz($y), $x, 1) @128, $x ≠ 0 @123]: u($x)=1");
+        let h = parse_hyps(
+            "not implied by [$gcd_ref($x, $y) = ite(eqz($y), $x, 1) @128, $x ≠ 0 @123]: u($x)=1",
+        );
         assert_eq!(
             h,
             vec![
@@ -982,15 +1058,32 @@ mod tests {
 
     #[test]
     fn every_example_builds_a_scene() {
-        for ex in ["hashtable", "hashtable-stale", "parity-bug-gate", "gcd-bug-guard", "primality"] {
+        for ex in [
+            "hashtable",
+            "hashtable-stale",
+            "parity-bug-gate",
+            "gcd-bug-guard",
+            "primality",
+        ] {
             let p = format!("{}/public/examples/v2/{ex}.wat", env!("CARGO_MANIFEST_DIR"));
             let src = std::fs::read_to_string(&p).unwrap();
             let out = crate::v2::kernel::check_module(&crate::v2::ast::Module::parse(&src), true);
             let n = src.lines().count();
-            let geom = vec![LineGeom { indent: Some(1), frac_right: None }; n];
+            let geom = vec![
+                LineGeom {
+                    indent: Some(1),
+                    frac_right: None
+                };
+                n
+            ];
             let t = std::time::Instant::now();
             let s = build(&out, &geom, None, &|k| k);
-            eprintln!("{ex}: {:?}, {} + {} bytes", t.elapsed(), s.under.len(), s.over.len());
+            eprintln!(
+                "{ex}: {:?}, {} + {} bytes",
+                t.elapsed(),
+                s.under.len(),
+                s.over.len()
+            );
             assert_eq!(s.lines.len(), n);
             assert!(s.over.contains("pv-chip"), "{ex}");
             let badges = s.lines.iter().filter(|l| l.badge.is_some()).count();
