@@ -160,7 +160,9 @@ pub fn pre_holds(m: &Module, f: usize, args: &[u64]) -> bool {
         .zip(args)
         .filter_map(|((_, p, r), a)| p.name.clone().map(|n| (n, *a & super::term::mask(r.ty))))
         .collect();
-    let mut it = Interp::new(m);
+    // a run's initial memory (zeros of the declared size), for memory-reading preconditions
+    let mut it = Interp::for_run(m, None);
+    it.budget = super::eval::EVAL_BUDGET;
     for ((_, _, r), a) in func.value_params().zip(args) {
         if let Some(e) = &r.refine {
             match eval_expr(&mut it, e, &env, *a & super::term::mask(r.ty)) {
@@ -169,7 +171,41 @@ pub fn pre_holds(m: &Module, f: usize, args: &[u64]) -> bool {
             }
         }
     }
+    // fact parameters are preconditions too (review 20 F9)
+    for p in &func.header.params {
+        if let Decl::Fact(e) = &p.decl {
+            match eval_expr(&mut it, e, &env, 0) {
+                Ok(x) if x & 0xffff_ffff != 0 => {}
+                _ => return false,
+            }
+        }
+    }
     true
+}
+
+/// A proposition as source text.
+fn expr_text(e: &Expr) -> String {
+    match e {
+        Expr::V => "v".into(),
+        Expr::Var(n) => n.clone(),
+        Expr::Int(i) => i.to_string(),
+        Expr::Op(name, a) => {
+            let mut s = format!("({name}");
+            for x in a {
+                s.push(' ');
+                s.push_str(&expr_text(x));
+            }
+            s + ")"
+        }
+        Expr::Call(f, a) => {
+            let mut s = format!("(call {f}");
+            for x in a {
+                s.push(' ');
+                s.push_str(&expr_text(x));
+            }
+            s + ")"
+        }
+    }
 }
 
 /// The harness inputs that satisfy its precondition.
@@ -295,7 +331,16 @@ fn vacuity_inner<S: AsRef<str>>(lines: &[S]) -> Vec<VacuityRow> {
         }
         let k = n_entry_facts(&m, f);
         let refined_result = func.value_results().iter().any(|r| r.refine.is_some());
-        if !func.is_harness() && k == 0 && !refined_result {
+        let fact_results: Vec<&Expr> = func
+            .header
+            .results
+            .iter()
+            .filter_map(|d| match d {
+                Decl::Fact(e) => Some(e),
+                _ => None,
+            })
+            .collect();
+        if !func.is_harness() && k == 0 && !refined_result && fact_results.is_empty() {
             continue;
         }
         let mut row = VacuityRow {
@@ -347,6 +392,39 @@ fn vacuity_inner<S: AsRef<str>>(lines: &[S]) -> Vec<VacuityRow> {
             let f2 = f + 1; // imports come first
             row.unconstraining = out.funcs.iter().any(|o| {
                 o.func as usize == f2
+                    && o.cups.iter().any(|c| {
+                        c.kind == CupKind::ResultRefinement && c.verdict == Verdict::Proven
+                    })
+            });
+        }
+        if !row.vacuous && !row.unconstraining && !fact_results.is_empty() {
+            // a fact result the kernel proves with no hypotheses at all (not even the
+            // preconditions) is a tautology: it says nothing about what the function does
+            let params: Vec<String> = func
+                .value_params()
+                .map(|(_, p, r)| {
+                    format!(
+                        "(param {} {})",
+                        p.name.clone().unwrap_or_else(|| "$_".into()),
+                        r.ty.name()
+                    )
+                })
+                .collect();
+            let mut lines2: Vec<String> = lines.iter().map(|s| s.as_ref().to_string()).collect();
+            let base = lines2.len() as u32;
+            for (j, e) in fact_results.iter().enumerate() {
+                lines2.push(format!(
+                    "(func $__taut{j} {} (result (fact {})))",
+                    params.join(" "),
+                    expr_text(e)
+                ));
+                lines2.push("  prove 0".into());
+                lines2.push(")".into());
+            }
+            let m2 = Module::parse_lines(&lines2);
+            let out = check_module(&m2, true);
+            row.unconstraining = out.funcs.iter().any(|o| {
+                o.header_line > base
                     && o.cups.iter().any(|c| {
                         c.kind == CupKind::ResultRefinement && c.verdict == Verdict::Proven
                     })

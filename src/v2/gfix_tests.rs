@@ -605,3 +605,30 @@ fn f8_eval_fop_matches_wasm() {
     assert_eq!(eval_fop("f32.min", &[f(-0.0), f(0.0)]), Ok(f(-0.0)));
     assert_eq!(eval_fop("v128.any_true", &[0]), Err(false));
 }
+
+// ---------------- F9: fact parameters and fact results in adequacy ----------------
+
+#[test]
+fn f9_fact_preconditions_and_tautological_fact_results() {
+    use super::adequacy::{pre_holds, vacuity};
+    let src: Vec<String> = r#"(func $f (export "f") (param $k i32) (param $h (fact (i32.lt_u $k 10))) (result (fact (i32.ge_u $k 0)))
+  prove 0
+)
+(func $g (export "g") (param $k i32) (param $h (fact (i32.lt_u $k 0))) (result (fact (i32.lt_u $k 10)))
+  local.get $k
+  drop
+  prove 1
+)"#
+    .lines()
+    .map(String::from)
+    .collect();
+    let m = Module::parse_lines(&src);
+    assert!(pre_holds(&m, 0, &[3]));
+    assert!(!pre_holds(&m, 0, &[12]), "the fact parameter is a precondition");
+    let rows = vacuity(&src);
+    let f = rows.iter().find(|r| r.func == "$f").unwrap();
+    assert!(f.witnesses > 0 && f.witnesses < f.tried, "{f:?}");
+    assert!(f.unconstraining, "u(k) ≥ 0 holds for every k: {f:?}");
+    let g = rows.iter().find(|r| r.func == "$g").unwrap();
+    assert!(g.vacuous && g.witnesses == 0, "{g:?}");
+}
