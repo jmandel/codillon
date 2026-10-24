@@ -9,8 +9,9 @@ use super::*;
 const FALLBACK: usize = 8;
 /// §3.1's atom cap: hypotheses plus the goal.
 pub const CAP_ATOMS: usize = 32;
-/// Solver calls R5a may make in one function pass (research/24 §5); deterministic.
-pub const AUTO_BUDGET: u32 = 4000;
+/// Solver cases R5a may enumerate in one function pass (research/24 §5): a deterministic
+/// measure of work, about 0.1 s native at the worst observed cost per case.
+pub const AUTO_BUDGET: u32 = 16384;
 
 /// What automatic feeding found for one cup.
 pub(super) enum AutoOutcome {
@@ -125,12 +126,19 @@ impl<'a, 'm> Pass<'a, 'm> {
 
     /// §3 on `hyps ⇒ goal`, hypotheses given top of lane first (as `prove k` gives them).
     pub(super) fn solve(&mut self, hyps: &[Entry], goal: &Atom) -> Outcome {
+        self.solve_counted(hyps, goal).0
+    }
+
+    /// `solve`, also returning the number of cases enumerated.
+    fn solve_counted(&mut self, hyps: &[Entry], goal: &Atom) -> (Outcome, u32) {
         let atoms: Vec<Atom> = hyps
             .iter()
             .map(|e| self.facts[e.fact as usize].atom.clone())
             .collect();
         let (terms, mut env) = self.solver_env();
-        Solver::new(terms, &mut env).prove(&atoms, goal)
+        let mut s = Solver::new(terms, &mut env);
+        let o = s.prove(&atoms, goal);
+        (o, s.cases)
     }
 
     /// One R5a call: counted against the function's budget, and refused over the atom cap.
@@ -140,11 +148,12 @@ impl<'a, 'm> Pass<'a, 'm> {
         }
         if self.auto_calls >= AUTO_BUDGET {
             return Outcome::Cap(format!(
-                "this function used its {AUTO_BUDGET} automatic solver calls"
+                "this function used its budget of {AUTO_BUDGET} automatic proof cases"
             ));
         }
-        self.auto_calls += 1;
-        self.solve(hyps, goal)
+        let (o, cases) = self.solve_counted(hyps, goal);
+        self.auto_calls += cases;
+        o
     }
 
     // ---- the R5a procedure ----
@@ -155,23 +164,41 @@ impl<'a, 'm> Pass<'a, 'm> {
         let n = rel.len();
         let all: Vec<Entry> = rel.iter().rev().map(|x| x.0).collect();
         let clean: Vec<bool> = all.iter().map(|e| self.clean(*e)).collect();
+        let ring: Vec<u32> = rel.iter().rev().map(|x| x.1).collect();
+        let max_ring = ring.iter().copied().max().unwrap_or(1);
         let mut found: Option<(Vec<Entry>, Vec<String>)> = None;
-        // S1: when some relevant fact rests on an assumption or a check, try without those first
-        if clean.iter().any(|c| !c) {
-            let cs: Vec<Entry> = all
-                .iter()
-                .zip(&clean)
-                .filter_map(|(e, c)| c.then_some(*e))
-                .collect();
-            if let Outcome::Valid { wraps } = self.auto_solve(&cs, goal) {
-                found = Some((cs, wraps));
-            }
-        }
         let mut first_fail = None;
-        if found.is_none() {
-            match self.auto_solve(&all, goal) {
-                Outcome::Valid { wraps } => found = Some((all.clone(), wraps)),
-                o => first_fail = Some(o),
+        // deepen by ring (facts sharing a value with the goal, then with those, …): the first
+        // stage that proves the goal is the one minimized. The last stage is the whole relevant
+        // set, so this never fails where one call on the whole set would succeed.
+        for r in 1..=max_ring {
+            let stage: Vec<usize> = (0..n).filter(|&i| ring[i] <= r).collect();
+            if r < max_ring && stage.len() == (0..n).filter(|&i| ring[i] <= r + 1).count() {
+                continue;
+            }
+            let pick = |only_clean: bool| -> Vec<Entry> {
+                stage
+                    .iter()
+                    .filter(|&&i| !only_clean || clean[i])
+                    .map(|&i| all[i])
+                    .collect()
+            };
+            // S1: when some fact rests on an assumption or a check, try without those first
+            if stage.iter().any(|&i| !clean[i]) {
+                let cs = pick(true);
+                if let Outcome::Valid { wraps } = self.auto_solve(&cs, goal) {
+                    found = Some((cs, wraps));
+                    break;
+                }
+            }
+            let st = pick(false);
+            match self.auto_solve(&st, goal) {
+                Outcome::Valid { wraps } => {
+                    found = Some((st, wraps));
+                    break;
+                }
+                o if r == max_ring => first_fail = Some(o),
+                _ => {}
             }
         }
         // after a cap (or an inexact step): the 8 closest facts, by ring, ties to the most recent
@@ -196,11 +223,11 @@ impl<'a, 'm> Pass<'a, 'm> {
         };
         // minimize: drop facts resting on assumptions or checks first, then oldest first; a drop
         // is kept only when §3 still answers Valid (Cap, Inexact or NotImplied keep the fact)
-        let mut drops: Vec<Entry> = hyps.iter().rev().copied().collect();
+        let drops: Vec<Entry> = hyps.iter().rev().copied().collect();
         let weak: Vec<bool> = drops.iter().map(|e| !self.clean(*e)).collect();
         let mut idx: Vec<usize> = (0..drops.len()).collect();
         idx.sort_by_key(|&i| !weak[i]);
-        drops = idx.into_iter().map(|i| drops[i]).collect();
+        let drops: Vec<Entry> = idx.into_iter().map(|i| drops[i]).collect();
         for e in drops {
             let fewer: Vec<Entry> = hyps.iter().copied().filter(|x| *x != e).collect();
             if let Outcome::Valid { wraps: w } = self.auto_solve(&fewer, goal) {

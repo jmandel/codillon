@@ -423,3 +423,44 @@ fn minimization_prefers_proven_facts() {
     assert_eq!(c.verdict, Verdict::Proven);
     assert!(c.assumptions.is_empty());
 }
+
+/// Timing of the whole kernel on each example, with every `prove` line deleted, against the
+/// original text (research/24 §7). `cargo test --release --lib auto_timing -- --ignored --nocapture`
+#[test]
+#[ignore]
+fn auto_timing() {
+    let names = [
+        "parity",
+        "isqrt",
+        "gcd",
+        "primality",
+        "hashtable",
+        "hashtable-stale",
+    ];
+    for ex in names {
+        let src = testdata(ex);
+        let stripped = strip_proves(&src);
+        for (what, text) in [("with proves", &src), ("auto only", &stripped)] {
+            let m = Module::parse(text);
+            for explain in [false, true] {
+                let t0 = std::time::Instant::now();
+                let reps = 20;
+                let mut out = None;
+                for _ in 0..reps {
+                    out = Some(check_module_with(&m, true, explain));
+                }
+                let dt = t0.elapsed().as_secs_f64() * 1000.0 / reps as f64;
+                let out = out.unwrap();
+                let nf = out.funcs.len();
+                let auto = out
+                    .cups()
+                    .filter(|c| matches!(c.feed, Feed::Auto { .. }))
+                    .count();
+                println!(
+                    "{ex:16} {what:12} explain={explain:5} {dt:7.2} ms total, {:5.2} ms/function ({nf} functions, {auto} auto cups)",
+                    dt / nf as f64
+                );
+            }
+        }
+    }
+}

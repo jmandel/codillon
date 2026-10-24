@@ -213,7 +213,7 @@ pub struct Pass<'a, 'm> {
     sets: Vec<(usize, TermId, TermId, u32)>,
     /// the line where a fact frays (R7, R11)
     fray: HashMap<FactId, u32>,
-    /// R5a: solver calls made by automatic feeding in this pass (research/24 §5)
+    /// R5a: solver cases enumerated by automatic feeding in this pass (research/24 §5)
     auto_calls: u32,
     /// feeds found to rest on contradictory facts (vericoding only): while all of a set's facts
     /// are in scope, every probed line is reached only ex falso (research/24 §6, review B1)

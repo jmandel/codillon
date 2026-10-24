@@ -203,6 +203,8 @@ fn fdiv(a: i128, b: i128) -> i128 {
 pub struct Solver<'a> {
     pub terms: &'a mut Terms,
     pub env: &'a mut dyn Env,
+    /// cases enumerated by the last `prove` (a deterministic measure of its work)
+    pub cases: u32,
     /// bounds learned by the interval pre-pass, by term (§3.3)
     bounds: HashMap<TermId, (i128, i128)>,
     // ---- per run (one case) ----
@@ -226,6 +228,7 @@ const SPLIT_IN_PRE: &str = "split";
 impl<'a> Solver<'a> {
     pub fn new(terms: &'a mut Terms, env: &'a mut dyn Env) -> Self {
         Solver {
+            cases: 0,
             terms,
             env,
             bounds: HashMap::new(),
@@ -1071,6 +1074,7 @@ impl<'a> Solver<'a> {
         let mut wraps: Vec<String> = Vec::new();
         loop {
             cases += 1;
+            self.cases = cases;
             if cases > CAP_CASES {
                 return Outcome::Cap(format!("too many cases (cap {CAP_CASES})"));
             }
