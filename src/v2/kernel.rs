@@ -2781,8 +2781,7 @@ fn global_preflight(cx: &mut ModCtx, errors: &mut Vec<(u32, String)>) {
         let mut called = vec![];
         super::info::expr_calls(r, &mut called);
         if let Some(p) = called.iter().find(|p| {
-            cx.m
-                .func_index(p)
+            cx.m.func_index(p)
                 .is_some_and(|f| cx.info[f].impure.is_some() || cx.info[f].has_loop.is_some())
         }) {
             errors.push((

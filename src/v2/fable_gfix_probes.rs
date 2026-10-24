@@ -25,11 +25,20 @@ fn verified(out: &ModuleOut, name: &str) -> bool {
 fn dump(out: &ModuleOut) -> String {
     let mut s = String::new();
     for f in &out.funcs {
-        s += &format!("func {} verified={} strict_clean={}\n", f.name, f.verified, f.strict_clean);
+        s += &format!(
+            "func {} verified={} strict_clean={}\n",
+            f.name, f.verified, f.strict_clean
+        );
         for c in &f.cups {
             s += &format!(
                 "  cup {} {} {:?} ⟨{}⟩ {:?} checks {:?} {:?}\n",
-                c.line, c.kind.name(), c.verdict, c.goal, c.feed, c.depends_on_checks, c.diag
+                c.line,
+                c.kind.name(),
+                c.verdict,
+                c.goal,
+                c.feed,
+                c.depends_on_checks,
+                c.diag
             );
         }
         for e in &f.line_errors {
@@ -110,10 +119,7 @@ fn fable_f1_lemma_through_predicate_through_partial_callee() {
         errors(&out)
     );
     // the same with unmeasured self-recursion instead of a loop
-    let rec = src.replace(
-        "  loop $l\n    br $l\n  end\n  unreachable",
-        "  call $spin",
-    );
+    let rec = src.replace("  loop $l\n    br $l\n  end\n  unreachable", "  call $spin");
     assert_ne!(rec, src);
     let out = check(&rec);
     println!("{}", dump(&out));
@@ -173,7 +179,11 @@ fn fable_f1_predicate_lemma_cycle() {
     let out = check(src);
     println!("{}", dump(&out));
     assert!(!verified(&out, "$f"));
-    assert!(errors(&out).iter().any(|(_, e)| e.contains("recursive through")));
+    assert!(
+        errors(&out)
+            .iter()
+            .any(|(_, e)| e.contains("recursive through"))
+    );
 }
 
 // ---------------- F2: aliasing through tee, params, globals ----------------
@@ -206,7 +216,10 @@ fn fable_f2_tee_owes_the_cup_too() {
     assert!(!verified(&out, "$f"));
     let (r, _) = super::tests::instrumented_run(F2_TEE, "f", &[1]);
     println!("run f(1): {r:?}");
-    assert!(r.is_err(), "f(1) must not return (it divides by zero): {r:?}");
+    assert!(
+        r.is_err(),
+        "f(1) must not return (it divides by zero): {r:?}"
+    );
 }
 
 /// A parameter's refinement names another parameter; the body overwrites that one.
@@ -233,7 +246,10 @@ fn fable_f2_param_refinement_naming_a_param() {
     let out = check(src);
     println!("{}", dump(&out));
     assert!(!verified(&out, "$f"));
-    let c = out.cups().find(|c| c.line == 3).expect("R7 cup on `local.set $a`");
+    let c = out
+        .cups()
+        .find(|c| c.line == 3)
+        .expect("R7 cup on `local.set $a`");
     println!("param cup: {:?} {}", c.verdict, c.goal);
 }
 
@@ -316,7 +332,9 @@ fn fable_f3_global_refinement_via_predicate_reading_another_global() {
     let out2 = check_module(&m2, true);
     println!("{}", dump(&out2));
     assert!(
-        errors(&out2).iter().any(|(_, e)| e.contains("predicate") || e.contains("loop")),
+        errors(&out2)
+            .iter()
+            .any(|(_, e)| e.contains("predicate") || e.contains("loop")),
         "a looping function serves as a global's refinement predicate: {:?}",
         errors(&out2)
     );
@@ -343,7 +361,11 @@ fn fable_f3_global_set_in_a_lemma_is_an_error() {
 )"#;
     let out = check(src);
     println!("{}", dump(&out));
-    assert!(errors(&out).iter().any(|(l, _)| *l == 2), "{:?}", errors(&out));
+    assert!(
+        errors(&out).iter().any(|(l, _)| *l == 2),
+        "{:?}",
+        errors(&out)
+    );
 }
 
 // ---------------- F5: the program must run ----------------
@@ -374,19 +396,27 @@ fn fable_f5_spin_loop_that_lives_in_a_student_predicate() {
         let b: Vec<&str> = body.iter().map(|s| s.as_str()).collect();
         let sub = replace(&start, 32, 32, &b);
         let j = s.judge(&sub);
-        println!("k={k}: {} boundary={:?} strict={:?}", j.summary(), j.boundary, j.strict);
+        println!(
+            "k={k}: {} boundary={:?} strict={:?}",
+            j.summary(),
+            j.boundary,
+            j.strict
+        );
         if j.accepted {
             accepted_any = Some(k);
         }
         assert!(
-            j.strict
-                .iter()
-                .any(|r| r.line == 31 && r.msg.starts_with("$isqrt(") && r.msg.contains("does not finish")),
+            j.strict.iter().any(|r| r.line == 31
+                && r.msg.starts_with("$isqrt(")
+                && r.msg.contains("does not finish")),
             "k={k}: {:?}",
             j.strict
         );
     }
-    assert!(accepted_any.is_none(), "accepted a body that never returns (k={accepted_any:?})");
+    assert!(
+        accepted_any.is_none(),
+        "accepted a body that never returns (k={accepted_any:?})"
+    );
 }
 
 /// A bare `unreachable` body: traps are "not this check's business".
@@ -432,7 +462,13 @@ fn fable_f5_functions_the_termination_rule_never_runs() {
     println!("$g spins: {} {:?}", j.summary(), j.strict);
     let g_ok = !j.accepted;
     assert!(big_ok && g_ok, "big_ok={big_ok} g_ok={g_ok}");
-    assert!(j.strict.iter().any(|r| r.line == 4 && r.msg.starts_with("$g(")), "{:?}", j.strict);
+    assert!(
+        j.strict
+            .iter()
+            .any(|r| r.line == 4 && r.msg.starts_with("$g(")),
+        "{:?}",
+        j.strict
+    );
 }
 
 /// S1: an LLM-owned function no listed input satisfies is unchecked (an error) unless a `$main`
@@ -495,10 +531,24 @@ fn fable_f7_constant_if_around_a_locked_line() {
     let sub = replace(&start, 7, 7, &["  i32.const 0"]);
     let sub = replace(&sub, 10, 10, &["      prove 1"]);
     let j = s.judge(&sub);
-    println!("const if: {} boundary={:?} strict={:?}", j.summary(), j.boundary, j.strict);
-    assert!(!j.accepted, "locked line made unreachable by a constant condition");
+    println!(
+        "const if: {} boundary={:?} strict={:?}",
+        j.summary(),
+        j.boundary,
+        j.strict
+    );
+    assert!(
+        !j.accepted,
+        "locked line made unreachable by a constant condition"
+    );
     // fixed (B3): a constant-false arm is dead code, so the locked line is reported unreachable
-    assert!(j.boundary.iter().any(|r| r.line == 9 && r.msg.contains("unreachable")), "{:?}", j.boundary);
+    assert!(
+        j.boundary
+            .iter()
+            .any(|r| r.line == 9 && r.msg.contains("unreachable")),
+        "{:?}",
+        j.boundary
+    );
 }
 
 #[test]
@@ -526,10 +576,21 @@ fn fable_f7_constant_br_if_before_a_locked_line() {
     let sub = replace(&sub, 11, 11, &["    prove 1"]);
     println!("{}", sub.join("\n"));
     let j = s.judge(&sub);
-    println!("const br_if: {} boundary={:?} strict={:?}", j.summary(), j.boundary, j.strict);
+    println!(
+        "const br_if: {} boundary={:?} strict={:?}",
+        j.summary(),
+        j.boundary,
+        j.strict
+    );
     assert!(!j.accepted, "locked line skipped by a constant br_if");
     // fixed (B3): the fall-through of an always-taken br_if is dead code
-    assert!(j.boundary.iter().any(|r| r.line == 10 && r.msg.contains("unreachable")), "{:?}", j.boundary);
+    assert!(
+        j.boundary
+            .iter()
+            .any(|r| r.line == 10 && r.msg.contains("unreachable")),
+        "{:?}",
+        j.boundary
+    );
 }
 
 // ---------------- A14b: moves within a block ----------------
@@ -577,7 +638,10 @@ fn fable_a14b_then_to_else_keeps_context() {
     t2.swap(1, 2);
     let v2 = s2.zone_violation(&t2);
     println!("swap violation: {v2:?}");
-    assert!(v2.is_some(), "swapping two locked lines in one block passed");
+    assert!(
+        v2.is_some(),
+        "swapping two locked lines in one block passed"
+    );
 }
 
 /// B3 beyond constants: a branch decided only by reasoning (a tautology, an unfolded LLM helper,
@@ -608,7 +672,10 @@ fn b3_locked_line_reached_only_ex_falso_is_rejected() {
     let s = SessionStart::new(&start);
     assert!(!s.judge(&start).accepted);
     let variants: Vec<(&str, Vec<&str>)> = vec![
-        ("tautology x >=u 0", vec!["  local.get $x", "  i32.const 0", "  i32.ge_u"]),
+        (
+            "tautology x >=u 0",
+            vec!["  local.get $x", "  i32.const 0", "  i32.ge_u"],
+        ),
         (
             "unfolded helper g(x) = x",
             vec!["  local.get $x", "  call $g", "  local.get $x", "  i32.eq"],
@@ -631,7 +698,12 @@ fn b3_locked_line_reached_only_ex_falso_is_rejected() {
         let at = 10 + cond.len() + 2; // the `nop` inside the locked block
         let sub = replace(&sub, at, at, &["    prove 1"]);
         let j = s.judge(&sub);
-        println!("{what}: {} boundary={:?} strict={:?}", j.summary(), j.boundary, j.strict);
+        println!(
+            "{what}: {} boundary={:?} strict={:?}",
+            j.summary(),
+            j.boundary,
+            j.strict
+        );
         assert!(!j.accepted, "{what}: accepted\n{}", sub.join("\n"));
         assert!(
             j.boundary.iter().any(|r| r.msg.contains("ex falso")),
@@ -657,7 +729,12 @@ fn b3_locked_line_reached_only_ex_falso_is_rejected() {
         ],
     );
     let j = s.judge(&sub);
-    println!("exit ex falso: {} boundary={:?} strict={:?}", j.summary(), j.boundary, j.strict);
+    println!(
+        "exit ex falso: {} boundary={:?} strict={:?}",
+        j.summary(),
+        j.boundary,
+        j.strict
+    );
     assert!(!j.accepted, "{}", sub.join("\n"));
     assert!(j.boundary.iter().any(|r| r.line == 14), "{:?}", j.boundary);
 }
@@ -697,6 +774,11 @@ fn b3_honest_guard_is_accepted() {
         ],
     );
     let j = s.judge(&sub);
-    println!("{} boundary={:?} strict={:?}", j.summary(), j.boundary, j.strict);
+    println!(
+        "{} boundary={:?} strict={:?}",
+        j.summary(),
+        j.boundary,
+        j.strict
+    );
     assert!(j.accepted, "{}", sub.join("\n"));
 }

@@ -261,12 +261,7 @@ fn small(m: &Module, f: usize, args: &[u64]) -> bool {
 /// predicate checking a result). The cost: an implementation that calls a student predicate
 /// which alone exceeds the budget on a small input is rejected, loudly, which beats a silent
 /// accept.
-pub fn runs_away(
-    m: &Module,
-    f: usize,
-    per: usize,
-    blame: &dyn Fn(usize) -> bool,
-) -> Finish {
+pub fn runs_away(m: &Module, f: usize, per: usize, blame: &dyn Fn(usize) -> bool) -> Finish {
     super::eval::with_depth_limit(FINISH_DEPTH, || {
         let mut fin = Finish {
             away: None,

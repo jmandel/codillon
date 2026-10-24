@@ -232,15 +232,16 @@ pub struct SessionStart {
 }
 
 /// Zone lines inside functions whose body is the LLM's: where the LLM controls the context.
-fn probe_lines(m: &Module, zone: &[(u32, String, String)], bodies: &BTreeSet<String>) -> BTreeSet<u32> {
+fn probe_lines(
+    m: &Module,
+    zone: &[(u32, String, String)],
+    bodies: &BTreeSet<String>,
+) -> BTreeSet<u32> {
     zone.iter()
         .map(|z| z.0)
         .filter(|&l| {
             m.funcs.iter().any(|f| {
-                !f.imported
-                    && f.header_line < l
-                    && l <= f.end_line
-                    && !bodies.contains(&f.name())
+                !f.imported && f.header_line < l && l <= f.end_line && !bodies.contains(&f.name())
             })
         })
         .collect()
