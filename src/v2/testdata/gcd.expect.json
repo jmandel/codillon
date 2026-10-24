@@ -1,0 +1,303 @@
+{
+  "source": "gcd.wat",
+  "mode": "strict",
+  "summary": "$gcd is proven against the recursive reference $gcd_ref (unfold + loop invariant); the bounded predicate $is_gcd is connected to $gcd_ref by one instructor axiom, so the harness's False cup is assumed, not proven. Predicates $divides/$common/$is_gcd/$gcd_ref/$no_cd_above are pure, loop-free; the two recursive ones have measures.",
+  "cups": [
+    {
+      "line": 11,
+      "operand": 1,
+      "kind": "DivByZero",
+      "goal": "$d ≠ 0",
+      "verdict": "proven",
+      "feed": {
+        "by": "lookup",
+        "facts": [
+          {
+            "line": 5,
+            "fact": "$d ≠ 0",
+            "origin": "if else-arm: ¬eq($d,0) (R4 rule 3)"
+          }
+        ]
+      }
+    },
+    {
+      "line": 53,
+      "operand": null,
+      "kind": "Measure",
+      "goal": "μ($d+1,$a,$b) < μ($d,$a,$b), μ = ext_u(a)+ext_u(b)+1−d",
+      "verdict": "proven",
+      "feed": {
+        "by": "prove",
+        "line": 52,
+        "hyps": [
+          {
+            "line": 44,
+            "fact": "¬$common($d,$a,$b)",
+            "origin": "inner if else-arm"
+          },
+          {
+            "line": 37,
+            "fact": "u($d) ≤ u(ext_u(a)+ext_u(b))",
+            "origin": "outer if else-arm (gt_u negated)"
+          }
+        ]
+      },
+      "why": "R31: the measure unfolds (non-recursive); with d ≤ a+b neither d+1 nor μ wraps (the q case-split cases are infeasible), so μ(d+1) = μ(d) − 1. Only the second hypothesis is needed."
+    },
+    {
+      "line": 95,
+      "operand": 1,
+      "kind": "DivByZero",
+      "goal": "$b ≠ 0",
+      "verdict": "proven",
+      "feed": {
+        "by": "lookup",
+        "facts": [
+          {
+            "line": 89,
+            "fact": "$b ≠ 0",
+            "origin": "if else-arm"
+          }
+        ]
+      }
+    },
+    {
+      "line": 97,
+      "operand": null,
+      "kind": "Measure",
+      "goal": "μ($b, $a rem_u $b) < μ($a,$b), μ = b",
+      "verdict": "proven",
+      "feed": {
+        "by": "prove",
+        "line": 96,
+        "hyps": []
+      },
+      "why": "μ unfolds to its second argument; the real slot rem_u(a,b) carries r+1 ≤ B (§3.2), so prove 0 suffices."
+    },
+    {
+      "line": 115,
+      "operand": null,
+      "kind": "LoopEntry",
+      "goal": "gcd_ref($a,$b) = gcd_ref($a,$b)  ($x,$y bound to the ids of $a,$b)",
+      "verdict": "proven",
+      "feed": {
+        "by": "prove",
+        "line": 114,
+        "hyps": []
+      },
+      "why": "local.set copies ids (R7), so both sides are the same opaque term."
+    },
+    {
+      "line": 118,
+      "operand": null,
+      "kind": "BlockFact",
+      "goal": "gcd_ref(#x,#y) = gcd_ref($a,$b)  [taken edge, #x,#y = loop-head φ]",
+      "verdict": "proven",
+      "feed": {
+        "by": "lookup",
+        "facts": [
+          {
+            "line": 115,
+            "fact": "gcd_ref(#x,#y) = gcd_ref($a,$b)",
+            "origin": "loop invariant (R17)"
+          }
+        ]
+      },
+      "why": "the block's first exit fact instantiated at the current bindings is exactly the invariant."
+    },
+    {
+      "line": 118,
+      "operand": null,
+      "kind": "BlockFact",
+      "goal": "#y = 0  [taken edge]",
+      "verdict": "proven",
+      "feed": {
+        "by": "lookup",
+        "facts": [
+          {
+            "line": 118,
+            "fact": "eq(#y, 0)",
+            "origin": "br_if taken edge (R20)"
+          }
+        ]
+      }
+    },
+    {
+      "line": 121,
+      "operand": 1,
+      "kind": "DivByZero",
+      "goal": "#y ≠ 0",
+      "verdict": "proven",
+      "feed": {
+        "by": "lookup",
+        "facts": [
+          {
+            "line": 118,
+            "fact": "ne(#y, 0)",
+            "origin": "br_if fall-through (R20)"
+          }
+        ]
+      },
+      "why": "the guard tests the same value #y that rem_u divides by."
+    },
+    {
+      "line": 129,
+      "operand": null,
+      "kind": "BackEdge",
+      "goal": "gcd_ref(#y, #t) = gcd_ref($a,$b), #t = rem_u(#x,#y)",
+      "verdict": "proven",
+      "feed": {
+        "by": "prove",
+        "line": 128,
+        "hyps": [
+          {
+            "line": 123,
+            "fact": "gcd_ref(#x,#y) = ite(#y = 0, #x, gcd_ref(#y, rem_u(#x,#y)))",
+            "origin": "unfold (R30)"
+          },
+          {
+            "line": 118,
+            "fact": "ne(#y, 0)",
+            "origin": "br_if fall-through"
+          },
+          {
+            "line": 115,
+            "fact": "gcd_ref(#x,#y) = gcd_ref($a,$b)",
+            "origin": "loop invariant"
+          }
+        ]
+      },
+      "why": "the three gcd_ref terms are opaque variables keyed by canonical args; the unfolding's rem_u(#x,#y) is the same id as #t (value numbering). ne decides the ite."
+    },
+    {
+      "line": 131,
+      "operand": null,
+      "kind": "BlockFact",
+      "goal": "both exit facts at the block's fall-through",
+      "verdict": "proven",
+      "feed": {
+        "by": "dead",
+        "line": 129
+      },
+      "why": "R22: dead after br $euclid."
+    },
+    {
+      "line": 135,
+      "operand": 0,
+      "kind": "ResultRefinement",
+      "goal": "#x = gcd_ref($a,$b)",
+      "verdict": "proven",
+      "feed": {
+        "by": "prove",
+        "line": 134,
+        "hyps": [
+          {
+            "line": 133,
+            "fact": "gcd_ref(#x,#y) = ite(#y = 0, #x, gcd_ref(#y, rem_u(#x,#y)))",
+            "origin": "unfold (R30)"
+          },
+          {
+            "line": 131,
+            "fact": "eq(#y, 0)",
+            "origin": "block exit fact at join (R16)"
+          },
+          {
+            "line": 131,
+            "fact": "gcd_ref(#x,#y) = gcd_ref($a,$b)",
+            "origin": "block exit fact at join (R16)"
+          }
+        ]
+      },
+      "why": "only the br_if edge reaches the join, so the bindings are the loop-head φ's; eq(#y,0) picks the first ite arm. The unfolding's rem_u(#x, 0) is a virtual slot; its range constraint is guarded (§3.2), so it is harmless."
+    },
+    {
+      "line": 147,
+      "operand": null,
+      "kind": "FactParam",
+      "goal": "$g = gcd_ref($a,$b)",
+      "verdict": "proven",
+      "feed": {
+        "by": "lookup",
+        "facts": [
+          {
+            "line": 140,
+            "fact": "eq(#g, gcd_ref($a,$b))",
+            "origin": "call result refinement (R13)"
+          }
+        ]
+      }
+    },
+    {
+      "line": 149,
+      "operand": null,
+      "kind": "False",
+      "goal": "False",
+      "verdict": "assumed",
+      "feed": {
+        "by": "prove",
+        "line": 148,
+        "hyps": [
+          {
+            "line": 147,
+            "fact": "$is_gcd($g,$a,$b)",
+            "origin": "axiom gcd_ref_is_gcd (R33, instructor-supplied)"
+          },
+          {
+            "line": 146,
+            "fact": "¬$is_gcd($g,$a,$b)",
+            "origin": "br_if fall-through"
+          }
+        ]
+      },
+      "why": "propositional contradiction; verdict assumed because one hypothesis comes from an axiom.",
+      "assumptions": [
+        {
+          "line": 103,
+          "axiom": "axiom:gcd_ref_is_gcd"
+        }
+      ]
+    }
+  ],
+  "axioms": [
+    {
+      "line": 103,
+      "name": "axiom:gcd_ref_is_gcd",
+      "supplied_by": "instructor",
+      "statement": "g = gcd_ref(a,b) ⇒ $is_gcd(g,a,b)"
+    }
+  ],
+  "runs": [
+    {
+      "export": "harness:gcd",
+      "expect": "pass",
+      "domain": [
+        0,
+        300
+      ]
+    },
+    {
+      "export": "harness:gcd",
+      "args": [
+        12,
+        8
+      ],
+      "expect": "ok"
+    },
+    {
+      "export": "harness:gcd",
+      "args": [
+        0,
+        0
+      ],
+      "expect": "ok"
+    },
+    {
+      "export": "harness:gcd",
+      "args": [
+        7,
+        0
+      ],
+      "expect": "ok"
+    }
+  ]
+}

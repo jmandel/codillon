@@ -1,0 +1,511 @@
+{
+  "source": "hashtable-stale.wat",
+  "mode": "gradual",
+  "summary": "Wrong proof (stale fact): the guard's fact is about $i before the increment; the store's bounds cup is unfed and a run traps out of bounds at the last iteration (address 65504 + 32).",
+  "cups": [
+    {
+      "line": 15,
+      "operand": 0,
+      "kind": "Bounds",
+      "goal": "u(shl(and($j,7),2)) ≤ 28  (bounds: 65536 − 65504 − 4)",
+      "verdict": "proven",
+      "feed": {
+        "by": "prove",
+        "line": 14,
+        "hyps": []
+      },
+      "why": "and with 7 is mod 8 (§3.2), so the address is in [0, 28]; no hypothesis needed."
+    },
+    {
+      "line": 59,
+      "operand": null,
+      "kind": "Measure",
+      "goal": "μ = $n: u($n − 1) < u($n)",
+      "verdict": "proven",
+      "feed": {
+        "by": "prove",
+        "line": 58,
+        "hyps": [
+          {
+            "line": 49,
+            "fact": "ne($slot($p), 0)",
+            "origin": "inner if else-arm"
+          },
+          {
+            "line": 43,
+            "fact": "ne($n, 0)",
+            "origin": "outer if else-arm"
+          }
+        ]
+      },
+      "why": "n ≠ 0, so n − 1 does not wrap."
+    },
+    {
+      "line": 87,
+      "operand": null,
+      "kind": "Measure",
+      "goal": "μ = $n: u($n − 1) < u($n)",
+      "verdict": "proven",
+      "feed": {
+        "by": "prove",
+        "line": 86,
+        "hyps": [
+          {
+            "line": 76,
+            "fact": "ne($slot($p), $k)",
+            "origin": "inner if else-arm"
+          },
+          {
+            "line": 69,
+            "fact": "ne($n, 0)",
+            "origin": "outer if else-arm"
+          }
+        ]
+      },
+      "why": "n ≠ 0, so n − 1 does not wrap."
+    },
+    {
+      "line": 141,
+      "operand": null,
+      "kind": "Measure",
+      "goal": "μ = $n: u($n − 1) < u($n)",
+      "verdict": "proven",
+      "feed": {
+        "by": "prove",
+        "line": 140,
+        "hyps": [
+          {
+            "line": 133,
+            "fact": "$slot_ok($j)@ε",
+            "origin": "inner if then-arm"
+          },
+          {
+            "line": 128,
+            "fact": "ne($n, 0)",
+            "origin": "outer if else-arm"
+          }
+        ]
+      },
+      "why": "n ≠ 0, so n − 1 does not wrap."
+    },
+    {
+      "line": 175,
+      "operand": 0,
+      "kind": "Bounds",
+      "goal": "u(shl(and($k&7 + $i,7),2)) ≤ 28  (bounds: 65536 − 65504 − 4)",
+      "verdict": "proven",
+      "feed": {
+        "by": "prove",
+        "line": 174,
+        "hyps": []
+      },
+      "why": "the probe index is masked, so no loop invariant is needed for bounds."
+    },
+    {
+      "line": 182,
+      "operand": 0,
+      "kind": "ResultRefinement",
+      "goal": "$slot_or_none(#j), #j = and(…, 7)",
+      "verdict": "proven",
+      "feed": {
+        "by": "prove",
+        "line": 181,
+        "hyps": []
+      },
+      "why": "$slot_or_none unfolds (R29); u(#j) ≤ 7 < 8."
+    },
+    {
+      "line": 195,
+      "operand": 0,
+      "kind": "ResultRefinement",
+      "goal": "$slot_or_none(-1)",
+      "verdict": "proven",
+      "feed": {
+        "by": "eval"
+      }
+    },
+    {
+      "line": 202,
+      "operand": null,
+      "kind": "LoopEntry",
+      "goal": "$rep_ok()@ε0",
+      "verdict": "proven",
+      "feed": {
+        "by": "lookup",
+        "facts": [
+          {
+            "line": 196,
+            "fact": "$rep_ok()@ε0",
+            "origin": "fact parameter $inv (entry)"
+          }
+        ]
+      },
+      "why": "no store yet, so the entry fact's epoch matches."
+    },
+    {
+      "line": 217,
+      "operand": 0,
+      "kind": "Bounds",
+      "goal": "u(shl(and($k&7 + $i,7),2)) ≤ 28  (bounds: 65536 − 65504 − 4)",
+      "verdict": "proven",
+      "feed": {
+        "by": "prove",
+        "line": 216,
+        "hyps": []
+      }
+    },
+    {
+      "line": 223,
+      "operand": null,
+      "kind": "ResultRefinement",
+      "goal": "fact result $rep_ok()@ε′ (key already present)",
+      "verdict": "proven",
+      "feed": {
+        "by": "lookup",
+        "facts": [
+          {
+            "line": 202,
+            "fact": "$rep_ok()@ε′",
+            "origin": "loop invariant at the loop-head epoch ε′ (R12, R17)"
+          }
+        ]
+      },
+      "why": "no store on this path since the loop head."
+    },
+    {
+      "line": 245,
+      "operand": 0,
+      "kind": "Bounds",
+      "goal": "u(shl(and($free − 1,7),2)) ≤ 28  (bounds: 65536 − 65504 − 4)",
+      "verdict": "proven",
+      "feed": {
+        "by": "prove",
+        "line": 244,
+        "hyps": []
+      }
+    },
+    {
+      "line": 247,
+      "operand": null,
+      "kind": "ResultRefinement",
+      "goal": "fact result $rep_ok()@ε′+1 (after the store)",
+      "verdict": "runtime-checked",
+      "feed": {
+        "by": "none"
+      },
+      "why": "after a store only facts about the new epoch match, and none exists: v2 has no frame rule for memory (§9). Gradual mode checks $rep_ok() before returning.",
+      "strict_error": "result needs ⟨$rep_ok()⟩; nothing feeds it (the store at line 245 ended the epoch of ⟨$rep_ok()⟩ from line 202)"
+    },
+    {
+      "line": 265,
+      "operand": null,
+      "kind": "BackEdge",
+      "goal": "$rep_ok()@ε′",
+      "verdict": "proven",
+      "feed": {
+        "by": "lookup",
+        "facts": [
+          {
+            "line": 202,
+            "fact": "$rep_ok()@ε′",
+            "origin": "loop invariant"
+          }
+        ]
+      },
+      "why": "both arms that store also return, so the back-edge is still in the loop-head epoch."
+    },
+    {
+      "line": 272,
+      "operand": null,
+      "kind": "ResultRefinement",
+      "goal": "fact result $rep_ok()@ε′ (table full)",
+      "verdict": "proven",
+      "feed": {
+        "by": "lookup",
+        "facts": [
+          {
+            "line": 202,
+            "fact": "$rep_ok()@ε′",
+            "origin": "loop invariant, kept by the block $full join (single edge)"
+          }
+        ]
+      }
+    },
+    {
+      "line": 283,
+      "operand": 0,
+      "kind": "Bounds",
+      "goal": "u(shl(and($free − 1,7),2)) ≤ 28  (bounds: 65536 − 65504 − 4)",
+      "verdict": "proven",
+      "feed": {
+        "by": "prove",
+        "line": 282,
+        "hyps": []
+      }
+    },
+    {
+      "line": 285,
+      "operand": null,
+      "kind": "ResultRefinement",
+      "goal": "fact result $rep_ok()@ε′+1",
+      "verdict": "runtime-checked",
+      "feed": {
+        "by": "none"
+      },
+      "strict_error": "result needs ⟨$rep_ok()⟩; nothing feeds it"
+    },
+    {
+      "line": 294,
+      "operand": null,
+      "kind": "ResultRefinement",
+      "goal": "fact result $rep_ok()@ε0 (key absent)",
+      "verdict": "proven",
+      "feed": {
+        "by": "lookup",
+        "facts": [
+          {
+            "line": 286,
+            "fact": "$rep_ok()@ε0",
+            "origin": "fact parameter $inv"
+          }
+        ]
+      }
+    },
+    {
+      "line": 301,
+      "operand": 0,
+      "kind": "Bounds",
+      "goal": "u(shl(#j, 2)) ≤ 28",
+      "verdict": "proven",
+      "feed": {
+        "by": "prove",
+        "line": 300,
+        "hyps": [
+          {
+            "line": 293,
+            "fact": "ne(#j, -1)",
+            "origin": "implicit else-arm of the if (R18)"
+          },
+          {
+            "line": 289,
+            "fact": "$slot_or_none(#j)",
+            "origin": "$find's result refinement (R13)"
+          }
+        ]
+      },
+      "why": "the contract of $find is what makes this store safe: unfolding gives u(j) < 8 or j = −1, and the else-arm excludes −1."
+    },
+    {
+      "line": 302,
+      "operand": null,
+      "kind": "ResultRefinement",
+      "goal": "fact result $rep_ok()@ε1",
+      "verdict": "runtime-checked",
+      "feed": {
+        "by": "none"
+      },
+      "strict_error": "result needs ⟨$rep_ok()⟩; nothing feeds it"
+    },
+    {
+      "line": 320,
+      "operand": 0,
+      "kind": "Bounds",
+      "goal": "u(shl(#i′, 2)) ≤ 28, #i′ = i32.add(#i, 1)",
+      "verdict": "runtime-checked",
+      "feed": {
+        "by": "none"
+      },
+      "prove_error": {
+        "line": 319,
+        "text": "not implied by [u(#i) < 8 @310]: u(#i)=7, so u(#i′)=8 and the address is 32"
+      },
+      "hyps_tried": [
+        {
+          "line": 310,
+          "fact": "u(#i) < 8",
+          "origin": "br_if fall-through, about the value of $i before line 314"
+        }
+      ],
+      "stale_hint": "⟨u($i) < 8⟩ (line 310) is about the old $i (set at line 314); its ribbon frays at line 314",
+      "after_runs": {
+        "verdict": "refuted",
+        "witness": {
+          "export": "harness:table",
+          "args": [
+            1,
+            9
+          ]
+        }
+      },
+      "why": "facts are about values: the guard proved something about #i, the store's address is built from #i′."
+    },
+    {
+      "line": 333,
+      "operand": 0,
+      "kind": "Refinement",
+      "goal": "$is_key($a)",
+      "verdict": "proven",
+      "feed": {
+        "by": "lookup",
+        "facts": [
+          {
+            "line": 327,
+            "fact": "$is_key($a)",
+            "origin": "br_if fall-through: ¬eq($is_key($a),0)"
+          }
+        ]
+      }
+    },
+    {
+      "line": 333,
+      "operand": null,
+      "kind": "FactParam",
+      "goal": "$rep_ok()@εz",
+      "verdict": "runtime-checked",
+      "feed": {
+        "by": "none"
+      },
+      "why": "the clearing loop stored to memory; nothing establishes the invariant of the cleared table statically.",
+      "strict_error": "$insert needs ⟨$rep_ok()⟩ for $inv; nothing feeds it"
+    },
+    {
+      "line": 336,
+      "operand": 0,
+      "kind": "Refinement",
+      "goal": "$is_key($b)",
+      "verdict": "proven",
+      "feed": {
+        "by": "lookup",
+        "facts": [
+          {
+            "line": 331,
+            "fact": "$is_key($b)",
+            "origin": "br_if fall-through"
+          }
+        ]
+      }
+    },
+    {
+      "line": 336,
+      "operand": null,
+      "kind": "FactParam",
+      "goal": "$rep_ok()@ε1",
+      "verdict": "proven",
+      "feed": {
+        "by": "lookup",
+        "facts": [
+          {
+            "line": 333,
+            "fact": "$rep_ok()@ε1",
+            "origin": "fact result of the first $insert (R13)"
+          }
+        ]
+      },
+      "depends_on_checks": [
+        333
+      ]
+    },
+    {
+      "line": 344,
+      "operand": null,
+      "kind": "False",
+      "goal": "False",
+      "verdict": "runtime-checked",
+      "feed": {
+        "by": "none"
+      },
+      "why": "needs a memory frame rule to prove that the key just inserted is found (§9)."
+    },
+    {
+      "line": 347,
+      "operand": null,
+      "kind": "FactParam",
+      "goal": "$rep_ok()@ε2",
+      "verdict": "proven",
+      "feed": {
+        "by": "lookup",
+        "facts": [
+          {
+            "line": 336,
+            "fact": "$rep_ok()@ε2",
+            "origin": "fact result of the second $insert"
+          }
+        ]
+      },
+      "depends_on_checks": [
+        333
+      ]
+    },
+    {
+      "line": 354,
+      "operand": null,
+      "kind": "False",
+      "goal": "False",
+      "verdict": "runtime-checked",
+      "feed": {
+        "by": "none"
+      }
+    },
+    {
+      "line": 366,
+      "operand": null,
+      "kind": "False",
+      "goal": "False",
+      "verdict": "runtime-checked",
+      "feed": {
+        "by": "none"
+      }
+    },
+    {
+      "line": 371,
+      "operand": null,
+      "kind": "False",
+      "goal": "False",
+      "verdict": "proven",
+      "feed": {
+        "by": "prove",
+        "line": 370,
+        "hyps": [
+          {
+            "line": 369,
+            "fact": "¬$rep_ok()@ε3",
+            "origin": "br_if fall-through"
+          },
+          {
+            "line": 353,
+            "fact": "eq($find($a)@ε3, -1)",
+            "origin": "block join (single edge)"
+          },
+          {
+            "line": 350,
+            "fact": "$slot_or_none($find($a)@ε3)",
+            "origin": "call result"
+          },
+          {
+            "line": 347,
+            "fact": "$rep_ok()@ε3",
+            "origin": "fact result of $remove"
+          }
+        ]
+      },
+      "why": "proven relative to $remove's runtime-checked postcondition: the contract is the bridge.",
+      "depends_on_checks": [
+        333
+      ]
+    }
+  ],
+  "runs": [
+    {
+      "export": "harness:table",
+      "expect": "fails"
+    },
+    {
+      "export": "harness:table",
+      "args": [
+        1,
+        9
+      ],
+      "expect": "oob"
+    }
+  ]
+}

@@ -1,0 +1,192 @@
+;; primality: $prime_spec (no divisor in [2, n), clear, slow) and $prime (stops at sqrt(n) via d > n / d), measures, axioms, lemmas (v2 syntax)
+(func $nd (param $n i64) (param $lo i64) (param $hi i64) (result i32)
+  local.get $lo
+  local.get $hi
+  i64.ge_u
+  if (result i32)
+    i32.const 1
+  else
+    local.get $lo
+    i64.const 2
+    i64.lt_u
+    if (result i32)
+      local.get $n
+      local.get $lo
+      i64.const 1
+      i64.add
+      local.get $hi
+      nop ;;~ prove 2
+      call $nd
+    else
+      local.get $n
+      local.get $lo
+      nop ;;~ prove 1
+      i64.rem_u
+      i64.eqz
+      if (result i32)
+        i32.const 0
+      else
+        local.get $n
+        local.get $lo
+        i64.const 1
+        i64.add
+        local.get $hi
+        nop ;;~ prove 4
+        call $nd
+      end
+    end
+  end
+)
+(func $nd_m (export "measure:nd") (param $n i64) (param $lo i64) (param $hi i64) (result i64)
+  local.get $hi
+  local.get $lo
+  i64.sub
+)
+(func $prime_spec (param $n i64) (result i32)
+  local.get $n
+  i64.const 2
+  i64.lt_u
+  if (result i32)
+    i32.const 0
+  else
+    local.get $n
+    i64.const 2
+    local.get $n
+    call $nd
+  end
+)
+(func $no_divisor_from (param $n i64) (param $d i64) (result i32)
+  local.get $d
+  i64.const 2
+  i64.lt_u
+  if (result i32)
+    i32.const 0
+  else
+    local.get $d
+    local.get $n
+    local.get $d
+    nop ;;~ prove 1
+    i64.div_u
+    i64.gt_u
+    if (result i32)
+      i32.const 1
+    else
+      local.get $n
+      local.get $d
+      i64.rem_u
+      i64.eqz
+      if (result i32)
+        i32.const 0
+      else
+        nop ;;~ lemma $div_shrinks $n $d
+        local.get $n
+        local.get $d
+        i64.const 1
+        i64.add
+        nop ;;~ prove 4
+        call $no_divisor_from
+      end
+    end
+  end
+)
+(func $ndf_m (export "measure:no_divisor_from") (param $n i64) (param $d i64) (result i64)
+  local.get $n
+  local.get $d
+  i64.sub
+)
+(func $prime (export "prime") (param $n i64) (result i32)
+  local.get $n
+  i64.const 2
+  i64.lt_u
+  if (result i32)
+    i32.const 0
+  else
+    local.get $n
+    i64.const 2
+    call $no_divisor_from
+  end
+)
+(func $div_shrinks (export "axiom:div_shrinks") (param $n i64) (param $d i64)
+)
+(func $sqrt_suffices (export "axiom:sqrt_suffices") (param $n i64) (param $d i64)
+)
+(func $nd_extend (export "axiom:nd_extend") (param $n i64) (param $lo i64) (param $hi i64)
+)
+(func $from_agrees (export "lemma:from_agrees") (param $n i64) (param $d i64)
+  ;;~ (local $hq fact)
+  ;;~ (local $hr fact)
+  nop ;;~ local.get $d
+  nop ;;~ local.get $n
+  nop ;;~ local.get $d
+  nop ;;~ local.get $h1
+  nop ;;~ prove 1
+  nop ;;~ i64.div_u
+  nop ;;~ i64.gt_u
+  nop ;;~ if (fact (i32.eq (i32.eqz (call $no_divisor_from $n $d)) (i32.eqz (call $nd $n $d $n))))
+    nop ;;~ lemma $sqrt_suffices $n $d
+    nop ;;~ unfold $no_divisor_from $n $d
+    nop ;;~ local.get $h1
+    nop ;;~ prove 4
+  nop ;;~ else
+    nop ;;~ local.set $hq
+    nop ;;~ local.get $n
+    nop ;;~ local.get $d
+    nop ;;~ i64.rem_u
+    nop ;;~ i64.eqz
+    nop ;;~ if (fact (i32.eq (i32.eqz (call $no_divisor_from $n $d)) (i32.eqz (call $nd $n $d $n))))
+      nop ;;~ unfold $no_divisor_from $n $d
+      nop ;;~ unfold $nd $n $d $n
+      nop ;;~ lemma $div_shrinks $n $d
+      nop ;;~ local.get $h1
+      nop ;;~ local.get $hq
+      nop ;;~ prove 6
+    nop ;;~ else
+      nop ;;~ local.set $hr
+      nop ;;~ lemma $nd_extend $n 2 $d
+      nop ;;~ lemma $div_shrinks $n $d
+      nop ;;~ local.get $h1
+      nop ;;~ local.get $hq
+      nop ;;~ prove 4
+      nop ;;~ prove 4
+      nop ;;~ lemma $from_agrees $n (i64.add $d 1)
+      nop ;;~ unfold $no_divisor_from $n $d
+      nop ;;~ unfold $nd $n $d $n
+      nop ;;~ lemma $div_shrinks $n $d
+      nop ;;~ local.get $h1
+      nop ;;~ local.get $hq
+      nop ;;~ local.get $hr
+      nop ;;~ prove 7
+    nop ;;~ end
+  nop ;;~ end
+)
+(func $from_agrees_m (export "measure:from_agrees") (param $n i64) (param $d i64) (result i64)
+  local.get $n
+  local.get $d
+  i64.sub
+)
+(func $prime_agrees (export "lemma:prime_agrees") (param $n i64)
+  nop ;;~ local.get $n
+  nop ;;~ i64.const 2
+  nop ;;~ i64.lt_u
+  nop ;;~ if (fact (i32.eq (i32.eqz (call $prime $n)) (i32.eqz (call $prime_spec $n))))
+    nop ;;~ prove 1
+  nop ;;~ else
+    nop ;;~ unfold $nd $n 2 2
+    nop ;;~ prove 1
+    nop ;;~ lemma $from_agrees $n 2
+    nop ;;~ prove 4
+  nop ;;~ end
+)
+(func $prime_harness (export "harness:prime") (param $n i64)
+  local.get $n
+  call $prime
+  i32.eqz
+  local.get $n
+  call $prime_spec
+  i32.eqz
+  i32.eq
+  br_if 0
+  nop ;;~ lemma $prime_agrees $n
+  nop ;;~ prove 2
+  unreachable
+)

@@ -1,0 +1,897 @@
+{
+  "source": "primality.wat",
+  "mode": "strict",
+  "summary": "Two predicates, a clear slow $prime_spec and a fast $prime with the overflow-safe stopping test d > n/d, both recursive with measures. A recursive lemma (induction via its measure) proves they agree, using three instructor-supplied axioms; every predicate cup is proven, the agreement and the harness are assumed relative to the axioms.",
+  "cups": [
+    {
+      "line": 19,
+      "operand": null,
+      "kind": "Measure",
+      "goal": "μ($n,$lo+1,$hi) < μ($n,$lo,$hi), μ = hi − lo",
+      "verdict": "proven",
+      "feed": {
+        "by": "prove",
+        "line": 18,
+        "hyps": [
+          {
+            "line": 12,
+            "fact": "u($lo) < 2",
+            "origin": "inner if then-arm"
+          },
+          {
+            "line": 6,
+            "fact": "u($lo) < u($hi)",
+            "origin": "outer if else-arm (¬ge_u)"
+          }
+        ]
+      },
+      "why": "lo < hi: lo+1 does not wrap and hi−lo−1 < hi−lo."
+    },
+    {
+      "line": 24,
+      "operand": 1,
+      "kind": "DivByZero",
+      "goal": "$lo ≠ 0",
+      "verdict": "proven",
+      "feed": {
+        "by": "prove",
+        "line": 23,
+        "hyps": [
+          {
+            "line": 12,
+            "fact": "2 ≤ u($lo)",
+            "origin": "inner if else-arm (¬lt_u)"
+          }
+        ]
+      }
+    },
+    {
+      "line": 35,
+      "operand": null,
+      "kind": "Measure",
+      "goal": "μ($n,$lo+1,$hi) < μ($n,$lo,$hi)",
+      "verdict": "proven",
+      "feed": {
+        "by": "prove",
+        "line": 34,
+        "hyps": [
+          {
+            "line": 26,
+            "fact": "ne(rem_u($n,$lo), 0)",
+            "origin": "if else-arm"
+          },
+          {
+            "line": 24,
+            "fact": "$lo ≠ 0",
+            "origin": "prove at 23"
+          },
+          {
+            "line": 12,
+            "fact": "2 ≤ u($lo)",
+            "origin": "if else-arm"
+          },
+          {
+            "line": 6,
+            "fact": "u($lo) < u($hi)",
+            "origin": "if else-arm"
+          }
+        ]
+      }
+    },
+    {
+      "line": 69,
+      "operand": 1,
+      "kind": "DivByZero",
+      "goal": "$d ≠ 0",
+      "verdict": "proven",
+      "feed": {
+        "by": "prove",
+        "line": 68,
+        "hyps": [
+          {
+            "line": 62,
+            "fact": "2 ≤ u($d)",
+            "origin": "if else-arm (¬lt_u)"
+          }
+        ]
+      }
+    },
+    {
+      "line": 76,
+      "operand": 1,
+      "kind": "DivByZero",
+      "goal": "$d ≠ 0",
+      "verdict": "proven",
+      "feed": {
+        "by": "lookup",
+        "facts": [
+          {
+            "line": 69,
+            "fact": "$d ≠ 0",
+            "origin": "prove at 68, entered at 69"
+          }
+        ]
+      }
+    },
+    {
+      "line": 81,
+      "operand": null,
+      "kind": "FactParam",
+      "goal": "u($d) ≥ 2  (normal form 2 ≤ u($d))",
+      "verdict": "proven",
+      "feed": {
+        "by": "lookup",
+        "facts": [
+          {
+            "line": 62,
+            "fact": "2 ≤ u($d)",
+            "origin": "if else-arm"
+          }
+        ]
+      }
+    },
+    {
+      "line": 87,
+      "operand": null,
+      "kind": "Measure",
+      "goal": "μ($n,$d+1) < μ($n,$d), μ = n − d",
+      "verdict": "assumed",
+      "feed": {
+        "by": "prove",
+        "line": 86,
+        "hyps": [
+          {
+            "line": 81,
+            "fact": "u($n/$d) ≤ u($n >> 1)",
+            "origin": "axiom div_shrinks"
+          },
+          {
+            "line": 78,
+            "fact": "ne(rem_u($n,$d),0)",
+            "origin": "if else-arm"
+          },
+          {
+            "line": 71,
+            "fact": "u($d) ≤ u($n/$d)",
+            "origin": "if else-arm (¬gt_u: the overflow-safe stopping test)"
+          },
+          {
+            "line": 69,
+            "fact": "$d ≠ 0",
+            "origin": "prove at 68"
+          }
+        ]
+      },
+      "why": "d ≤ Q ≤ ⌊n/2⌋ and d ≥ 1 give 2d ≤ n, so d < n: neither d+1 nor n−d wraps and the measure drops by 1. The axiom is what makes `d > n/d` usable linearly.",
+      "assumptions": [
+        {
+          "line": 109,
+          "axiom": "axiom:div_shrinks"
+        }
+      ]
+    },
+    {
+      "line": 123,
+      "operand": 1,
+      "kind": "DivByZero",
+      "goal": "$d ≠ 0 (ghost)",
+      "verdict": "proven",
+      "feed": {
+        "by": "prove",
+        "line": 122,
+        "hyps": [
+          {
+            "line": 121,
+            "fact": "u($d) ≥ 2",
+            "origin": "fact param $h1 re-cited"
+          }
+        ]
+      }
+    },
+    {
+      "line": 126,
+      "operand": null,
+      "kind": "FactParam",
+      "goal": "2 ≤ u($d)",
+      "verdict": "proven",
+      "feed": {
+        "by": "lookup",
+        "facts": [
+          {
+            "line": 115,
+            "fact": "2 ≤ u($d)",
+            "origin": "fact param $h1 (entry)"
+          }
+        ]
+      }
+    },
+    {
+      "line": 126,
+      "operand": null,
+      "kind": "FactParam",
+      "goal": "u($n/$d) < u($d)",
+      "verdict": "proven",
+      "feed": {
+        "by": "lookup",
+        "facts": [
+          {
+            "line": 125,
+            "fact": "u($n/$d) < u($d)",
+            "origin": "if then-arm (gt_u normalized)"
+          }
+        ]
+      }
+    },
+    {
+      "line": 126,
+      "operand": null,
+      "kind": "FactParam",
+      "goal": "$nd($n,2,$d)",
+      "verdict": "proven",
+      "feed": {
+        "by": "lookup",
+        "facts": [
+          {
+            "line": 115,
+            "fact": "$nd($n,2,$d)",
+            "origin": "fact param $h2 (entry)"
+          }
+        ]
+      }
+    },
+    {
+      "line": 130,
+      "operand": null,
+      "kind": "BlockFact",
+      "goal": "(eqz $no_divisor_from($n,$d)) = (eqz $nd($n,$d,$n))  [then-arm exit]",
+      "verdict": "assumed",
+      "feed": {
+        "by": "prove",
+        "line": 129,
+        "hyps": [
+          {
+            "line": 128,
+            "fact": "2 ≤ u($d)",
+            "origin": "$h1 re-cited"
+          },
+          {
+            "line": 127,
+            "fact": "unfold $no_divisor_from($n,$d)",
+            "origin": "R30"
+          },
+          {
+            "line": 126,
+            "fact": "$nd($n,$d,$n)",
+            "origin": "axiom sqrt_suffices"
+          },
+          {
+            "line": 125,
+            "fact": "u($n/$d) < u($d)",
+            "origin": "then-arm"
+          }
+        ]
+      },
+      "why": "F = 1 by the unfolding (d ≥ 2, d > n/d); $nd(n,d,n) ≠ 0 by the axiom; both eqz are 0.",
+      "assumptions": [
+        {
+          "line": 111,
+          "axiom": "axiom:sqrt_suffices"
+        }
+      ]
+    },
+    {
+      "line": 134,
+      "operand": 1,
+      "kind": "DivByZero",
+      "goal": "$d ≠ 0 (ghost)",
+      "verdict": "proven",
+      "feed": {
+        "by": "lookup",
+        "facts": [
+          {
+            "line": 123,
+            "fact": "$d ≠ 0",
+            "origin": "prove at 122, entered at 123"
+          }
+        ]
+      }
+    },
+    {
+      "line": 139,
+      "operand": null,
+      "kind": "FactParam",
+      "goal": "2 ≤ u($d)",
+      "verdict": "proven",
+      "feed": {
+        "by": "lookup",
+        "facts": [
+          {
+            "line": 115,
+            "fact": "2 ≤ u($d)",
+            "origin": "$h1"
+          }
+        ]
+      }
+    },
+    {
+      "line": 143,
+      "operand": null,
+      "kind": "BlockFact",
+      "goal": "(eqz $no_divisor_from($n,$d)) = (eqz $nd($n,$d,$n))  [d divides n]",
+      "verdict": "assumed",
+      "feed": {
+        "by": "prove",
+        "line": 142,
+        "hyps": [
+          {
+            "line": 141,
+            "fact": "u($d) ≤ u($n/$d)",
+            "origin": "$hq re-cited (bound at 131)"
+          },
+          {
+            "line": 140,
+            "fact": "2 ≤ u($d)",
+            "origin": "$h1 re-cited"
+          },
+          {
+            "line": 139,
+            "fact": "u($n/$d) ≤ u($n>>1)",
+            "origin": "axiom div_shrinks"
+          },
+          {
+            "line": 138,
+            "fact": "unfold $nd($n,$d,$n)",
+            "origin": "R30"
+          },
+          {
+            "line": 137,
+            "fact": "unfold $no_divisor_from($n,$d)",
+            "origin": "R30"
+          },
+          {
+            "line": 136,
+            "fact": "eq(rem_u($n,$d),0)",
+            "origin": "if then-arm"
+          }
+        ]
+      },
+      "why": "both unfoldings select the 'd divides n' branch (value 0); d < n from 2 ≤ d ≤ n/d ≤ n/2.",
+      "assumptions": [
+        {
+          "line": 109,
+          "axiom": "axiom:div_shrinks"
+        }
+      ]
+    },
+    {
+      "line": 145,
+      "operand": null,
+      "kind": "FactParam",
+      "goal": "$nd($n,2,$d)",
+      "verdict": "proven",
+      "feed": {
+        "by": "lookup",
+        "facts": [
+          {
+            "line": 115,
+            "fact": "$nd($n,2,$d)",
+            "origin": "$h2"
+          }
+        ]
+      }
+    },
+    {
+      "line": 145,
+      "operand": null,
+      "kind": "FactParam",
+      "goal": "ne(rem_u($n,$d),0)",
+      "verdict": "proven",
+      "feed": {
+        "by": "lookup",
+        "facts": [
+          {
+            "line": 136,
+            "fact": "ne(rem_u($n,$d),0)",
+            "origin": "inner if else-arm"
+          }
+        ]
+      }
+    },
+    {
+      "line": 146,
+      "operand": null,
+      "kind": "FactParam",
+      "goal": "2 ≤ u($d)",
+      "verdict": "proven",
+      "feed": {
+        "by": "lookup",
+        "facts": [
+          {
+            "line": 115,
+            "fact": "2 ≤ u($d)",
+            "origin": "$h1"
+          }
+        ]
+      }
+    },
+    {
+      "line": 151,
+      "operand": null,
+      "kind": "FactParam",
+      "goal": "2 ≤ u($d+1)",
+      "verdict": "assumed",
+      "feed": {
+        "by": "prove",
+        "line": 149,
+        "hyps": [
+          {
+            "line": 148,
+            "fact": "u($d) ≤ u($n/$d)",
+            "origin": "$hq"
+          },
+          {
+            "line": 147,
+            "fact": "2 ≤ u($d)",
+            "origin": "$h1"
+          },
+          {
+            "line": 146,
+            "fact": "u($n/$d) ≤ u($n>>1)",
+            "origin": "axiom div_shrinks"
+          },
+          {
+            "line": 145,
+            "fact": "$nd($n,2,$d+1)",
+            "origin": "axiom nd_extend"
+          }
+        ]
+      },
+      "assumptions": [
+        {
+          "line": 109,
+          "axiom": "axiom:div_shrinks"
+        }
+      ]
+    },
+    {
+      "line": 151,
+      "operand": null,
+      "kind": "FactParam",
+      "goal": "$nd($n,2,$d+1)",
+      "verdict": "assumed",
+      "feed": {
+        "by": "lookup",
+        "facts": [
+          {
+            "line": 145,
+            "fact": "$nd($n,2,i64.add($d,1))",
+            "origin": "axiom nd_extend"
+          }
+        ]
+      },
+      "why": "same canonical id for (i64.add $d 1) in both places.",
+      "assumptions": [
+        {
+          "line": 113,
+          "axiom": "axiom:nd_extend"
+        }
+      ]
+    },
+    {
+      "line": 151,
+      "operand": null,
+      "kind": "Measure",
+      "goal": "μ($n,$d+1) < μ($n,$d), μ = n − d  (induction)",
+      "verdict": "assumed",
+      "feed": {
+        "by": "prove",
+        "line": 150,
+        "hyps": [
+          {
+            "line": 148,
+            "fact": "u($d) ≤ u($n/$d)",
+            "origin": "$hq"
+          },
+          {
+            "line": 147,
+            "fact": "2 ≤ u($d)",
+            "origin": "$h1"
+          },
+          {
+            "line": 146,
+            "fact": "u($n/$d) ≤ u($n>>1)",
+            "origin": "axiom div_shrinks"
+          },
+          {
+            "line": 145,
+            "fact": "$nd($n,2,$d+1)",
+            "origin": "axiom nd_extend"
+          }
+        ]
+      },
+      "assumptions": [
+        {
+          "line": 109,
+          "axiom": "axiom:div_shrinks"
+        }
+      ]
+    },
+    {
+      "line": 154,
+      "operand": null,
+      "kind": "FactParam",
+      "goal": "2 ≤ u($d)",
+      "verdict": "proven",
+      "feed": {
+        "by": "lookup",
+        "facts": [
+          {
+            "line": 115,
+            "fact": "2 ≤ u($d)",
+            "origin": "$h1"
+          }
+        ]
+      }
+    },
+    {
+      "line": 159,
+      "operand": null,
+      "kind": "BlockFact",
+      "goal": "(eqz $no_divisor_from($n,$d)) = (eqz $nd($n,$d,$n))  [d does not divide n]",
+      "verdict": "assumed",
+      "feed": {
+        "by": "prove",
+        "line": 158,
+        "hyps": [
+          {
+            "line": 157,
+            "fact": "ne(rem_u($n,$d),0)",
+            "origin": "$hr re-cited"
+          },
+          {
+            "line": 156,
+            "fact": "u($d) ≤ u($n/$d)",
+            "origin": "$hq"
+          },
+          {
+            "line": 155,
+            "fact": "2 ≤ u($d)",
+            "origin": "$h1"
+          },
+          {
+            "line": 154,
+            "fact": "u($n/$d) ≤ u($n>>1)",
+            "origin": "axiom"
+          },
+          {
+            "line": 153,
+            "fact": "unfold $nd($n,$d,$n)",
+            "origin": "R30"
+          },
+          {
+            "line": 152,
+            "fact": "unfold $no_divisor_from($n,$d)",
+            "origin": "R30"
+          },
+          {
+            "line": 151,
+            "fact": "eqz F($n,$d+1) = eqz $nd($n,$d+1,$n)",
+            "origin": "induction hypothesis (recursive lemma)"
+          }
+        ]
+      },
+      "why": "both unfoldings step to d+1; the induction hypothesis closes it.",
+      "assumptions": [
+        {
+          "line": 109,
+          "axiom": "axiom:div_shrinks"
+        },
+        {
+          "line": 111,
+          "axiom": "axiom:sqrt_suffices"
+        },
+        {
+          "line": 113,
+          "axiom": "axiom:nd_extend"
+        }
+      ]
+    },
+    {
+      "line": 160,
+      "operand": null,
+      "kind": "BlockFact",
+      "goal": "(eqz $no_divisor_from($n,$d)) = (eqz $nd($n,$d,$n))  [outer else-arm exit]",
+      "verdict": "assumed",
+      "feed": {
+        "by": "lookup",
+        "facts": [
+          {
+            "line": 159,
+            "fact": "(eqz $no_divisor_from($n,$d)) = (eqz $nd($n,$d,$n))",
+            "origin": "inner if's declared fact at join"
+          }
+        ]
+      },
+      "assumptions": [
+        {
+          "line": 109,
+          "axiom": "axiom:div_shrinks"
+        },
+        {
+          "line": 111,
+          "axiom": "axiom:sqrt_suffices"
+        },
+        {
+          "line": 113,
+          "axiom": "axiom:nd_extend"
+        }
+      ]
+    },
+    {
+      "line": 161,
+      "operand": null,
+      "kind": "ResultRefinement",
+      "goal": "(eqz $no_divisor_from($n,$d)) = (eqz $nd($n,$d,$n))",
+      "verdict": "assumed",
+      "feed": {
+        "by": "lookup",
+        "facts": [
+          {
+            "line": 160,
+            "fact": "(eqz $no_divisor_from($n,$d)) = (eqz $nd($n,$d,$n))",
+            "origin": "outer if's declared fact at join"
+          }
+        ]
+      },
+      "assumptions": [
+        {
+          "line": 109,
+          "axiom": "axiom:div_shrinks"
+        },
+        {
+          "line": 111,
+          "axiom": "axiom:sqrt_suffices"
+        },
+        {
+          "line": 113,
+          "axiom": "axiom:nd_extend"
+        }
+      ]
+    },
+    {
+      "line": 173,
+      "operand": null,
+      "kind": "BlockFact",
+      "goal": "(eqz $prime($n)) = (eqz $prime_spec($n))  [n < 2]",
+      "verdict": "proven",
+      "feed": {
+        "by": "prove",
+        "line": 172,
+        "hyps": [
+          {
+            "line": 171,
+            "fact": "u($n) < 2",
+            "origin": "if then-arm"
+          }
+        ]
+      },
+      "why": "$prime and $prime_spec are non-recursive and unfold automatically (R29); both are 0."
+    },
+    {
+      "line": 176,
+      "operand": null,
+      "kind": "FactParam",
+      "goal": "2 ≤ u(2)",
+      "verdict": "proven",
+      "feed": {
+        "by": "eval"
+      }
+    },
+    {
+      "line": 176,
+      "operand": null,
+      "kind": "FactParam",
+      "goal": "$nd($n,2,2)",
+      "verdict": "proven",
+      "feed": {
+        "by": "prove",
+        "line": 175,
+        "hyps": [
+          {
+            "line": 174,
+            "fact": "$nd($n,2,2) = ite(2 ≥ 2, 1, …)",
+            "origin": "unfold (R30)"
+          }
+        ]
+      },
+      "why": "evaluation cannot feed it ($n is not constant); one unfolding does."
+    },
+    {
+      "line": 178,
+      "operand": null,
+      "kind": "BlockFact",
+      "goal": "(eqz $prime($n)) = (eqz $prime_spec($n))  [n ≥ 2]",
+      "verdict": "assumed",
+      "feed": {
+        "by": "prove",
+        "line": 177,
+        "hyps": [
+          {
+            "line": 176,
+            "fact": "(eqz $no_divisor_from($n,2)) = (eqz $nd($n,2,$n))",
+            "origin": "lemma from_agrees"
+          },
+          {
+            "line": 176,
+            "fact": "$nd($n,2,2)",
+            "origin": "prove at 175"
+          },
+          {
+            "line": 174,
+            "fact": "unfold $nd($n,2,2)",
+            "origin": "R30"
+          },
+          {
+            "line": 171,
+            "fact": "2 ≤ u($n)",
+            "origin": "if else-arm"
+          }
+        ]
+      },
+      "assumptions": [
+        {
+          "line": 109,
+          "axiom": "axiom:div_shrinks"
+        },
+        {
+          "line": 111,
+          "axiom": "axiom:sqrt_suffices"
+        },
+        {
+          "line": 113,
+          "axiom": "axiom:nd_extend"
+        }
+      ]
+    },
+    {
+      "line": 179,
+      "operand": null,
+      "kind": "ResultRefinement",
+      "goal": "(eqz $prime($n)) = (eqz $prime_spec($n))",
+      "verdict": "assumed",
+      "feed": {
+        "by": "lookup",
+        "facts": [
+          {
+            "line": 178,
+            "fact": "(eqz $prime($n)) = (eqz $prime_spec($n))",
+            "origin": "if's declared fact at join"
+          }
+        ]
+      },
+      "assumptions": [
+        {
+          "line": 109,
+          "axiom": "axiom:div_shrinks"
+        },
+        {
+          "line": 111,
+          "axiom": "axiom:sqrt_suffices"
+        },
+        {
+          "line": 113,
+          "axiom": "axiom:nd_extend"
+        }
+      ]
+    },
+    {
+      "line": 191,
+      "operand": null,
+      "kind": "False",
+      "goal": "False",
+      "verdict": "assumed",
+      "feed": {
+        "by": "prove",
+        "line": 190,
+        "hyps": [
+          {
+            "line": 189,
+            "fact": "(eqz $prime($n)) = (eqz $prime_spec($n))",
+            "origin": "lemma prime_agrees"
+          },
+          {
+            "line": 188,
+            "fact": "ne(eqz $prime($n), eqz $prime_spec($n))",
+            "origin": "br_if fall-through"
+          }
+        ]
+      },
+      "assumptions": [
+        {
+          "line": 109,
+          "axiom": "axiom:div_shrinks"
+        },
+        {
+          "line": 111,
+          "axiom": "axiom:sqrt_suffices"
+        },
+        {
+          "line": 113,
+          "axiom": "axiom:nd_extend"
+        }
+      ]
+    }
+  ],
+  "axioms": [
+    {
+      "line": 109,
+      "name": "axiom:div_shrinks",
+      "supplied_by": "instructor",
+      "statement": "d ≥ 2 ⇒ n/d ≤ n>>1 (u64)"
+    },
+    {
+      "line": 111,
+      "name": "axiom:sqrt_suffices",
+      "supplied_by": "instructor",
+      "statement": "d ≥ 2, d > n/d, no divisor of n in [2,d) ⇒ no divisor in [d,n)  (number theory: a divisor ≥ d has a cofactor < d)"
+    },
+    {
+      "line": 113,
+      "name": "axiom:nd_extend",
+      "supplied_by": "instructor",
+      "statement": "no divisor in [lo,hi), hi ∤ n ⇒ no divisor in [lo,hi+1)  (provable by induction in v2; supplied to keep the example short)"
+    }
+  ],
+  "lemmas": [
+    {
+      "line": 115,
+      "name": "$from_agrees",
+      "proved_by": "induction (recursive lemma, measure:from_agrees)",
+      "status": "assumed (uses all three axioms)"
+    },
+    {
+      "line": 167,
+      "name": "$prime_agrees",
+      "proved_by": "case split on n < 2 + $from_agrees",
+      "status": "assumed"
+    }
+  ],
+  "runs": [
+    {
+      "export": "harness:prime",
+      "expect": "pass",
+      "domain": [
+        0,
+        3000
+      ]
+    },
+    {
+      "export": "harness:prime",
+      "args": [
+        97
+      ],
+      "expect": "ok"
+    },
+    {
+      "export": "harness:prime",
+      "args": [
+        2
+      ],
+      "expect": "ok"
+    },
+    {
+      "export": "harness:prime",
+      "args": [
+        1
+      ],
+      "expect": "ok"
+    },
+    {
+      "export": "harness:prime",
+      "args": [
+        2809
+      ],
+      "expect": "ok"
+    }
+  ]
+}

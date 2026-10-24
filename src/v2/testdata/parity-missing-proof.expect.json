@@ -1,0 +1,23 @@
+{
+  "source": "parity-missing-proof.wat",
+  "mode": "gradual",
+  "summary": "Missing proof: $half's result cup has nothing to feed it. Strict mode reports an error; gradual mode runs a check; the code is correct, so no run refutes it.",
+  "cups": [
+    { "line": 36, "operand": 0, "kind": "ResultRefinement", "goal": "$is_half(shr_s($x, 1), $x)", "verdict": "runtime-checked",
+      "feed": { "by": "none" },
+      "strict_error": "result needs ⟨$is_half(shr_s($x,1), $x)⟩; nothing feeds it",
+      "why": "lookup finds only $is_even($x) (line 31); no prove line above." },
+    { "line": 44, "operand": 0, "kind": "BlockFact", "goal": "$hon_ok(-1, $x)", "verdict": "proven",
+      "feed": { "by": "prove", "line": 43, "hyps": [ { "line": 41, "fact": "¬$is_even($x)" } ] } },
+    { "line": 46, "operand": 0, "kind": "Refinement", "goal": "$is_even($x)", "verdict": "proven",
+      "feed": { "by": "lookup", "facts": [ { "line": 41, "fact": "$is_even($x)", "origin": "if else-arm" } ] } },
+    { "line": 48, "operand": 0, "kind": "BlockFact", "goal": "$hon_ok(#h, $x)", "verdict": "proven",
+      "feed": { "by": "prove", "line": 47, "hyps": [ { "line": 46, "fact": "$is_half(#h, $x)" }, { "line": 41, "fact": "$is_even($x)" } ] },
+      "why": "R13: $half's declared result refinement is entered regardless of $half's body (modular checking)." },
+    { "line": 49, "operand": 0, "kind": "ResultRefinement", "goal": "$hon_ok(#φ, $x)", "verdict": "proven",
+      "feed": { "by": "lookup", "facts": [ { "line": 48, "fact": "$hon_ok(#φ, $x)" } ] } },
+    { "line": 57, "operand": null, "kind": "False", "goal": "False", "verdict": "proven",
+      "feed": { "by": "prove", "line": 56, "hyps": [ { "line": 55, "fact": "¬$hon_ok(#r, $x)" }, { "line": 52, "fact": "$hon_ok(#r, $x)" } ] } }
+  ],
+  "runs": [ { "export": "harness:half_or_neg1", "expect": "pass" } ]
+}

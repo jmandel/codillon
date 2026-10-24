@@ -1,0 +1,50 @@
+{
+  "source": "isqrt.wat",
+  "mode": "strict",
+  "summary": "Linear search with an explicit r < 65535 guard so every fact is linear over the monomial r²; the loop invariant is the loop's block type; the functional spec is a harness ending in unreachable. All cups proven, no lemma needed.",
+  "cups": [
+    { "line": 28, "operand": null, "kind": "LocalInit", "goal": "u(0) ≤ 65535", "verdict": "proven",
+      "feed": { "by": "eval" }, "why": "R14 + R28: all-constant atom." },
+    { "line": 31, "operand": null, "kind": "LoopEntry", "goal": "$sq_le(ext_u(0), ext_u($n))", "verdict": "proven",
+      "feed": { "by": "prove", "line": 30, "hyps": [] },
+      "why": "unfold $sq_le: 0·0 = 0 ≤ ext_u(n). `prove 0` (no hypotheses)." },
+    { "line": 36, "operand": null, "kind": "BlockFact", "goal": "$is_isqrt(ext_u(#r), ext_u($n)) at the taken edge (#r = loop-head φ)", "verdict": "proven",
+      "feed": { "by": "prove", "line": 35, "hyps": [
+        { "line": 31, "fact": "$sq_le(ext_u(#r), ext_u($n))", "origin": "loop invariant (R17)" },
+        { "line": 31, "fact": "u(#r) ≤ 65535", "origin": "refined local re-entered at loop head (R8)" },
+        { "line": 36, "fact": "u(#r) ≥ 65535", "origin": "br_if taken edge (R20, extra hypothesis)" } ] },
+      "why": "intervals pin u(r) = 65535 (§3.3), so r² and (r+1)² = 2³² are constants; ext_u(n) < 2³²; invariant gives r² ≤ n." },
+    { "line": 50, "operand": null, "kind": "BlockFact", "goal": "$is_isqrt(ext_u(#r), ext_u($n)) at the taken edge", "verdict": "proven",
+      "feed": { "by": "prove", "line": 49, "hyps": [
+        { "line": 36, "fact": "u(#r) < 65535", "origin": "br_if fall-through (R20)" },
+        { "line": 31, "fact": "$sq_le(ext_u(#r), ext_u($n))", "origin": "loop invariant" },
+        { "line": 50, "fact": "u(ext_u($n)) < u((ext_u(#r)+1)·(ext_u(#r)+1))", "origin": "br_if taken edge (gt_u normalized to lt_u)" } ] },
+      "why": "unfold $is_isqrt: the sq_le case is the invariant; the other conjunct is the edge fact, the same terms by value numbering." },
+    { "line": 55, "operand": 0, "kind": "Refinement", "goal": "u(#r + 1) ≤ 65535 (refined local $r)", "verdict": "proven",
+      "feed": { "by": "prove", "line": 54, "hyps": [
+        { "line": 50, "fact": "¬(u(ext_u(n)) < u((r+1)²))", "origin": "br_if fall-through" },
+        { "line": 36, "fact": "u(#r) < 65535", "origin": "br_if fall-through" } ] },
+      "why": "u(r) ≤ 65534, so i32.add does not wrap (q = 0 by intervals) and r+1 ≤ 65535." },
+    { "line": 57, "operand": null, "kind": "BackEdge", "goal": "$sq_le(ext_u(#r'), ext_u($n)), #r' = i32.add(#r, 1)", "verdict": "proven",
+      "feed": { "by": "prove", "line": 56, "hyps": [
+        { "line": 55, "fact": "u(#r') ≤ 65535", "origin": "prove at 54, entered at 55" },
+        { "line": 50, "fact": "u((ext_u(r)+1)²) ≤ u(ext_u(n))", "origin": "br_if fall-through" },
+        { "line": 36, "fact": "u(#r) < 65535", "origin": "br_if fall-through" } ] },
+      "why": "no wrap in i32.add (r ≤ 65534) nor in either i64 product (≤ 65535² < 2⁶⁴), so both sides expand to r² + 2r + 1 over the same monomial r²." },
+    { "line": 59, "operand": null, "kind": "BlockFact", "goal": "$is_isqrt(…) at the block's fall-through", "verdict": "proven",
+      "feed": { "by": "dead", "line": 57 },
+      "why": "R22: after `br $grow` the rest is dead; the fall-through edge into `end` is fed by False." },
+    { "line": 61, "operand": 0, "kind": "ResultRefinement", "goal": "$is_isqrt(ext_u(#r), ext_u($n))", "verdict": "proven",
+      "feed": { "by": "lookup", "facts": [ { "line": 59, "fact": "$is_isqrt(ext_u(#r), ext_u($n))", "origin": "block exit fact at join (R16)" } ] },
+      "why": "both edges bind $r to the loop-head φ, so the join keeps #r; the virtual slot ext_u(#r) is the same id in both atoms." },
+    { "line": 71, "operand": null, "kind": "False", "goal": "False", "verdict": "proven",
+      "feed": { "by": "prove", "line": 70, "hyps": [
+        { "line": 69, "fact": "¬$is_isqrt(ext_u(#q), ext_u($n))", "origin": "br_if fall-through" },
+        { "line": 64, "fact": "$is_isqrt(ext_u(#q), ext_u($n))", "origin": "call result (R13)" } ] } }
+  ],
+  "runs": [
+    { "export": "harness:isqrt", "expect": "pass" },
+    { "export": "harness:isqrt", "args": [-1], "expect": "ok" },
+    { "export": "harness:isqrt", "args": [2147395600], "expect": "ok" }
+  ]
+}

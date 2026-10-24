@@ -1,0 +1,35 @@
+{
+  "source": "parity.wat",
+  "mode": "strict",
+  "summary": "Evenness flows from the gate's else-arm into $half's precondition; every cup proven.",
+  "cups": [
+    { "line": 36, "operand": 0, "kind": "ResultRefinement", "goal": "$is_half(shr_s($x, 1), $x)", "verdict": "proven",
+      "feed": { "by": "prove", "line": 35, "hyps": [ { "line": 31, "fact": "$is_even($x)", "origin": "entry" } ] },
+      "why": "R29 unfolds $is_half and $is_even; §3: u($x) = 2d (and 1 = 0); shr_s gives 2D ≤ S(x) ≤ 2D+1, tightened to D = S(x)/2; the i64 sum of the two sign-extensions equals S(x) in every sign/carry case." },
+    { "line": 44, "operand": 0, "kind": "BlockFact", "goal": "$hon_ok(-1, $x)", "verdict": "proven",
+      "feed": { "by": "prove", "line": 43, "hyps": [ { "line": 41, "fact": "¬$is_even($x)", "origin": "if then-arm (R18)" } ] },
+      "why": "then-arm fall-through edge of the if's result refinement; $hon_ok unfolds to ite($is_even($x), …, -1 = -1); the hypothesis kills the first case." },
+    { "line": 46, "operand": 0, "kind": "Refinement", "goal": "$is_even($x)", "verdict": "proven",
+      "feed": { "by": "lookup", "facts": [ { "line": 41, "fact": "$is_even($x)", "origin": "if else-arm (R18, drawn on line 44)" } ] },
+      "why": "R4: the condition is eqz($is_even($x)); else-arm gets ¬¬$is_even($x) = $is_even($x), an exact match." },
+    { "line": 48, "operand": 0, "kind": "BlockFact", "goal": "$hon_ok(#h, $x) where #h = $half($x)", "verdict": "proven",
+      "feed": { "by": "prove", "line": 47, "hyps": [
+        { "line": 46, "fact": "$is_half(#h, $x)", "origin": "call result (R13)" },
+        { "line": 41, "fact": "$is_even($x)", "origin": "if else-arm (R18)" } ] },
+      "why": "unfold $hon_ok: ite($is_even($x), $is_half(#h, $x), …); first hypothesis decides the condition, second is the branch." },
+    { "line": 49, "operand": 0, "kind": "ResultRefinement", "goal": "$hon_ok(#φ, $x)", "verdict": "proven",
+      "feed": { "by": "lookup", "facts": [ { "line": 48, "fact": "$hon_ok(#φ, $x)", "origin": "if result refinement at join (R18)" } ] },
+      "why": "#φ is the if's result value; the join enters the declared result refinement." },
+    { "line": 57, "operand": null, "kind": "False", "goal": "False", "verdict": "proven",
+      "feed": { "by": "prove", "line": 56, "hyps": [
+        { "line": 55, "fact": "¬$hon_ok(#r, $x)", "origin": "br_if fall-through (R20)" },
+        { "line": 52, "fact": "$hon_ok(#r, $x)", "origin": "call result (R13)" } ] },
+      "why": "the two hypotheses are the same atom with opposite signs (and unfold identically)." }
+  ],
+  "runs": [
+    { "export": "harness:half_or_neg1", "expect": "pass" },
+    { "export": "harness:half_or_neg1", "args": [3], "expect": "ok" },
+    { "export": "harness:half_or_neg1", "args": [-4], "expect": "ok" },
+    { "export": "harness:half_or_neg1", "args": [-2147483648], "expect": "ok" }
+  ]
+}

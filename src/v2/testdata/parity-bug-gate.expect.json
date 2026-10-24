@@ -1,0 +1,159 @@
+{
+  "source": "parity-bug-gate.wat",
+  "mode": "gradual",
+  "summary": "P1: the gate is inverted. The else-arm now carries ¬$is_even($x), so the call to $half (needs $is_even) is unfed; the then-arm's exit proof fails with a countermodel. Runs refute both cups. The else-arm exit proof still goes through, ex falso, because $half's contract is contradictory with an odd argument.",
+  "cups": [
+    {
+      "line": 36,
+      "operand": 0,
+      "kind": "ResultRefinement",
+      "goal": "$is_half(shr_s($x, 1), $x)",
+      "verdict": "proven",
+      "feed": {
+        "by": "prove",
+        "line": 35,
+        "hyps": [
+          {
+            "line": 31,
+            "fact": "$is_even($x)"
+          }
+        ]
+      }
+    },
+    {
+      "line": 44,
+      "operand": 0,
+      "kind": "BlockFact",
+      "goal": "$hon_ok(-1, $x)",
+      "verdict": "runtime-checked",
+      "feed": {
+        "by": "none"
+      },
+      "prove_error": {
+        "line": 43,
+        "text": "not implied by [$is_even($x) @41]: u($x)=0"
+      },
+      "after_runs": {
+        "verdict": "refuted",
+        "witness": {
+          "export": "half_or_neg1",
+          "args": [
+            0
+          ]
+        }
+      },
+      "why": "then-arm fact is now $is_even($x); $hon_ok(-1, x) needs $is_half(-1, x), false for x = 0."
+    },
+    {
+      "line": 46,
+      "operand": 0,
+      "kind": "Refinement",
+      "goal": "$is_even($x)",
+      "verdict": "runtime-checked",
+      "feed": {
+        "by": "none"
+      },
+      "strict_error": "$half needs ⟨$is_even($x)⟩ for $x; nothing feeds it",
+      "after_runs": {
+        "verdict": "refuted",
+        "witness": {
+          "export": "half_or_neg1",
+          "args": [
+            3
+          ]
+        }
+      },
+      "why": "the else-arm fact is ¬$is_even($x) (line 41); no match."
+    },
+    {
+      "line": 48,
+      "operand": 0,
+      "kind": "BlockFact",
+      "goal": "$hon_ok(#h, $x)",
+      "verdict": "proven",
+      "feed": {
+        "by": "prove",
+        "line": 47,
+        "hyps": [
+          {
+            "line": 46,
+            "fact": "$is_half(#h, $x)",
+            "origin": "call result (R13)"
+          },
+          {
+            "line": 41,
+            "fact": "¬$is_even($x)",
+            "origin": "if else-arm (now negative)"
+          }
+        ]
+      },
+      "why": "the hypotheses are contradictory: $is_half(#h, x) says 2·s(#h) = s(x) in i64, impossible for odd x; ex falso. The broken precondition at line 46 is what is runtime-checked, so this proof is sound relative to that check.",
+      "depends_on_checks": [
+        46
+      ]
+    },
+    {
+      "line": 49,
+      "operand": 0,
+      "kind": "ResultRefinement",
+      "goal": "$hon_ok(#φ, $x)",
+      "verdict": "proven",
+      "feed": {
+        "by": "lookup",
+        "facts": [
+          {
+            "line": 48,
+            "fact": "$hon_ok(#φ, $x)"
+          }
+        ]
+      },
+      "why": "the join enters the declared block result refinement; its arm cups are runtime-checked, so this holds in gradual mode.",
+      "depends_on_checks": [
+        44,
+        46
+      ]
+    },
+    {
+      "line": 57,
+      "operand": null,
+      "kind": "False",
+      "goal": "False",
+      "verdict": "proven",
+      "feed": {
+        "by": "prove",
+        "line": 56,
+        "hyps": [
+          {
+            "line": 55,
+            "fact": "¬$hon_ok(#r, $x)"
+          },
+          {
+            "line": 52,
+            "fact": "$hon_ok(#r, $x)"
+          }
+        ]
+      },
+      "why": "the harness is proven relative to $half_or_neg1's contract; the erased run (no checks) reaches unreachable because that contract is broken."
+    }
+  ],
+  "runs": [
+    {
+      "export": "harness:half_or_neg1",
+      "expect": "fails"
+    },
+    {
+      "export": "harness:half_or_neg1",
+      "args": [
+        3
+      ],
+      "expect": "unreachable"
+    },
+    {
+      "export": "harness:half_or_neg1",
+      "args": [
+        0
+      ],
+      "expect": "unreachable"
+    }
+  ]
+}
