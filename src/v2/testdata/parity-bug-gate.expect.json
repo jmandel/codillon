@@ -81,7 +81,7 @@
             "origin": "call result (R13)"
           },
           {
-            "line": 41,
+            "line": 44,
             "fact": "¬$is_even($x)",
             "origin": "if else-arm (now negative)"
           }

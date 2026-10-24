@@ -27,12 +27,12 @@
         "line": 58,
         "hyps": [
           {
-            "line": 49,
+            "line": 51,
             "fact": "ne($slot($p), 0)",
             "origin": "inner if else-arm"
           },
           {
-            "line": 43,
+            "line": 45,
             "fact": "ne($n, 0)",
             "origin": "outer if else-arm"
           }
@@ -51,12 +51,12 @@
         "line": 86,
         "hyps": [
           {
-            "line": 76,
+            "line": 78,
             "fact": "ne($slot($p), $k)",
             "origin": "inner if else-arm"
           },
           {
-            "line": 69,
+            "line": 71,
             "fact": "ne($n, 0)",
             "origin": "outer if else-arm"
           }
@@ -80,7 +80,7 @@
             "origin": "inner if then-arm"
           },
           {
-            "line": 128,
+            "line": 130,
             "fact": "ne($n, 0)",
             "origin": "outer if else-arm"
           }
@@ -282,7 +282,7 @@
         "line": 300,
         "hyps": [
           {
-            "line": 293,
+            "line": 295,
             "fact": "ne(#j, -1)",
             "origin": "implicit else-arm of the if (R18)"
           },

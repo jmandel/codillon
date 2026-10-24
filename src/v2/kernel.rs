@@ -1795,8 +1795,9 @@ impl<'a, 'm> Pass<'a, 'm> {
         self.frames[fi].in_else = true;
         if let Some(c) = self.frames[fi].cond {
             let a = self.terms.atom_of(c, false);
-            let il = self.frames[fi].line;
-            self.enter(a, il, "if else-arm", vec![]);
+            // born where the else-arm starts (the `else` line), so its chip's ribbon never runs
+            // through the then-arm, where the fact is false
+            self.enter(a, line, "if else-arm", vec![]);
         }
     }
 

@@ -19,7 +19,7 @@
             "origin": "inner if then-arm"
           },
           {
-            "line": 6,
+            "line": 8,
             "fact": "u($lo) < u($hi)",
             "origin": "outer if else-arm (¬ge_u)"
           }
@@ -38,7 +38,7 @@
         "line": 23,
         "hyps": [
           {
-            "line": 12,
+            "line": 20,
             "fact": "2 ≤ u($lo)",
             "origin": "inner if else-arm (¬lt_u)"
           }
@@ -56,7 +56,7 @@
         "line": 34,
         "hyps": [
           {
-            "line": 26,
+            "line": 28,
             "fact": "ne(rem_u($n,$lo), 0)",
             "origin": "if else-arm"
           },
@@ -66,12 +66,12 @@
             "origin": "prove at 23"
           },
           {
-            "line": 12,
+            "line": 20,
             "fact": "2 ≤ u($lo)",
             "origin": "if else-arm"
           },
           {
-            "line": 6,
+            "line": 8,
             "fact": "u($lo) < u($hi)",
             "origin": "if else-arm"
           }
@@ -89,7 +89,7 @@
         "line": 68,
         "hyps": [
           {
-            "line": 62,
+            "line": 64,
             "fact": "2 ≤ u($d)",
             "origin": "if else-arm (¬lt_u)"
           }
@@ -123,7 +123,7 @@
         "by": "lookup",
         "facts": [
           {
-            "line": 62,
+            "line": 64,
             "fact": "2 ≤ u($d)",
             "origin": "if else-arm"
           }
@@ -146,12 +146,12 @@
             "origin": "axiom div_shrinks"
           },
           {
-            "line": 78,
+            "line": 80,
             "fact": "ne(rem_u($n,$d),0)",
             "origin": "if else-arm"
           },
           {
-            "line": 71,
+            "line": 73,
             "fact": "u($d) ≤ u($n/$d)",
             "origin": "if else-arm (¬gt_u: the overflow-safe stopping test)"
           },
@@ -390,7 +390,7 @@
         "by": "lookup",
         "facts": [
           {
-            "line": 136,
+            "line": 143,
             "fact": "ne(rem_u($n,$d),0)",
             "origin": "inner if else-arm"
           }
@@ -732,7 +732,7 @@
             "origin": "R30"
           },
           {
-            "line": 171,
+            "line": 173,
             "fact": "2 ≤ u($n)",
             "origin": "if else-arm"
           }

@@ -13,7 +13,7 @@
         "by": "lookup",
         "facts": [
           {
-            "line": 5,
+            "line": 8,
             "fact": "$d ≠ 0",
             "origin": "if else-arm: ¬eq($d,0) (R4 rule 3)"
           }
@@ -31,12 +31,12 @@
         "line": 52,
         "hyps": [
           {
-            "line": 44,
+            "line": 46,
             "fact": "¬$common($d,$a,$b)",
             "origin": "inner if else-arm"
           },
           {
-            "line": 37,
+            "line": 39,
             "fact": "u($d) ≤ u(ext_u(a)+ext_u(b))",
             "origin": "outer if else-arm (gt_u negated)"
           }
@@ -54,7 +54,7 @@
         "by": "lookup",
         "facts": [
           {
-            "line": 89,
+            "line": 91,
             "fact": "$b ≠ 0",
             "origin": "if else-arm"
           }
