@@ -214,19 +214,19 @@ fn chain(lo: usize) -> (String, u32) {
     (s, call_line)
 }
 
-/// When the whole relevant set exceeds the caps, R5a retries with the 8 most recent relevant
-/// facts; if that fails too, the cup stays unfed and the message suggests `prove k`.
+/// When the whole relevant set exceeds the caps, R5a retries with the 8 closest relevant facts
+/// (by ring, ties to the most recent); if that fails too, the cup stays unfed and the message suggests `prove k`.
 #[test]
 fn cap_falls_back_then_suggests_prove() {
-    // p16 < p24 follows from the 8 most recent guards
-    let (src, line) = chain(16);
+    // p20 < p24 follows from the 8 closest guards (rings 1–2 around p20 and p24)
+    let (src, line) = chain(20);
     let out = check_module(&Module::parse(&src), false);
     let c = cup(func(&out, "$f"), line);
     let Feed::Auto { hyp_lines, .. } = &c.feed else {
         panic!("{:?} {:?}", c.feed, c.diag)
     };
-    assert_eq!(hyp_lines.len(), 8);
-    // p0 < p24 needs all 24 guards: over the cap, and the 8 recent ones do not suffice
+    assert_eq!(hyp_lines.len(), 4);
+    // p0 < p24 needs all 24 guards: over the cap, and the 8 closest do not suffice
     let (src, line) = chain(0);
     let out = check_module(&Module::parse(&src), false);
     let f = func(&out, "$f");
@@ -334,7 +334,7 @@ fn probe_catches_contradiction_found_by_auto() {
     }
     s += "  local.get $x\n";
     let line = s.lines().count() as u32 + 1;
-    s += "  call $h\n";
+    s += "  call $h\n  nop\n";
     for _ in 0..n + 1 {
         s += "  end\n";
     }
@@ -348,4 +348,78 @@ fn probe_catches_contradiction_found_by_auto() {
     };
     assert_eq!(hyp_lines.len(), 2);
     assert!(f.false_ctx_lines.contains(&line), "{:?}", f.false_ctx_lines);
+    // review B1: a later probed line in the same arm, with no cup of its own, is ex falso too
+    let out = check_module_probing(&m, false, [line, line + 1].into_iter().collect());
+    let f = func(&out, "$f");
+    assert!(
+        f.false_ctx_lines.contains(&(line + 1)),
+        "{:?}",
+        f.false_ctx_lines
+    );
+    // the ex-falso feed itself may sit on an unprobed (LLM-owned) line: the later locked line
+    // is still flagged
+    let out = check_module_probing(&m, false, [line + 1].into_iter().collect());
+    let f = func(&out, "$f");
+    assert!(
+        f.false_ctx_lines.contains(&(line + 1)),
+        "{:?}",
+        f.false_ctx_lines
+    );
+}
+
+/// Review B3: relevance looks through R29 unfolding, so a memory predicate reaches the loads it
+/// reads. The guard is about `mem32[0]`; the cup is `$zero()`, whose body reads `mem32[0]`.
+#[test]
+fn relevance_looks_through_unfolding() {
+    let src = "(memory 1)
+(func $zero (result i32)
+  i32.const 0
+  i32.load
+  i32.eqz
+)
+(func $g (param $h (fact (call $zero))))
+(func $f
+  i32.const 0
+  i32.load
+  i32.eqz
+  if
+    call $g
+  end
+)
+";
+    let out = check_module(&Module::parse(src), false);
+    let f = func(&out, "$f");
+    let c = cup(f, 13);
+    let Feed::Auto { hyp_lines, .. } = &c.feed else {
+        panic!("{:?} {:?}", c.feed, c.diag)
+    };
+    assert_eq!(hyp_lines.as_slice(), &[12]);
+}
+
+/// Review S1: when a proven fact and an assumed one both suffice, the feed uses the proven one,
+/// so the cup (and the function) stays proven.
+#[test]
+fn minimization_prefers_proven_facts() {
+    let src = "(func $ax (export \"axiom:small\") (param $x i32) (result (fact (i32.lt_u $x 4))))
+(func $g (param $a (i32 | (i32.lt_u v (i32.const 16)))))
+(func $f (param $x i32)
+  local.get $x
+  i32.const 8
+  i32.lt_u
+  if
+    lemma $ax $x
+    local.get $x
+    call $g
+  end
+)
+";
+    let out = check_module(&Module::parse(src), false);
+    let f = func(&out, "$f");
+    let c = cup(f, 10);
+    let Feed::Auto { hyp_lines, .. } = &c.feed else {
+        panic!("{:?} {:?}", c.feed, c.diag)
+    };
+    assert_eq!(hyp_lines.as_slice(), &[7]);
+    assert_eq!(c.verdict, Verdict::Proven);
+    assert!(c.assumptions.is_empty());
 }

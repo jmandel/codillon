@@ -213,6 +213,11 @@ pub struct Pass<'a, 'm> {
     sets: Vec<(usize, TermId, TermId, u32)>,
     /// the line where a fact frays (R7, R11)
     fray: HashMap<FactId, u32>,
+    /// R5a: solver calls made by automatic feeding in this pass (research/24 §5)
+    auto_calls: u32,
+    /// feeds found to rest on contradictory facts (vericoding only): while all of a set's facts
+    /// are in scope, every probed line is reached only ex falso (research/24 §6, review B1)
+    contras: Vec<Vec<Entry>>,
     ghost: bool,
     /// lines of `assume` (not instructor axioms)
     line: u32,
@@ -761,11 +766,15 @@ impl<'a, 'm> Pass<'a, 'm> {
     /// On a probed (locked) line, a cup fed from facts that contradict each other means the line is
     /// reachable only ex falso (research/22 B3; research/24 §6), even when the whole lane exceeds
     /// the caps of [`Pass::lane_is_false`].
+    ///
+    /// The contradiction belongs to the lane, which only grows until the arm ends, so the set is
+    /// kept: every later probed line that still has all of it in scope is ex falso too (review B1).
     fn probe_ex_falso(&mut self, line: u32, hyps: &[Entry]) {
-        if self.cx.probe.contains(&line)
-            && !self.false_ctx_lines.contains(&line)
-            && self.contradictory(hyps)
-        {
+        if self.cx.probe.is_empty() || !self.contradictory(hyps) {
+            return;
+        }
+        self.contras.push(hyps.to_vec());
+        if self.cx.probe.contains(&line) && !self.false_ctx_lines.contains(&line) {
             self.false_ctx_lines.push(line);
         }
     }
@@ -840,7 +849,7 @@ impl<'a, 'm> Pass<'a, 'm> {
             .chain(extra)
             .map(|e| self.facts[e.fact as usize].atom.clone())
             .collect();
-        if atoms.contains(&Atom::False) {
+        if atoms.contains(&Atom::False) || self.contra_in_scope(extra) {
             return true;
         }
         let mut tries = vec![atoms.clone()];
@@ -975,6 +984,8 @@ impl<'a, 'm> Pass<'a, 'm> {
             births: vec![],
             sets: vec![],
             fray: HashMap::new(),
+            auto_calls: 0,
+            contras: vec![],
             ghost,
             line: func.header_line,
         }
