@@ -205,6 +205,13 @@ fn oracle_report() {
     text.push_str(&format!("TOTAL {}/{}\n", total.0, total.1));
     let _ = std::fs::write(format!("{}/target/v2-oracle-report.txt", env!("CARGO_MANIFEST_DIR")), &text);
     println!("{text}");
+    // the only extra cups are the second declared fact at gcd's line 131 (oracle-diffs.md, item 1)
+    for l in text.lines().filter(|l| l.contains("DIFF") || l.contains("MISSING") || l.contains("EXTRA")) {
+        assert!(l.contains("EXTRA") && l.contains("line: 131, kind: \"BlockFact\""), "{l}");
+    }
+    if only.is_none() {
+        assert_eq!(total.0, total.1);
+    }
 }
 
 // ---------------- decision procedure unit tests ----------------
@@ -508,4 +515,129 @@ fn constant_zero_divisor_in_a_proposition_is_opaque() {
   i32.div_u ;; @cup
 )"#,
     );
+}
+
+// ---------------- gradual mode: runtime checks on recorded inputs (R35) ----------------
+
+use super::eval::{EvalErr, Interp};
+use super::runtime::RuntimePlan;
+
+fn export_index(m: &Module, name: &str) -> usize {
+    m.funcs.iter().position(|f| f.header.exports.iter().any(|e| e == name)).unwrap_or_else(|| panic!("no export {name}"))
+}
+
+/// Run `export(args)` as the instrumented program of gradual mode.
+pub fn instrumented_run(src: &str, export: &str, args: &[i64]) -> (Result<Vec<u64>, EvalErr>, u32) {
+    let m = Module::parse(src);
+    let out = check_module(&m, true);
+    let plan = RuntimePlan::new(&m, &out);
+    let f = export_index(&m, export);
+    let mut it = Interp::for_run(&m, Some(&plan));
+    let r = it.call(f, &args.iter().map(|a| *a as u64).collect::<Vec<_>>());
+    (r, it.checks_run)
+}
+
+#[test]
+fn runtime_checks_refute_the_oracles_witnesses() {
+    let mut n = 0;
+    for ex in EXAMPLES {
+        let src = testdata(ex, "wat");
+        let j: Value = serde_json::from_str(&testdata(ex, "expect.json")).unwrap();
+        for c in j["cups"].as_array().unwrap() {
+            let Some(ar) = c.get("after_runs") else { continue };
+            let w = &ar["witness"];
+            let args: Vec<i64> = w["args"].as_array().unwrap().iter().map(|a| a.as_i64().unwrap()).collect();
+            let (r, _) = instrumented_run(&src, w["export"].as_str().unwrap(), &args);
+            let line = c["line"].as_u64().unwrap() as u32;
+            // oracle-diffs.md: in hashtable-bug-tombstone the run (1, 9) stops at the check on line
+            // 302 ($remove's exit) before it can reach the harness's unreachable on line 366
+            let line = if ex == "hashtable-bug-tombstone" && line == 366 { 302 } else { line };
+            match r {
+                Err(EvalErr::CheckFailed { line: l, msg }) => assert_eq!(l, line, "{ex}: {msg}"),
+                other => panic!("{ex} line {line} with {args:?}: expected a failed check, got {other:?}"),
+            }
+            n += 1;
+        }
+    }
+    assert_eq!(n, 8, "witnesses checked");
+}
+
+#[test]
+fn runtime_checks_pass_on_correct_programs() {
+    let cases: [(&str, &str, &[&[i64]]); 5] = [
+        ("parity-missing-proof", "half_or_neg1", &[&[0], &[3], &[-4], &[i32::MIN as i64]]),
+        ("hashtable", "harness:table", &[&[1, 9], &[5, 5], &[-1, 7], &[3, 11]]),
+        ("isqrt-wrong-cup", "harness:isqrt", &[&[0], &[15], &[16], &[1000], &[-1]]),
+        ("gcd", "harness:gcd", &[&[12, 8], &[0, 5], &[7, 0]]),
+        ("primality", "harness:prime", &[&[1], &[2], &[97], &[91]]),
+    ];
+    for (ex, export, inputs) in cases {
+        let src = testdata(ex, "wat");
+        for args in inputs {
+            let (r, _) = instrumented_run(&src, export, args);
+            assert!(r.is_ok(), "{ex} {export}{args:?}: {r:?}");
+        }
+    }
+    // the hashtable's runtime-checked invariant cups are actually evaluated
+    let (_, checks) = instrumented_run(&testdata("hashtable", "wat"), "harness:table", &[1, 9]);
+    assert!(checks >= 4, "{checks}");
+}
+
+// ---------------- reviewer regressions (research/17-kernel-review-fable.md) ----------------
+
+#[test]
+fn b3_empty_br_table_is_a_line_error_not_a_panic() {
+    let src = "(func $m5 (export \"harness:m5\") (param $i i32) (result i32)\n  block $b\n    local.get $i\n    br_table\n  end\n  i32.const 0\n)";
+    let m = Module::parse(src);
+    assert!(m.errors.iter().any(|(l, e)| *l == 4 && e.contains("br_table")), "{:?}", m.errors);
+    let _ = check_module(&m, true);
+}
+
+#[test]
+fn b4_measure_without_result_never_drops_the_cup() {
+    let src = r#"(func $p_m1 (param $n i32) (result i32)
+  local.get $n
+  i32.eqz
+  if (result i32)
+    i32.const 1
+  else
+    local.get $n
+    i32.const 1
+    i32.add
+    call $p_m1
+  end
+)
+(func $p_m1_m (export "measure:p_m1") (param $n i32)
+  nop
+)
+(func $m1 (export "harness:m1") (param $x (i32 | $p_m1)) (result i32)
+  i32.const 0
+)
+(func $lem (export "lemma:loop") (param $n i32) (result (fact (i32.eqz (i32.const 0))))
+  lemma $lem $n
+)
+(func $even2 (param $n i32) (result i32)
+  local.get $n
+  call $odd2
+)
+(func $odd2 (param $n i32) (result i32)
+  local.get $n
+  call $even2
+)
+(func $m2 (param $x (i32 | $even2)) (result i32)
+  i32.const 0
+)"#;
+    let out = check_module(&Module::parse(src), true);
+    let m = out.cups().find(|c| c.line == 10).expect("a Measure cup on line 10");
+    assert_eq!(m.kind.name(), "Measure");
+    assert_ne!(m.verdict, Verdict::Proven);
+    let errs: Vec<String> = out.funcs.iter().flat_map(|f| f.line_errors.iter().map(|e| e.1.clone())).collect();
+    assert!(errs.iter().any(|e| e.contains("must return exactly one")), "{errs:?}");
+    // a recursive lemma without a measure is not induction: its self-call has an unfed measure cup
+    let lm = out.cups().find(|c| c.line == 20 && c.kind.name() == "Measure").expect("measure cup on the lemma line");
+    assert_ne!(lm.verdict, Verdict::Proven);
+    assert!(errs.iter().any(|e| e.contains("recursive through")), "{errs:?}");
+    for f in out.funcs.iter().filter(|f| f.name != "$p_m1_m") {
+        assert!(!f.verified, "{} must not be VERIFIED", f.name);
+    }
 }

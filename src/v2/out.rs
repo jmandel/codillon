@@ -124,6 +124,8 @@ pub struct CupOut {
     pub atom: Atom,
     /// ghost or predicate code: never run, so never runtime-checked
     pub ghost: bool,
+    /// for a taken-edge cup of br_if/br_table: the edge condition (the check runs only if it holds)
+    pub guard: Option<Atom>,
 }
 
 #[derive(Clone, Debug)]
@@ -133,6 +135,28 @@ pub struct ChipOut {
     pub origin: &'static str,
     /// the line where a `local.set` or store makes this fact stale (R7, R11), if any
     pub frayed_at: Option<u32>,
+}
+
+/// How the instrumented program captures an opaque value when it is born (for runtime checks).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Capture {
+    /// at function entry: the value of value-local (parameter) `i`
+    Param(u32),
+    /// right after the line's instruction: the value on top of the stack
+    Top,
+    /// right after the line's instruction: the value of value-local `i` (a φ at a join or loop head)
+    Local(u32),
+    /// right after the line's instruction: the value of global `i`
+    Global(u32),
+}
+
+/// An opaque value (parameter, φ, load, impure call result, …) and where it is born.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Birth {
+    pub term: u32,
+    /// the line after whose instruction it is captured (the header line for entry captures)
+    pub line: u32,
+    pub how: Capture,
 }
 
 #[derive(Clone, Debug)]
@@ -151,6 +175,10 @@ pub struct FuncOut {
     pub terms: Terms,
     /// canonical id of every value slot produced by a body line: (line, output id)
     pub slot_ids: Vec<(u32, u32)>,
+    /// births of opaque values, in pass order
+    pub births: Vec<Birth>,
+    /// module function index
+    pub func: u32,
 }
 
 #[derive(Clone, Debug, Default)]

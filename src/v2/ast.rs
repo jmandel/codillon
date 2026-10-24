@@ -440,7 +440,13 @@ fn parse_instr(items: &[S]) -> Result<Ins, String> {
         "if" => Ins::Block(BlockKind::If, parse_block_type(rest)?),
         "br" => Ins::Br(one()?),
         "br_if" => Ins::BrIf(one()?),
-        "br_table" => Ins::BrTable(atoms()?),
+        "br_table" => {
+            let ls = atoms()?;
+            if ls.is_empty() {
+                return Err("br_table needs at least one label".into());
+            }
+            Ins::BrTable(ls)
+        }
         "call" => Ins::Call(one()?),
         "call_indirect" => Ins::CallIndirect,
         "local.get" => Ins::LocalGet(one()?),

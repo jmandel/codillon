@@ -1,6 +1,5 @@
 // Structures and utilities to support multi-function/multi-module text buffers.
 
-use crate::spec::{LineSpec, ScanResult, scan_line};
 use crate::{
     line::LineInfo,
     symbolic::{
@@ -10,10 +9,7 @@ use crate::{
     utils::{HelperImportKind, check_import},
 };
 use anyhow::Result;
-use std::{
-    collections::{HashMap, HashSet},
-    rc::Rc,
-};
+use std::collections::{HashMap, HashSet};
 use wast::{
     Error,
     core::{
@@ -83,7 +79,6 @@ pub enum LineKind {
     Instr(InstrKind),
     Other(ModulePart),
     Malformed(String), // explanation
-    Spec,              // a whole-line specification annotation, e.g. (@invariant …); erased
 }
 
 pub trait LineInfos {
@@ -597,7 +592,7 @@ impl SyntaxState {
 
         let mut has_result = false;
         match &info.kind {
-            LineKind::Empty | LineKind::Malformed(_) | LineKind::Spec => {}
+            LineKind::Empty | LineKind::Malformed(_) => {}
             LineKind::Instr(_) => {
                 self.transit_state_from_instruction()?;
                 callback(self);
@@ -729,7 +724,7 @@ pub fn fix_syntax(lines: &mut impl LineInfosMut) {
                 }
                 _ => imports_allowed = false,
             },
-            LineKind::Empty | LineKind::Malformed(_) | LineKind::Spec => (),
+            LineKind::Empty | LineKind::Malformed(_) => (),
         }
 
         if state.transit_state(lines.info(line_no), |_| {}).is_err() {
@@ -963,43 +958,12 @@ pub fn find_function_ranges(code: &impl LineInfos) -> Vec<(usize, usize, usize)>
 }
 
 pub fn parse_line(s: &str) -> LineKind {
-    parse_line_spec(s).0
-}
-
-fn parse_wasm_line(s: &str) -> LineKind {
     match ParseBuffer::new(s) {
         Ok(buf) => match parser::parse::<LineKind>(&buf) {
             Ok(kind) => kind,
             Err(e) => e.into(),
         },
         Err(e) => e.into(),
-    }
-}
-
-/// Parse a line, recognizing specification content: whole-line annotations become
-/// `LineKind::Spec`; refined headers are classified by their erased WebAssembly text.
-/// A malformed predicate makes the line malformed, like malformed code.
-pub fn parse_line_spec(s: &str) -> (LineKind, Option<Rc<LineSpec>>) {
-    // only the code part of the line can carry specs
-    let (code, comment) = match crate::utils::find_comment(s, "") {
-        Some(idx) => s.split_at(idx),
-        None => (s, ""),
-    };
-    match scan_line(code) {
-        ScanResult::Plain => (parse_wasm_line(s), None),
-        ScanResult::Malformed(reason) => (LineKind::Malformed(reason), None),
-        ScanResult::Spec(spec @ LineSpec::Annotation(_)) => (LineKind::Spec, Some(Rc::new(spec))),
-        ScanResult::Spec(LineSpec::Header { erased, decls }) => {
-            let kind = match &erased {
-                Some(erased) => parse_wasm_line(&(erased.clone() + comment)),
-                None => parse_wasm_line(s),
-            };
-            match kind {
-                LineKind::Other(_) => (kind, Some(Rc::new(LineSpec::Header { erased, decls }))),
-                // not a header after all (e.g. malformed): no spec content
-                kind => (kind, None),
-            }
-        }
     }
 }
 

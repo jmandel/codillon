@@ -2,6 +2,8 @@
 //! Integer semantics are exactly Wasm's; floats are supported only as opaque bits.
 
 use super::ast::{BlockKind, Decl, IOp, Ins, LocalKind, Module, ValTy};
+use super::out::Capture;
+use super::runtime::{CheckOutcome, RuntimePlan, ShadowAct};
 use super::term::mask;
 
 pub const EVAL_BUDGET: u32 = 100_000;
@@ -11,6 +13,8 @@ pub enum EvalErr {
     Trap(String),
     Budget,
     Unsupported(String),
+    /// a runtime check (R35) failed before the instruction of this line
+    CheckFailed { line: u32, msg: String },
 }
 
 fn sext(v: u64, ty: ValTy) -> i64 {
@@ -144,18 +148,35 @@ struct Ctl {
     arity: usize,
 }
 
+/// The reference interpreter. With a [`RuntimePlan`] it is also a model of the instrumented
+/// program of gradual mode: shadow captures and checks run exactly where the instrumentation puts them.
 pub struct Interp<'m> {
     pub m: &'m Module,
     pub steps: u32,
     pub budget: u32,
-    pub mem: Option<&'m [u8]>,
+    /// linear memory (empty: none)
+    pub mem: Vec<u8>,
+    pub globals: Vec<u64>,
+    pub plan: Option<&'m RuntimePlan>,
+    /// checks evaluated (and held) during this run
+    pub checks_run: u32,
     tables: Vec<Option<Vec<(usize, usize)>>>,
     depth: u32,
 }
 
 impl<'m> Interp<'m> {
     pub fn new(m: &'m Module) -> Self {
-        Interp { m, steps: 0, budget: EVAL_BUDGET, mem: None, tables: vec![None; m.funcs.len()], depth: 0 }
+        let globals = m.globals.iter().map(|g| g.init.unwrap_or(0)).collect();
+        Interp { m, steps: 0, budget: EVAL_BUDGET, mem: vec![], globals, plan: None, checks_run: 0, tables: vec![None; m.funcs.len()], depth: 0 }
+    }
+
+    /// An interpreter for a whole run: memory of the declared minimum size, checks from `plan`.
+    pub fn for_run(m: &'m Module, plan: Option<&'m RuntimePlan>) -> Self {
+        let mut it = Interp::new(m);
+        it.mem = vec![0; (m.memory_min.unwrap_or(0) * 65536) as usize];
+        it.plan = plan;
+        it.budget = 10_000_000;
+        it
     }
 
     pub fn call(&mut self, f: usize, args: &[u64]) -> Result<Vec<u64>, EvalErr> {
@@ -182,6 +203,41 @@ impl<'m> Interp<'m> {
         r
     }
 
+    fn capture(&self, acts: &[ShadowAct], locals: &[u64], st: &[u64], shadows: &mut [u64]) {
+        for a in acts {
+            let v = match a.how {
+                Capture::Param(i) | Capture::Local(i) => locals.get(i as usize).copied(),
+                Capture::Top => st.last().copied(),
+                Capture::Global(i) => self.globals.get(i as usize).copied(),
+            };
+            if let (Some(v), Some(s)) = (v, shadows.get_mut(a.shadow as usize)) {
+                *s = v;
+            }
+        }
+    }
+
+    fn after(&self, f: usize, line: u32, locals: &[u64], st: &[u64], shadows: &mut [u64]) {
+        if let Some(fp) = self.plan.and_then(|p| p.func_plan(f as u32))
+            && let Some(acts) = fp.after.get(&line)
+        {
+            self.capture(acts, locals, st, shadows);
+        }
+    }
+
+    fn checks(&mut self, f: usize, line: u32, shadows: &[u64]) -> Result<(), EvalErr> {
+        let Some(plan) = self.plan else { return Ok(()) };
+        let Some(ids) = plan.func_plan(f as u32).and_then(|fp| fp.before.get(&line)) else { return Ok(()) };
+        for &id in ids {
+            let c = &plan.checks[id as usize];
+            let vals: Vec<u64> = c.sends.iter().map(|(_, s, _)| shadows[*s as usize]).collect();
+            self.checks_run += 1;
+            if let CheckOutcome::Fails(msg) = plan.eval_check(id, &vals, Some(&self.mem)) {
+                return Err(EvalErr::CheckFailed { line, msg });
+            }
+        }
+        Ok(())
+    }
+
     fn run(
         &mut self,
         f: usize,
@@ -192,12 +248,19 @@ impl<'m> Interp<'m> {
     ) -> Result<Vec<u64>, EvalErr> {
         let m = self.m;
         let body = &m.funcs[f].body;
+        let fplan = self.plan.and_then(|p| p.func_plan(f as u32));
+        let mut shadows: Vec<u64> = vec![0; fplan.map(|p| p.shadow_tys.len()).unwrap_or(0)];
+        if let Some(fp) = fplan {
+            self.capture(&fp.entry, locals, &[], &mut shadows);
+        }
         let mut st: Vec<u64> = Vec::new();
         let mut ctl: Vec<Ctl> = vec![Ctl { kind: BlockKind::Block, label: None, start: 0, end: body.len(), height: 0, arity: nres }];
         let mut pc = 0usize;
         let pop = |st: &mut Vec<u64>| st.pop().ok_or_else(|| EvalErr::Unsupported("stack underflow".into()));
+        let line_of = |i: usize| body.get(i).map(|x| x.0).unwrap_or(0);
         loop {
             if pc >= body.len() {
+                self.checks(f, m.funcs[f].end_line, &shadows)?;
                 let n = st.len();
                 return Ok(st[n.saturating_sub(nres)..].to_vec());
             }
@@ -205,7 +268,8 @@ impl<'m> Interp<'m> {
             if self.steps > self.budget {
                 return Err(EvalErr::Budget);
             }
-            let ins = &body[pc].1;
+            let (line, ins) = (body[pc].0, &body[pc].1);
+            self.checks(f, line, &shadows)?;
             // a branch: Some(depth)
             let mut branch: Option<usize> = None;
             match ins {
@@ -236,6 +300,7 @@ impl<'m> Interp<'m> {
                         if els == end {
                             ctl.pop();
                             pc = end + 1;
+                            self.after(f, line_of(end), locals, &st, &mut shadows);
                             continue;
                         }
                         pc = els + 1;
@@ -243,9 +308,10 @@ impl<'m> Interp<'m> {
                     }
                 }
                 Ins::Else => {
-                    // end of the then-arm: jump to the end
+                    // end of the then-arm: jump past the end
                     let c = ctl.pop().unwrap();
                     pc = c.end + 1;
+                    self.after(f, line_of(c.end), locals, &st, &mut shadows);
                     continue;
                 }
                 Ins::End => {
@@ -273,36 +339,36 @@ impl<'m> Interp<'m> {
                     st.extend(r);
                 }
                 Ins::LocalGet(n) | Ins::LocalSet(n) | Ins::LocalTee(n) => {
-                    let Some(i) = resolve_local(locs, n) else {
-                        // a fact local: erased
-                        pc += 1;
-                        continue;
-                    };
-                    match ins {
-                        Ins::LocalGet(_) => st.push(locals[i]),
-                        Ins::LocalSet(_) => locals[i] = pop(&mut st)?,
-                        _ => locals[i] = *st.last().ok_or_else(|| EvalErr::Unsupported("stack underflow".into()))?,
+                    if let Some(i) = resolve_local(locs, n) {
+                        match ins {
+                            Ins::LocalGet(_) => st.push(locals[i]),
+                            Ins::LocalSet(_) => locals[i] = pop(&mut st)?,
+                            _ => locals[i] = *st.last().ok_or_else(|| EvalErr::Unsupported("stack underflow".into()))?,
+                        }
                     }
                 }
-                Ins::GlobalGet(n) => {
-                    let g = m.globals.iter().position(|g| g.name.as_deref() == Some(n.as_str()))
+                Ins::GlobalGet(n) | Ins::GlobalSet(n) => {
+                    let gi = m.globals.iter().position(|g| g.name.as_deref() == Some(n.as_str()))
                         .or_else(|| n.parse().ok())
-                        .and_then(|i| m.globals.get(i))
+                        .filter(|i| *i < m.globals.len())
                         .ok_or_else(|| EvalErr::Unsupported(format!("no global {n}")))?;
-                    if g.mutable {
-                        return Err(EvalErr::Unsupported("mutable global".into()));
+                    if matches!(ins, Ins::GlobalGet(_)) {
+                        if m.globals[gi].mutable && self.plan.is_none() {
+                            return Err(EvalErr::Unsupported("mutable global".into()));
+                        }
+                        st.push(self.globals[gi]);
+                    } else {
+                        self.globals[gi] = pop(&mut st)?;
                     }
-                    st.push(g.init.unwrap_or(0));
                 }
                 Ins::Load(ma) => {
                     let a = pop(&mut st)? as u32 as u64 + ma.offset;
-                    let mem = self.mem.ok_or_else(|| EvalErr::Unsupported("memory".into()))?;
-                    if a + ma.bytes as u64 > mem.len() as u64 {
+                    if a + ma.bytes as u64 > self.mem.len() as u64 {
                         return Err(EvalErr::Trap("out of bounds memory access".into()));
                     }
                     let mut v: u64 = 0;
                     for k in 0..ma.bytes as usize {
-                        v |= (mem[a as usize + k] as u64) << (8 * k);
+                        v |= (self.mem[a as usize + k] as u64) << (8 * k);
                     }
                     if ma.signed {
                         let sh = 64 - 8 * ma.bytes;
@@ -310,6 +376,17 @@ impl<'m> Interp<'m> {
                     }
                     st.push(v & mask(ma.ty));
                 }
+                Ins::Store(ma) => {
+                    let v = pop(&mut st)?;
+                    let a = pop(&mut st)? as u32 as u64 + ma.offset;
+                    if a + ma.bytes as u64 > self.mem.len() as u64 {
+                        return Err(EvalErr::Trap("out of bounds memory access".into()));
+                    }
+                    for k in 0..ma.bytes as usize {
+                        self.mem[a as usize + k] = (v >> (8 * k)) as u8;
+                    }
+                }
+                Ins::MemorySize => st.push(self.mem.len() as u64 / 65536),
                 Ins::Const(_, b) => st.push(*b),
                 Ins::Int(op, w) => {
                     let n = if op.unary() { 1 } else { 2 };
@@ -333,13 +410,18 @@ impl<'m> Interp<'m> {
                 st.extend(keep);
                 if c.kind == BlockKind::Loop {
                     pc = c.start + 1;
+                    let l = line_of(c.start);
                     ctl.truncate(idx + 1);
+                    self.after(f, l, locals, &st, &mut shadows);
                 } else {
                     pc = c.end + 1;
+                    let l = line_of(c.end);
                     ctl.truncate(idx);
+                    self.after(f, l, locals, &st, &mut shadows);
                 }
                 continue;
             }
+            self.after(f, line, locals, &st, &mut shadows);
             pc += 1;
         }
     }

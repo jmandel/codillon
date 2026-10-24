@@ -14,6 +14,10 @@ pub struct FnInfo {
     pub calls: Vec<usize>,
     /// named in some proposition (R29)
     pub is_pred: bool,
+    /// reaches itself through another function (mutual recursion): that function
+    pub mutual_rec: Option<usize>,
+    /// functions named in this function's propositions (its contract and proof lines)
+    pub uses: Vec<usize>,
     /// the `measure:<f>` function of this one
     pub measure: Option<usize>,
     /// this function is `measure:` for some function
@@ -36,6 +40,7 @@ pub fn analyze(m: &Module) -> Vec<FnInfo> {
     let mut info = vec![FnInfo::default(); n];
     let mut named: Vec<String> = vec![];
     for (i, f) in m.funcs.iter().enumerate() {
+        let before = named.len();
         let fi = &mut info[i];
         if f.imported {
             fi.impure = Some((f.header_line, "is imported".into()));
@@ -106,6 +111,8 @@ pub fn analyze(m: &Module) -> Vec<FnInfo> {
                 _ => {}
             }
         }
+        let uses: Vec<usize> = named[before..].iter().filter_map(|n| m.func_index(n)).collect();
+        info[i].uses = uses;
     }
     // propagate impurity and memory reads along calls
     loop {
@@ -127,6 +134,29 @@ pub fn analyze(m: &Module) -> Vec<FnInfo> {
         }
         if !changed {
             break;
+        }
+    }
+    // mutual recursion: f reaches itself through a call path of length ≥ 2
+    for f in 0..n {
+        for &g in &info[f].calls.clone() {
+            if g == f {
+                continue;
+            }
+            let mut seen = vec![false; n];
+            let mut work = vec![g];
+            while let Some(x) = work.pop() {
+                if x == f {
+                    info[f].mutual_rec = Some(g);
+                    break;
+                }
+                if std::mem::replace(&mut seen[x], true) {
+                    continue;
+                }
+                work.extend(info[x].calls.iter().copied());
+            }
+            if info[f].mutual_rec.is_some() {
+                break;
+            }
         }
     }
     for name in named {

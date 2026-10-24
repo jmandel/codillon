@@ -11,13 +11,12 @@ use crate::{
         AccessToken, Component, ElementFactory, NodeRef, WebOffset, WithElement,
         set_selection_range,
     },
-    spec::LineSpec,
     symbolic::{LineSymbols, parse_line_symbols},
-    syntax::{FuncPart, InstrKind, LineKind, ModulePart, SyntheticWasm, parse_line_spec},
+    syntax::{FuncPart, InstrKind, LineKind, ModulePart, SyntheticWasm, parse_line},
     utils::{AnimationRequest, Tween, find_comment},
 };
 use anyhow::{Result, bail};
-use std::{cell::Cell, mem::swap, rc::Rc};
+use std::{cell::Cell, mem::swap};
 use web_sys::{HtmlBrElement, HtmlDivElement, HtmlSpanElement};
 
 type DomBr = DomStruct<(), HtmlBrElement>;
@@ -54,7 +53,6 @@ pub struct LineInfo {
     pub invalid: Option<String>,
     pub runtime_error: Option<String>,
     pub symbols: LineSymbols,
-    pub spec: Option<Rc<LineSpec>>, // specification content (annotation or refined header)
 }
 
 impl Default for LineInfo {
@@ -68,7 +66,6 @@ impl Default for LineInfo {
             invalid: None,
             runtime_error: None,
             symbols: Default::default(),
-            spec: None,
         };
         NEXT_LINE_ID.replace(ret.id + 1);
         ret
@@ -143,11 +140,7 @@ impl LineInfo {
         if idx < self.synthetic_before.num_strs() {
             self.synthetic_before.str(idx)
         } else if self.is_well_formed() && idx == self.synthetic_before.num_strs() {
-            // refinements are erased: the module is compiled from the plain WebAssembly
-            match self.spec.as_deref().and_then(LineSpec::erased) {
-                Some(erased) => erased,
-                None => instr_text,
-            }
+            instr_text
         } else {
             panic!("index out of range");
         }
@@ -169,52 +162,10 @@ enum BrowserAnimation {
     FlyEnd(bool),
 }
 
-// What the specification checker says about this line at the current step.
-#[derive(Default, Clone, PartialEq, Debug)]
-pub struct SpecMark {
-    pub failed: Option<String>, // a check written or made here failed (commentary)
-    pub held: usize,            // checks written here that held so far on this run
-    pub unknown: Option<String>, // why some check could not be evaluated
-    pub assumed: bool,          // an (@assume …) line: taken without proof, checked at run time
-    pub note: Option<String>,   // a remark on the run (e.g. it stopped at the step budget)
-    pub proof: ProofMark,       // what the solver says of the obligations of this line
-}
-
-/// The static verdict on a line's obligations (a refutation's commentary is in `failed`).
-#[derive(Default, Clone, PartialEq, Debug)]
-pub enum ProofMark {
-    #[default]
-    None, // no obligations here, or no solver verdicts yet
-    Pending,
-    Proven,
-    Unknown(String),
-    Refuted,
-}
-
-impl SpecMark {
-    fn held_label(&self) -> Option<String> {
-        // proven: silence (the run's count says less than the proof)
-        if self.proof == ProofMark::Proven && self.failed.is_none() && !self.assumed {
-            return None;
-        }
-        if self.assumed && self.held > 0 {
-            return Some(format!("assumed \u{2218}{}", self.held));
-        }
-        match (self.held, &self.unknown) {
-            (0, None) => None,
-            (0, Some(_)) => Some("? not checked".to_string()),
-            (n, None) => Some(format!("\u{2218}{n}")),
-            (n, Some(_)) => Some(format!("\u{2218}{n} ?")),
-        }
-    }
-}
-
 pub struct CodeLine {
     contents: LinePara,
     info: LineInfo,
     animation_state: AnimationState,
-    spec_mark: SpecMark,
-    extra_px: u16, // extra indentation of a row with a (wider) refined number line
 }
 
 impl WithElement for CodeLine {
@@ -260,10 +211,7 @@ pub struct PositionRange {
 impl Component for CodeLine {
     #[cfg(debug_assertions)]
     fn audit(&self) {
-        assert_eq!(
-            self.info.kind,
-            crate::syntax::parse_line(self.instr().get())
-        );
+        assert_eq!(self.info.kind, parse_line(self.instr().get()));
         assert_eq!(self.contents.get_attribute("class").unwrap(), &self.class());
         let comment = self.contents.get().1.0.get_attribute("data-commentary");
         if let Some(msg) = &self.info.runtime_error
@@ -276,14 +224,10 @@ impl Component for CodeLine {
             && !reason.is_empty()
         {
             assert_eq!(comment, Some(*reason));
-        } else if let Some(msg) = &self.spec_mark.failed {
-            assert_eq!(comment, Some(msg.as_str()));
         } else if let Some(reason) = &self.info.invalid
             && !reason.is_empty()
         {
             assert_eq!(comment, Some(reason.as_str()));
-        } else if let Some(note) = &self.spec_mark.note {
-            assert_eq!(comment, Some(note.as_str()));
         } else {
             assert_eq!(comment, None);
         }
@@ -404,32 +348,18 @@ impl CodeLine {
     }
 
     fn class(&self) -> String {
-        // gutter precedence: trap > malformed > failed spec check > invalid > line number
         let prefix = if self.info.runtime_error.is_some() {
             "line runtime-error-line"
-        } else if !self.info.is_active() || matches!(self.info.kind, LineKind::Malformed(_)) {
+        } else if !self.info.is_active() {
             "line malformed-line"
-        } else if self.spec_mark.failed.is_some() {
-            match self.info.kind {
-                LineKind::Other(_) => "line spec-failed-line meta-line",
-                LineKind::Instr(_) => "line spec-failed-line instr-line",
-                _ => "line spec-failed-line spec-line",
-            }
         } else if self.info.invalid.is_some() {
             "line invalid-line"
-        } else if matches!(self.spec_mark.proof, ProofMark::Unknown(_)) {
-            match self.info.kind {
-                LineKind::Other(_) => "line spec-unknown-line meta-line",
-                LineKind::Instr(_) => "line spec-unknown-line instr-line",
-                _ => "line spec-unknown-line spec-line",
-            }
         } else {
             match self.info.kind {
                 LineKind::Malformed(_) => "line malformed-line",
                 LineKind::Empty => "line",
                 LineKind::Other(_) => "line meta-line numbered-line",
                 LineKind::Instr(_) => "line instr-line numbered-line",
-                LineKind::Spec => "line spec-line numbered-line",
             }
         }
         .to_string();
@@ -492,8 +422,6 @@ impl CodeLine {
             ),
             info: LineInfo::default(),
             animation_state: Default::default(),
-            spec_mark: Default::default(),
-            extra_px: 0,
         };
 
         ret.contents.get_mut().0.set_attribute("class", "instr");
@@ -515,14 +443,12 @@ impl CodeLine {
                 .1
                 .0
                 .set_attribute("data-commentary", msg);
-            self.contents.get_mut().1.0.set_attribute("title", msg);
         } else if let LineKind::Malformed(reason) = &self.info.kind {
             self.contents
                 .get_mut()
                 .1
                 .0
                 .set_attribute("data-commentary", reason);
-            self.contents.get_mut().1.0.set_attribute("title", reason);
         } else if let Activity::Inactive(reason) = &self.info.active
             && !reason.is_empty()
         {
@@ -531,14 +457,6 @@ impl CodeLine {
                 .1
                 .0
                 .set_attribute("data-commentary", reason);
-            self.contents.get_mut().1.0.set_attribute("title", reason);
-        } else if let Some(msg) = &self.spec_mark.failed {
-            self.contents
-                .get_mut()
-                .1
-                .0
-                .set_attribute("data-commentary", msg);
-            self.contents.get_mut().1.0.set_attribute("title", msg);
         } else if let Some(reason) = &self.info.invalid
             && !reason.is_empty()
         {
@@ -547,21 +465,12 @@ impl CodeLine {
                 .1
                 .0
                 .set_attribute("data-commentary", reason);
-            self.contents.get_mut().1.0.set_attribute("title", reason);
-        } else if let Some(note) = &self.spec_mark.note {
-            self.contents
-                .get_mut()
-                .1
-                .0
-                .set_attribute("data-commentary", note);
-            self.contents.get_mut().1.0.set_attribute("title", note);
         } else {
             self.contents
                 .get_mut()
                 .1
                 .0
                 .remove_attribute("data-commentary");
-            self.contents.get_mut().1.0.remove_attribute("title");
         }
 
         self.contents.set_attribute("class", &self.class());
@@ -595,14 +504,8 @@ impl CodeLine {
             self.instr_mut().replace_range(0, ws_bytes, "")?;
         }
         // Update kind, symbols, commentary, and active status
-        let (kind, spec) = parse_line_spec(self.instr().get());
-        self.info.kind = kind;
-        self.info.spec = spec;
-        let wasm_text = match self.info.spec.as_deref().and_then(LineSpec::erased) {
-            Some(erased) => erased,
-            None => self.instr().get(),
-        };
-        self.info.symbols = parse_line_symbols(wasm_text, &self.info.kind);
+        self.info.kind = parse_line(self.instr().get());
+        self.info.symbols = parse_line_symbols(self.instr().get(), &self.info.kind);
         self.conform();
         Ok(ws_bytes)
     }
@@ -751,27 +654,14 @@ impl CodeLine {
         // otherwise, snap change
         self.info.indent = Some(val);
         self.animation_state.indent.snap(indent_px(4 + val) as f64);
-        self.apply_margin();
+        self.contents.get_mut().0.set_attribute(
+            "style",
+            &format!(
+                "margin-left: {}px;",
+                self.animation_state.indent.value().unwrap()
+            ),
+        );
         AnimationRequest(false)
-    }
-
-    fn apply_margin(&mut self) {
-        if let Some(v) = self.animation_state.indent.value() {
-            let px = v + self.extra_px as f64;
-            self.contents
-                .get_mut()
-                .0
-                .set_attribute("style", &format!("margin-left: {px}px;"));
-        }
-    }
-
-    pub fn extra_px(&self) -> u16 {
-        self.extra_px
-    }
-
-    pub fn set_extra_px(&mut self, px: u16) {
-        self.extra_px = px;
-        self.apply_margin();
     }
 
     pub fn unset_indent(&mut self) {
@@ -781,7 +671,13 @@ impl CodeLine {
 
     pub fn animate(&mut self, t: f64) -> AnimationRequest {
         self.animation_state.indent.animate(t);
-        self.apply_margin();
+        self.contents.get_mut().0.set_attribute(
+            "style",
+            &format!(
+                "margin-left: {}px;",
+                self.animation_state.indent.value().unwrap()
+            ),
+        );
 
         self.animation_state.indent.is_pending()
     }
@@ -796,35 +692,6 @@ impl CodeLine {
         } else {
             self.info.invalid = reason;
         }
-        self.conform();
-    }
-
-    pub fn spec_mark(&self) -> &SpecMark {
-        &self.spec_mark
-    }
-
-    pub fn set_spec_mark(&mut self, mark: SpecMark) {
-        if mark == self.spec_mark {
-            return;
-        }
-        // the count follows the code (on the instruction span)
-        let instr_span = &mut self.contents.get_mut().0;
-        match mark.held_label() {
-            Some(label) => instr_span.set_attribute("data-held", &label),
-            None => instr_span.remove_attribute("data-held"),
-        }
-        let why = match (&mark.unknown, &mark.proof) {
-            (Some(a), ProofMark::Unknown(b)) => Some(format!("{a}; {b}")),
-            (Some(a), _) => Some(a.clone()),
-            (None, ProofMark::Unknown(b)) => Some(b.clone()),
-            (None, ProofMark::Pending) => Some("the proof is pending".to_string()),
-            _ => None,
-        };
-        match why {
-            Some(reason) => instr_span.set_attribute("title", &reason),
-            None => instr_span.remove_attribute("title"),
-        }
-        self.spec_mark = mark;
         self.conform();
     }
 

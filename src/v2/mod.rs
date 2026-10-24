@@ -7,6 +7,7 @@ pub mod eval;
 pub mod info;
 pub mod kernel;
 pub mod out;
+pub mod runtime;
 pub mod sexpr;
 pub mod solver;
 pub mod symex;

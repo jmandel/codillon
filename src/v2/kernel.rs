@@ -3,7 +3,7 @@
 use super::ast::{BlockKind, BlockType, Decl, Expr, IOp, Ins, LocalKind, Module, Refined, ValTy};
 use super::eval::{EvalErr, Interp, value_locals};
 use super::info::FnInfo;
-use super::out::{CupKind, CupOut, Feed, FuncOut, Origin, Verdict, Witness};
+use super::out::{Birth, Capture, CupKind, CupOut, Feed, FuncOut, Origin, Verdict, Witness};
 use super::solver::{Env, Outcome, Solver};
 use super::symex::{call_term, symex};
 use super::term::{Atom, Key, NO_EPOCH, TermId, Terms};
@@ -115,7 +115,7 @@ impl Env for PassEnv<'_, '_> {
                 let f = f as usize;
                 let i = &self.cx.info[f];
                 let fun = &self.cx.m.funcs[f];
-                if i.self_rec || i.impure.is_some() || i.has_loop.is_some() || fun.is_lemma() || fun.is_axiom() {
+                if i.self_rec || i.mutual_rec.is_some() || i.impure.is_some() || i.has_loop.is_some() || fun.is_lemma() || fun.is_axiom() {
                     None
                 } else {
                     symex(self.cx.m, &self.cx.info, terms, f, &args, if ep == NO_EPOCH { 0 } else { ep })
@@ -171,6 +171,7 @@ pub struct Pass<'a, 'm> {
     unfold_memo: HashMap<TermId, Option<TermId>>,
     pub line_errors: Vec<(u32, String)>,
     pub slot_ids: Vec<(u32, u32)>,
+    pub births: Vec<Birth>,
     ghost: bool,
     /// lines of `assume` (not instructor axioms)
     line: u32,
@@ -270,8 +271,11 @@ impl<'a, 'm> Pass<'a, 'm> {
         match self.inst(e, bind, v, Some(ValTy::I32)) {
             Ok(t) => self.terms.atom_of(t, true),
             Err(msg) => {
+                // an ill-formed proposition: an opaque atom about a fresh value, which no fact
+                // matches and no proof establishes (and which, as a fact, constrains nothing else)
                 self.line_errors.push((self.line, msg));
-                Atom::True
+                let t = self.terms.leaf(ValTy::I32, "ill-formed proposition", None);
+                Atom::Bool { t, neg: false }
             }
         }
     }
@@ -330,6 +334,7 @@ impl<'a, 'm> Pass<'a, 'm> {
                     Err(EvalErr::Budget) => Err(format!("evaluation exceeded {} steps", super::eval::EVAL_BUDGET)),
                     Err(EvalErr::Trap(m)) => Err(format!("evaluation trapped: {m}")),
                     Err(EvalErr::Unsupported(m)) => Err(format!("cannot evaluate: {m}")),
+                    Err(EvalErr::CheckFailed { msg, .. }) => Err(msg),
                 }
             }
             _ => Err("cannot evaluate a float atom".into()),
@@ -383,6 +388,7 @@ impl<'a, 'm> Pass<'a, 'm> {
             diag: None,
             atom: r.atom.clone(),
             ghost: self.ghost,
+            guard: None,
         });
         self.cup_deps.push(vec![]);
         (self.cups.len() - 1) as CupId
@@ -393,6 +399,11 @@ impl<'a, 'm> Pass<'a, 'm> {
     /// and the facts produced by prove/evaluation (not yet entered).
     pub fn feed(&mut self, line: u32, reqs: &[CupReq], edge: Option<Entry>, lemma_line: bool) -> (Vec<CupId>, Vec<FactId>) {
         let ids: Vec<CupId> = reqs.iter().map(|r| self.new_cup(line, r)).collect();
+        if let Some(e) = edge {
+            for &c in &ids {
+                self.cups[c as usize].guard = Some(self.facts[e.fact as usize].atom.clone());
+            }
+        }
         let mut fed = vec![false; ids.len()];
         let mut produced: Vec<(usize, FactId)> = vec![];
         if let Some(end) = self.dead {
@@ -550,7 +561,16 @@ impl<'a, 'm> Pass<'a, 'm> {
     fn push(&mut self, t: TermId) {
         self.mark_real(t);
         self.slot_ids.push((self.line, t));
+        if self.dead.is_none() && matches!(self.terms.key(t), Key::Leaf(_) | Key::Load(..) | Key::Float(..) | Key::Call(..)) {
+            self.births.push(Birth { term: t, line: self.line, how: Capture::Top });
+        }
         self.stack.push(t);
+    }
+
+    fn birth(&mut self, t: TermId, line: u32, how: Capture) {
+        if self.dead.is_none() {
+            self.births.push(Birth { term: t, line, how });
+        }
     }
 
     fn go_dead(&mut self, line: u32) {
@@ -578,6 +598,7 @@ impl<'a, 'm> Pass<'a, 'm> {
             if g.mutable {
                 let name = g.name.clone().unwrap_or_else(|| format!("global {i}"));
                 self.globals[i] = self.terms.leaf(g.ty.ty, name, None);
+                self.birth(self.globals[i], line, Capture::Global(i as u32));
                 if let Some(r) = g.ty.refine.clone() {
                     let b = self.cur_bind();
                     let a = self.inst_atom(&r, &b, Some(self.globals[i]));
@@ -639,6 +660,7 @@ impl<'a, 'm> Pass<'a, 'm> {
             unfold_memo: HashMap::new(),
             line_errors: vec![],
             slot_ids: vec![],
+            births: vec![],
             ghost,
             line: func.header_line,
         }
@@ -672,6 +694,7 @@ impl<'a, 'm> Pass<'a, 'm> {
                 Decl::Val(r) => {
                     let name = p.name.clone().unwrap_or_else(|| format!("param {vi}"));
                     let t = self.terms.leaf(r.ty, name.clone(), None);
+                    self.birth(t, hl, Capture::Param(vi as u32));
                     self.entry.push(t);
                     self.locals.push(t);
                     bind.push((name, t));
@@ -713,6 +736,10 @@ impl<'a, 'm> Pass<'a, 'm> {
                 (false, Some(b)) => self.terms.konst(g.ty.ty, b),
                 _ => self.terms.leaf(g.ty.ty, g.name.clone().unwrap_or_else(|| "global".into()), None),
             };
+            if g.mutable {
+                let gi = self.globals.len() as u32;
+                self.birth(t, hl, Capture::Global(gi));
+            }
             self.globals.push(t);
         }
         for (i, g) in cx.m.globals.iter().enumerate() {
@@ -766,13 +793,29 @@ impl<'a, 'm> Pass<'a, 'm> {
         func.value_params().zip(args.iter()).filter_map(|((_, p, _), a)| p.name.clone().map(|n| (n, *a))).collect()
     }
 
-    /// The measure cup of R31 at a recursive call/lemma site with arguments `args`.
-    fn measure_cup(&mut self, args: &[TermId]) -> Option<CupReq> {
-        let mf = self.cx.info[self.f].measure?;
-        let a = call_term(self.cx.m, &self.cx.info, &mut self.terms, mf, args, self.eps)?;
+    /// The measure cup of R31 at a recursive call/lemma site with arguments `args`. Never dropped:
+    /// without a usable measure the cup is still there, as an unprovable obligation, with an error.
+    fn measure_cup(&mut self, args: &[TermId]) -> CupReq {
+        let atom = match self.measure_atom(args) {
+            Ok(a) => a,
+            Err(msg) => {
+                self.line_errors.push((self.line, msg));
+                let t = self.terms.leaf(ValTy::I32, "μ↓ (no usable measure)", None);
+                Atom::Bool { t, neg: false }
+            }
+        };
+        CupReq { kind: CupKind::Measure, operand: None, atom }
+    }
+
+    fn measure_atom(&mut self, args: &[TermId]) -> Result<Atom, String> {
+        let cx = self.cx;
+        let name = cx.m.funcs[self.f].name();
+        let mf = cx.info[self.f].measure.ok_or_else(|| format!("{name} is recursive without measure:{}", name.trim_start_matches('$')))?;
+        measure_shape(cx.m, self.f, mf)?;
+        let a = call_term(cx.m, &cx.info, &mut self.terms, mf, args, self.eps).ok_or("measure has no result")?;
         let entry = self.entry.clone();
-        let b = call_term(self.cx.m, &self.cx.info, &mut self.terms, mf, &entry, self.eps)?;
-        Some(CupReq { kind: CupKind::Measure, operand: None, atom: Atom::cmp(super::term::Rel::Lt, false, a, b) })
+        let b = call_term(cx.m, &cx.info, &mut self.terms, mf, &entry, self.eps).ok_or("measure has no result")?;
+        Ok(Atom::cmp(super::term::Rel::Lt, false, a, b))
     }
 
     fn bounds_cup(&mut self, addr: TermId, offset: u64, bytes: u32) -> CupReq {
@@ -810,10 +853,8 @@ impl<'a, 'm> Pass<'a, 'm> {
                 }
             }
         }
-        if g == self.f
-            && let Some(mc) = self.measure_cup(&args)
-        {
-            reqs.push(mc);
+        if g == self.f && (cx.info[g].is_pred || cx.info[g].is_measure || cx.info[g].measure.is_some()) {
+            reqs.push(self.measure_cup(&args));
         }
         let ids = self.feed_enter(line, &reqs);
         let impure = cx.info[g].impure.is_some();
@@ -1095,10 +1136,8 @@ impl<'a, 'm> Pass<'a, 'm> {
                 reqs.push(CupReq { kind: CupKind::FactParam { param: pi as u32 }, operand: None, atom: a });
             }
         }
-        if g == self.f
-            && let Some(mc) = self.measure_cup(&vals)
-        {
-            reqs.push(mc);
+        if g == self.f {
+            reqs.push(self.measure_cup(&vals));
         }
         let (ids, produced) = self.feed(line, &reqs, None, true);
         for f in produced {
@@ -1314,6 +1353,7 @@ impl<'a, 'm> Pass<'a, 'm> {
                 None => {
                     let name = self.locs[i].0.clone().unwrap_or_else(|| format!("local {i}"));
                     self.locals[i] = self.terms.leaf(self.locs[i].1, name, None);
+                    self.birth(self.locals[i], line, Capture::Local(i as u32));
                     phis.push(i);
                 }
             }
@@ -1325,6 +1365,7 @@ impl<'a, 'm> Pass<'a, 'm> {
                 None => {
                     let g = &self.cx.m.globals[i];
                     self.globals[i] = self.terms.leaf(g.ty.ty, g.name.clone().unwrap_or_else(|| "global".into()), None);
+                    self.birth(self.globals[i], line, Capture::Global(i as u32));
                     gphis.push(i);
                 }
             }
@@ -1337,7 +1378,13 @@ impl<'a, 'm> Pass<'a, 'm> {
         for j in 0..nres {
             let t = match same(edges.iter().map(|e| e.values[j]).collect()) {
                 Some(t) => t,
-                None => self.terms.leaf(fr.bt.results[j].ty, "#φ", None),
+                None => {
+                    let t = self.terms.leaf(fr.bt.results[j].ty, "#φ", None);
+                    if nres == 1 {
+                        self.birth(t, line, Capture::Top);
+                    }
+                    t
+                }
             };
             values.push(t);
             self.slot_ids.push((line, t));
@@ -1477,6 +1524,11 @@ impl<'a, 'm> Pass<'a, 'm> {
             }
             Ins::BrTable(ls) => {
                 let i = self.pop();
+                if ls.is_empty() {
+                    self.line_errors.push((line, "br_table needs at least one label".into()));
+                    self.go_dead(line);
+                    return;
+                }
                 let n = ls.len() - 1;
                 for (j, l) in ls.iter().enumerate() {
                     let Some(fi) = self.resolve_label(l) else {
@@ -1580,6 +1632,7 @@ impl<'a, 'm> Pass<'a, 'm> {
         for i in set_locals {
             let name = self.locs[i].0.clone().unwrap_or_else(|| format!("local {i}"));
             self.locals[i] = self.terms.leaf(self.locs[i].1, name, None);
+            self.birth(self.locals[i], line, Capture::Local(i as u32));
             if let (Some(r), Some(g)) = (self.loc_ref[i].clone(), self.local_groups[i]) {
                 let b = self.cur_bind();
                 let a = self.inst_atom(r.refine.as_ref().unwrap(), &b, Some(self.locals[i]));
@@ -1589,6 +1642,7 @@ impl<'a, 'm> Pass<'a, 'm> {
         for i in set_globals {
             let gl = &self.cx.m.globals[i];
             self.globals[i] = self.terms.leaf(gl.ty.ty, gl.name.clone().unwrap_or_else(|| "global".into()), None);
+            self.birth(self.globals[i], line, Capture::Global(i as u32));
             if let (Some(r), Some(g)) = (gl.ty.refine.clone(), self.global_groups[i]) {
                 let b = self.cur_bind();
                 let a = self.inst_atom(&r, &b, Some(self.globals[i]));
@@ -1658,6 +1712,14 @@ impl<'a, 'm> Pass<'a, 'm> {
             }
             if func.header.params.iter().any(|p| !matches!(&p.decl, Decl::Val(r) if r.refine.is_none())) {
                 self.line_errors.push((hl, format!("predicate {name} may not have refined or fact parameters")));
+            }
+            if let Some(g) = i.mutual_rec {
+                self.line_errors.push((hl, format!("predicate {name} is recursive through {} (only direct self-recursion with a measure is allowed)", cx.m.funcs[g].name())));
+            }
+            if let Some(mf) = i.measure
+                && let Err(e) = measure_shape(cx.m, self.f, mf)
+            {
+                self.line_errors.push((hl, e));
             }
             if i.self_rec && i.measure.is_none() {
                 self.line_errors.push((hl, format!("predicate {name} is recursive without measure:{}", name.trim_start_matches('$'))));
@@ -1754,6 +1816,8 @@ impl<'a, 'm> Pass<'a, 'm> {
             chips,
             terms: self.terms,
             slot_ids: self.slot_ids,
+            births: self.births,
+            func: self.f as u32,
         };
         (out, deps)
     }
@@ -1812,7 +1876,8 @@ pub fn check_module(m: &Module, gradual: bool) -> super::out::ModuleOut {
                 Ins::Call(n) | Ins::Lemma(n, _) => m.func_index(n),
                 _ => None,
             });
-            let ok = callees.into_iter().all(|g| ver[g] || m.funcs[g].is_axiom());
+            let uses = cx.info[f].uses.iter().copied();
+            let ok = callees.into_iter().chain(uses).all(|g| ver[g] || m.funcs[g].is_axiom());
             if !ok {
                 ver[f] = false;
                 changed = true;
@@ -1831,4 +1896,19 @@ pub fn check_module(m: &Module, gradual: bool) -> super::out::ModuleOut {
         }
     }
     res
+}
+
+/// R31: a measure has exactly the value parameters of its function and one i32/i64 result.
+pub fn measure_shape(m: &Module, f: usize, mf: usize) -> Result<(), String> {
+    let (func, meas) = (&m.funcs[f], &m.funcs[mf]);
+    let p1: Vec<ValTy> = func.value_params().map(|(_, _, r)| r.ty).collect();
+    let p2: Vec<ValTy> = meas.value_params().map(|(_, _, r)| r.ty).collect();
+    let rs = meas.value_results();
+    if p1 != p2 || meas.header.params.len() != p2.len() {
+        return Err(format!("measure {} must have the value parameters of {}", meas.name(), func.name()));
+    }
+    if rs.len() != 1 || !rs[0].ty.is_int() || meas.header.results.len() != 1 {
+        return Err(format!("measure {} must return exactly one i32 or i64", meas.name()));
+    }
+    Ok(())
 }

@@ -9,33 +9,26 @@
 // - all SIMD/vector operations
 // - all reference types operations
 
-use crate::checker::{StreamingCheck, WitnessRun};
 use crate::{
     dom_canvas::{Action, DomCanvas},
     utils::{FmtError, SlotConnections},
 };
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use arrayvec::ArrayVec;
 use bitvec::vec::BitVec;
 use js_sys::{Object, Reflect, WebAssembly::RuntimeError};
 use regex::Regex;
 use smallvec::SmallVec;
-use std::{
-    cell::{Cell, RefCell},
-    thread::LocalKey,
-};
+use std::cell::Cell;
 use thousands::{Separable, SeparatorPolicy};
 use wasm_bindgen::{JsCast, prelude::*};
 
 const MAX_STEP_COUNT: usize = 100_001;
-/// The steps a run may take before Codillon stops it (its log holds one more).
-pub const MAX_STEPS: usize = MAX_STEP_COUNT - 1;
 
 pub struct RunLog {
     termination: Cell<TerminationType>,
     error_str: CodillonCell<String>,
     step_count: Cell<usize>,
-    returned: CodillonCell<Vec<i128>>, // what the called function returned (if integers)
     steps: Box<[CodillonCell<ExecutionStep>]>,
     has_graphics: Cell<bool>,
 }
@@ -46,7 +39,6 @@ impl Default for RunLog {
             termination: Cell::new(Default::default()),
             error_str: CodillonCell::new(Default::default()),
             step_count: Cell::new(0),
-            returned: CodillonCell::new(vec![]),
             steps: (0..MAX_STEP_COUNT)
                 .map(|_| CodillonCell::new(ExecutionStep::default()))
                 .collect(),
@@ -68,20 +60,10 @@ impl RunLog {
         self.step_count.get()
     }
 
-    /// What the run's function returned (integers only).
-    pub fn returned(&self) -> Vec<i128> {
-        self.returned.with(|r| r.clone())
-    }
-
-    pub fn set_returned(&self, values: Vec<i128>) {
-        self.returned.set(values)
-    }
-
     fn reset(&self) {
         self.termination.set(Default::default());
         self.error_str.set(String::new());
         self.step_count.set(0);
-        self.returned.set(vec![]);
         self.has_graphics.set(false);
         self.with_current_step_mut(|step| step.reset());
     }
@@ -143,18 +125,6 @@ impl RunLog {
         true
     }
 
-    /// Read a completed step: its line number word (top bit: "after call"), the slot
-    /// assignments recorded during it, and its call-frame operations.
-    pub fn with_step<T>(
-        &self,
-        idx: usize,
-        func: impl FnOnce(u32, &[(u32, WasmValue)], &[CallFrameOp]) -> T,
-    ) -> T {
-        self.with_completed_step(idx, |s| {
-            func(s.line_num, &s.slot_assignments, &s.call_frame_ops)
-        })
-    }
-
     pub fn graphics_op(&self, act: Action) {
         self.with_current_step_mut(|step| {
             debug_assert!(step.graphics_op.is_none());
@@ -208,7 +178,7 @@ impl RunLog {
 // Debug state stored in Wasm memory
 thread_local! {
     pub static RUN_LOG: RunLog = Default::default();
-    static INSTRUMENTATION_IMPORTS: Object = make_imports(&RUN_LOG).expect("instrumentation");
+    static INSTRUMENTATION_IMPORTS: Object = make_imports().expect("instrumentation");
 }
 
 // When a user Wasm module gets close to stack exhaustion, the browser can trap at any point
@@ -444,12 +414,7 @@ impl ExecutionState {
                 }
 
                 for (slot_idx, value) in &s.slot_assignments {
-                    // (memory stores recorded for specification checks use slot numbers
-                    // beyond the module's slots; they are not drawn)
-                    let Some(slot) = self.slots.get_mut(*slot_idx as usize) else {
-                        continue;
-                    };
-                    *slot.last_mut().unwrap() = Some(SlotContents {
+                    *self.slots[*slot_idx as usize].last_mut().unwrap() = Some(SlotContents {
                         val: *value,
                         old: false,
                     });
@@ -568,76 +533,8 @@ where
     func.forget();
 }
 
-/// Where the instrumentation of a running module reports: Codillon's run log, or a
-/// streaming checker for a witness candidate.
-pub trait Recorder: 'static {
-    fn step(&self, line_num: u32) -> bool;
-    fn invalid(&self);
-    fn slot(&self, val: WasmValue, slot: u32);
-    fn frame_op(&self, op: CallFrameOp);
-    fn graphics(&self, act: Action);
-}
-
-impl Recorder for RunLog {
-    fn step(&self, line_num: u32) -> bool {
-        self.wasm_step(line_num)
-    }
-    fn invalid(&self) {
-        self.set_termination_type(TerminationType::HitInvalid)
-    }
-    fn slot(&self, val: WasmValue, slot: u32) {
-        self.record_slot(val, slot)
-    }
-    fn frame_op(&self, op: CallFrameOp) {
-        self.call_frame_op(op)
-    }
-    fn graphics(&self, act: Action) {
-        self.graphics_op(act)
-    }
-}
-
-/// The streaming checker of the witness candidate currently running (if any).
-#[derive(Default)]
-pub struct WitnessSink(RefCell<Option<StreamingCheck>>);
-
-impl Recorder for WitnessSink {
-    fn step(&self, line_num: u32) -> bool {
-        match self.0.try_borrow_mut() {
-            Ok(mut s) => s.as_mut().map(|s| s.step(line_num)).unwrap_or(false),
-            Err(_) => false,
-        }
-    }
-    fn invalid(&self) {
-        if let Ok(mut s) = self.0.try_borrow_mut()
-            && let Some(s) = s.as_mut()
-        {
-            s.mark_invalid();
-        }
-    }
-    fn slot(&self, val: WasmValue, slot: u32) {
-        if let Ok(mut s) = self.0.try_borrow_mut()
-            && let Some(s) = s.as_mut()
-        {
-            s.record_slot(slot, val);
-        }
-    }
-    fn frame_op(&self, op: CallFrameOp) {
-        if let Ok(mut s) = self.0.try_borrow_mut()
-            && let Some(s) = s.as_mut()
-        {
-            s.frame_op(op);
-        }
-    }
-    fn graphics(&self, _act: Action) {}
-}
-
-thread_local! {
-    pub static WITNESS_SINK: WitnessSink = Default::default();
-    static WITNESS_IMPORTS: Object = make_imports(&WITNESS_SINK).expect("witness imports");
-}
-
-// Constructs the instrumentation functions for import, reporting to `key`
-fn make_imports<R: Recorder>(key: &'static LocalKey<R>) -> Result<Object, JsValue> {
+// Constructs the instrumentation functions for import
+fn make_imports() -> Result<Object, JsValue> {
     let imports = Object::new();
 
     {
@@ -645,118 +542,96 @@ fn make_imports<R: Recorder>(key: &'static LocalKey<R>) -> Result<Object, JsValu
 
         // Updating the debug state at every step. Returns whether execution should continue.
         let step_closure: ScopedClosure<'_, dyn Fn(u32) -> bool> =
-            Closure::new(move |line_num: u32| key.with(|r| r.step(line_num)));
+            Closure::new(|line_num: u32| RUN_LOG.with(|r| r.wasm_step(line_num)));
         register_closure(&codillon_debug, "record_step", step_closure);
 
         let record_invalid: ScopedClosure<'_, dyn Fn()> =
-            Closure::new(move || key.with(|r| r.invalid()));
+            Closure::new(|| RUN_LOG.with(|r| r.set_termination_type(TerminationType::HitInvalid)));
         register_closure(&codillon_debug, "record_invalid", record_invalid);
 
-        create_closure_record_operations(&codillon_debug, key);
-        create_closure_frame_operations(&codillon_debug, key);
+        create_closure_record_operations(&codillon_debug);
+        create_closure_frame_operations(&codillon_debug);
 
         Reflect::set(&imports, &"codillon_debug".into(), &codillon_debug)?;
     }
 
     {
         let draw = Object::new();
-        create_graphics_helpers(&draw, key);
+        create_graphics_helpers(&draw);
         Reflect::set(&imports, &"draw".into(), &draw)?;
     }
 
     Ok(imports)
 }
 
-fn create_graphics_helpers<R: Recorder>(draw: &Object, key: &'static LocalKey<R>) {
+fn create_graphics_helpers(draw: &Object) {
     let draw_point: ScopedClosure<'_, dyn Fn(f64, f64)> =
-        Closure::new(move |x, y| key.with(|r| r.graphics(Action::Point(x, y))));
+        Closure::new(|x, y| RUN_LOG.with(|r| r.graphics_op(Action::Point(x, y))));
     register_closure(draw, "point", draw_point);
 
     let clear_canvas: ScopedClosure<'_, dyn Fn()> =
-        Closure::new(move || key.with(|r| r.graphics(Action::Clear)));
+        Closure::new(|| RUN_LOG.with(|r| r.graphics_op(Action::Clear)));
     register_closure(draw, "clear", clear_canvas);
 
     let set_color: ScopedClosure<'_, dyn Fn(i32, i32, i32)> =
-        Closure::new(move |r, g, b| key.with(|log| log.graphics(Action::Color(r, g, b))));
+        Closure::new(|r, g, b| RUN_LOG.with(|log| log.graphics_op(Action::Color(r, g, b))));
     register_closure(draw, "set_color", set_color);
 
     let set_extent: ScopedClosure<'_, dyn Fn(f64, f64, f64, f64)> =
-        Closure::new(move |xmin, xmax, ymin, ymax| {
-            key.with(|r| r.graphics(Action::Extent(xmin, xmax, ymin, ymax)))
+        Closure::new(|xmin, xmax, ymin, ymax| {
+            RUN_LOG.with(|r| r.graphics_op(Action::Extent(xmin, xmax, ymin, ymax)))
         });
     register_closure(draw, "set_extent", set_extent);
 
     let set_radius: ScopedClosure<'_, dyn Fn(f64)> =
-        Closure::new(move |radius| key.with(|r| r.graphics(Action::Radius(radius))));
+        Closure::new(|radius| RUN_LOG.with(|r| r.graphics_op(Action::Radius(radius))));
     register_closure(draw, "set_radius", set_radius);
 }
 
-fn create_closure_record_operations<R: Recorder>(obj: &Object, key: &'static LocalKey<R>) {
+fn create_closure_record_operations(obj: &Object) {
     let record_i32: ScopedClosure<'_, dyn Fn(i32, u32)> =
-        Closure::new(move |value: i32, slot| key.with(|r| r.slot(value.into(), slot)));
+        Closure::new(|value, slot| RUN_LOG.with(|r| r.record_slot(value, slot)));
     register_closure(obj, "record_i32", record_i32);
 
     let record_f32: ScopedClosure<'_, dyn Fn(f32, u32)> =
-        Closure::new(move |value: f32, slot| key.with(|r| r.slot(value.into(), slot)));
+        Closure::new(|value, slot| RUN_LOG.with(|r| r.record_slot(value, slot)));
     register_closure(obj, "record_f32", record_f32);
 
     let record_i64: ScopedClosure<'_, dyn Fn(i64, u32)> =
-        Closure::new(move |value: i64, slot| key.with(|r| r.slot(value.into(), slot)));
+        Closure::new(|value, slot| RUN_LOG.with(|r| r.record_slot(value, slot)));
     register_closure(obj, "record_i64", record_i64);
 
     let record_f64: ScopedClosure<'_, dyn Fn(f64, u32)> =
-        Closure::new(move |value: f64, slot| key.with(|r| r.slot(value.into(), slot)));
+        Closure::new(|value, slot| RUN_LOG.with(|r| r.record_slot(value, slot)));
     register_closure(obj, "record_f64", record_f64);
 }
 
-fn create_closure_frame_operations<R: Recorder>(obj: &Object, key: &'static LocalKey<R>) {
-    let enter_func: ScopedClosure<'_, dyn Fn(u32)> =
-        Closure::new(move |func_idx| key.with(|r| r.frame_op(CallFrameOp::EnterFunc(func_idx))));
+fn create_closure_frame_operations(obj: &Object) {
+    let enter_func: ScopedClosure<'_, dyn Fn(u32)> = Closure::new(|func_idx| {
+        RUN_LOG.with(|r| r.call_frame_op(CallFrameOp::EnterFunc(func_idx)))
+    });
     register_closure(obj, "enter_func", enter_func);
 
     let before_call: ScopedClosure<'_, dyn Fn()> =
-        Closure::new(move || key.with(|r| r.frame_op(CallFrameOp::BeforeCall)));
+        Closure::new(|| RUN_LOG.with(|r| r.call_frame_op(CallFrameOp::BeforeCall)));
     register_closure(obj, "before_call", before_call);
 
-    let after_call: ScopedClosure<'_, dyn Fn(u32)> =
-        Closure::new(move |func_idx| key.with(|r| r.frame_op(CallFrameOp::AfterCall(func_idx))));
+    let after_call: ScopedClosure<'_, dyn Fn(u32)> = Closure::new(|func_idx| {
+        RUN_LOG.with(|r| r.call_frame_op(CallFrameOp::AfterCall(func_idx)))
+    });
     register_closure(obj, "after_call", after_call);
 
     let before_tail_call: ScopedClosure<'_, dyn Fn()> =
-        Closure::new(move || key.with(|r| r.frame_op(CallFrameOp::BeforeTailCall)));
+        Closure::new(|| RUN_LOG.with(|r| r.call_frame_op(CallFrameOp::BeforeTailCall)));
     register_closure(obj, "before_tail_call", before_tail_call);
 
-    let enter_block: ScopedClosure<'_, dyn Fn(u32)> =
-        Closure::new(move |block_idx| key.with(|r| r.frame_op(CallFrameOp::EnterBlock(block_idx))));
+    let enter_block: ScopedClosure<'_, dyn Fn(u32)> = Closure::new(|block_idx| {
+        RUN_LOG.with(|r| r.call_frame_op(CallFrameOp::EnterBlock(block_idx)))
+    });
     register_closure(obj, "enter_block", enter_block);
 }
 
-/// An argument for the function a run calls.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum RunArg {
-    I32(i32),
-    I64(i64),
-}
-
-fn js_args(args: &[RunArg]) -> js_sys::Array {
-    let a = js_sys::Array::new();
-    for arg in args {
-        match arg {
-            RunArg::I32(v) => a.push(&JsValue::from(*v)),
-            RunArg::I64(v) => a.push(&JsValue::from(js_sys::BigInt::from(*v))),
-        };
-    }
-    a
-}
-
-/// Run the instrumented module: call its export `entry` ("main", or "f<index>") with
-/// `args`, recording into the run log. A module without functions runs nothing.
-pub async fn run_binary(
-    binary: &[u8],
-    entry: &str,
-    args: &[RunArg],
-    seed: Option<&crate::checker::Seed>,
-) -> Result<()> {
+pub async fn run_binary(binary: &[u8]) -> Result<()> {
     use js_sys::{Function, Reflect};
     RUN_LOG.with(|r| r.reset());
     let imports = INSTRUMENTATION_IMPORTS.with(|imports| imports.clone());
@@ -766,115 +641,21 @@ pub async fn run_binary(
         .fmt_err()?;
     let instance = Reflect::get(&js_value, &JsValue::from_str("instance")).fmt_err()?;
     let exports = Reflect::get(&instance, &JsValue::from_str("exports")).fmt_err()?;
-    if let Some(seed) = seed {
-        set_state(&exports, seed)?;
+
+    // Call main function with default values for its params
+    match Reflect::get(&exports, &JsValue::from_str("main")) {
+        Ok(main) => {
+            let main = wasm_bindgen::JsCast::dyn_ref::<Function>(&main)
+                .context("main is not an exported function")?;
+            let res = main.apply(&JsValue::null(), &js_sys::Array::new()); // run the function
+            RUN_LOG.with(|log| match res {
+                Ok(val) if val.is_undefined() => log.finish(Ok(())),
+                Ok(val) => bail!("unhandled return value from function: {:?}", val),
+                Err(e) => log.finish(Err(extract_error(&e))),
+            })
+        }
+        Err(e) => bail!("reflection failure: {:?}", e),
     }
-
-    let main = Reflect::get(&exports, &JsValue::from_str(entry)).fmt_err()?;
-    let Some(main) = wasm_bindgen::JsCast::dyn_ref::<Function>(&main) else {
-        // nothing to run (e.g. an empty buffer, or a program still loading)
-        return Ok(());
-    };
-    let res = main.apply(&JsValue::null(), &js_args(args)); // run the function
-    RUN_LOG.with(|log| match res {
-        // results (of a function run directly, e.g. a witness) are checked by the specs
-        Ok(v) => {
-            log.set_returned(js_results(&v));
-            log.finish(Ok(()))
-        }
-        Err(e) => log.finish(Err(extract_error(&e))),
-    })
-}
-
-// Set up a counterexample's state in a fresh instance: words of memory, and globals
-// (exported by the instrumentation as "memory" and "g0", "g1", …).
-fn set_state(exports: &JsValue, seed: &crate::checker::Seed) -> Result<()> {
-    use js_sys::Reflect;
-    if !seed.words.is_empty() {
-        let memory = Reflect::get(exports, &JsValue::from_str("memory")).fmt_err()?;
-        let buffer = Reflect::get(&memory, &JsValue::from_str("buffer")).fmt_err()?;
-        let buffer: js_sys::ArrayBuffer = wasm_bindgen::JsCast::dyn_into(buffer).fmt_err()?;
-        let len = buffer.byte_length() as usize;
-        let view = js_sys::DataView::new(&buffer, 0, len);
-        for (addr, v) in &seed.words {
-            if (*addr as usize) + 4 <= view.byte_length() {
-                view.set_int32_endian(*addr as usize, *v as i32, true);
-            }
-        }
-    }
-    for (g, v) in &seed.globals {
-        let global = Reflect::get(exports, &JsValue::from_str(&format!("g{g}"))).fmt_err()?;
-        if global.is_undefined() {
-            continue;
-        }
-        let current = Reflect::get(&global, &JsValue::from_str("value")).fmt_err()?;
-        let value = if current.is_bigint() {
-            JsValue::from(js_sys::BigInt::from(*v as i64))
-        } else {
-            JsValue::from_f64(*v as i32 as f64)
-        };
-        Reflect::set(&global, &JsValue::from_str("value"), &value).fmt_err()?;
-    }
-    Ok(())
-}
-
-// The integer results of a call (a number, a BigInt, or an array of them for several).
-fn js_results(v: &JsValue) -> Vec<i128> {
-    let one = |x: &JsValue| -> Option<i128> {
-        if let Some(n) = x.as_f64() {
-            return Some(n as i128);
-        }
-        if x.is_bigint() {
-            return i64::try_from(x.clone()).ok().map(|n| n as i128);
-        }
-        None
-    };
-    if v.is_undefined() {
-        vec![]
-    } else if js_sys::Array::is_array(v) {
-        js_sys::Array::from(v)
-            .iter()
-            .map(|x| one(&x).unwrap_or(0))
-            .collect()
-    } else {
-        one(v).into_iter().collect()
-    }
-}
-
-/// Compile a module once for running many witness candidates.
-pub async fn compile_module(binary: &[u8]) -> Result<js_sys::WebAssembly::Module> {
-    let promise = js_sys::WebAssembly::compile(&js_sys::Uint8Array::from(binary).into());
-    let module = wasm_bindgen_futures::JsFuture::from(promise)
-        .await
-        .fmt_err()?;
-    module.dyn_into().fmt_err()
-}
-
-/// Run one witness candidate in a fresh instance, checking as it runs.
-pub async fn run_witness(
-    module: &js_sys::WebAssembly::Module,
-    entry: &str,
-    args: &[RunArg],
-    check: StreamingCheck,
-) -> Result<WitnessRun> {
-    use js_sys::{Function, Reflect};
-    let imports = WITNESS_IMPORTS.with(|imports| imports.clone());
-    let promise = js_sys::WebAssembly::instantiate_module(module, &imports);
-    let instance = wasm_bindgen_futures::JsFuture::from(promise)
-        .await
-        .fmt_err()?;
-    let exports = Reflect::get(&instance, &JsValue::from_str("exports")).fmt_err()?;
-    let f = Reflect::get(&exports, &JsValue::from_str(entry)).fmt_err()?;
-    let f = wasm_bindgen::JsCast::dyn_ref::<Function>(&f).context("no such export")?;
-    WITNESS_SINK.with(|s| *s.0.borrow_mut() = Some(check));
-    let res = f.apply(&JsValue::null(), &js_args(args));
-    let check = WITNESS_SINK
-        .with(|s| s.0.borrow_mut().take())
-        .context("witness checker")?;
-    Ok(check.finish(match res {
-        Ok(v) => Ok(js_results(&v)),
-        Err(e) => Err(extract_error(&e)),
-    }))
 }
 
 fn extract_error(jsv: &JsValue) -> String {
