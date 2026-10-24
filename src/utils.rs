@@ -3439,7 +3439,7 @@ pub(crate) mod tests {
             ("primality", None),
             ("hashtable", None),
             ("hashtable-stale", Some(320 + 5)),
-            ("hashtable-bug-tombstone", None),
+            ("hashtable-bug-tombstone", Some(302 + 5)), // $main runs (1, 9): the missing tombstone
         ];
         for (name, fail_line) in cases {
             let path = format!(

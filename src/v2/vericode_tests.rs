@@ -1,0 +1,474 @@
+//! Tests of vericoding mode: ownership, the judge, adequacy, sessions and the LLM protocol.
+
+use super::adequacy::*;
+use super::vericode::*;
+use std::time::Instant;
+
+fn example(name: &str) -> Vec<String> {
+    let p = format!(
+        "{}/public/examples/v2/{name}.wat",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    std::fs::read_to_string(p)
+        .unwrap()
+        .lines()
+        .map(|s| s.to_string())
+        .collect()
+}
+
+fn st(lines: &[String]) -> SessionStart {
+    SessionStart::new(lines)
+}
+
+#[test]
+fn ownership_follows_the_table() {
+    let lines = example("isqrt");
+    let o = st(&lines).owners(&lines);
+    let at = |l: usize| o[l - 1];
+    assert_eq!(at(1), Owner::Free, "comment");
+    assert_eq!(at(2), Owner::Student, "$main header");
+    assert_eq!(at(3), Owner::Student, "$main body is the runner");
+    assert_eq!(at(7), Owner::Student, "predicate body");
+    assert_eq!(at(31), Owner::Student, "$isqrt header");
+    assert_eq!(at(32), Owner::Llm, "refined local of the body");
+    assert_eq!(at(35), Owner::Llm, "prove line");
+    assert_eq!(at(64), Owner::Llm, "body");
+    assert_eq!(at(65), Owner::Student, "closing paren of a student header");
+    assert_eq!(at(67), Owner::Student, "harness body");
+    // gcd: helpers of predicates are spec; the axiom is the instructor's
+    let g = example("gcd");
+    let o = st(&g).owners(&g);
+    assert_eq!(o[8 - 1], Owner::Student, "$divides (called by a predicate)");
+    assert_eq!(o[108 - 1], Owner::Student, "axiom header");
+    assert_eq!(o[119 - 1], Owner::Llm, "$gcd body");
+    // primality: $prime is the exported implementation although a lemma names it
+    let p = example("primality");
+    let o = st(&p).owners(&p);
+    assert_eq!(o[102 - 1], Owner::Llm, "$prime body");
+}
+
+#[test]
+fn the_judge_enforces_the_boundary() {
+    let lines = example("parity");
+    let s = st(&lines);
+    // the unchanged, fully proven module: accepted
+    assert!(s.judge(&lines).accepted);
+    // weakening a header
+    let mut w = lines.clone();
+    w[34] = "(func $half (param $x i32) (result (i32 | $is_half $x))".into();
+    let j = s.judge(&w);
+    assert!(!j.accepted && j.crossed(), "{:?}", j.boundary);
+    assert_eq!(j.boundary[0].line, 35);
+    assert!(j.boundary[0].msg.starts_with("edited a locked line: 35"));
+    // an assume in the body
+    let w = apply_edits(
+        &lines,
+        &[Edit {
+            a: 39,
+            b: 39,
+            with: vec![
+                "  assume (fact (call $is_half (i32.shr_s $x 1) $x))".into(),
+                "  prove 1".into(),
+            ],
+        }],
+    )
+    .unwrap();
+    let j = s.judge(&w);
+    assert!(
+        j.boundary
+            .iter()
+            .any(|r| r.line == 39 && r.msg.contains("assume")),
+        "{:?}",
+        j.boundary
+    );
+    // an axiom, an import, an unknown call, a new ordinary function
+    let mut w = lines.clone();
+    w.push(
+        "(func $cheat (export \"axiom:cheat\") (param $x i32) (result (fact (call $is_even $x))))"
+            .into(),
+    );
+    w.push(")".into());
+    assert!(
+        s.judge(&w)
+            .boundary
+            .iter()
+            .any(|r| r.msg.contains("adds an axiom"))
+    );
+    let mut w = lines.clone();
+    w.insert(
+        1,
+        "(import \"env\" \"oracle\" (func $oracle (param i32) (result i32)))".into(),
+    );
+    assert!(
+        s.judge(&w)
+            .boundary
+            .iter()
+            .any(|r| r.msg.contains("import"))
+    );
+    let w = apply_edits(
+        &lines,
+        &[Edit {
+            a: 38,
+            b: 38,
+            with: vec!["  call $nowhere".into()],
+        }],
+    )
+    .unwrap();
+    assert!(
+        s.judge(&w)
+            .boundary
+            .iter()
+            .any(|r| r.msg.contains("$nowhere"))
+    );
+    // not strict-clean: stays applied (not crossed), not accepted
+    let w = apply_edits(
+        &lines,
+        &[Edit {
+            a: 39,
+            b: 39,
+            with: vec![],
+        }],
+    )
+    .unwrap();
+    let j = s.judge(&w);
+    assert!(!j.accepted && !j.crossed());
+    assert!(
+        j.strict
+            .iter()
+            .any(|r| r.line == 39 && r.msg.contains("nothing feeds it")),
+        "{:?}",
+        j.strict
+    );
+    assert_eq!(j.touched, vec!["$half".to_string()]);
+}
+
+#[test]
+fn edits_apply_bottom_first_and_refuse_overlaps() {
+    let l: Vec<String> = ["a", "b", "c", "d"].iter().map(|s| s.to_string()).collect();
+    let e = |a, b, w: &[&str]| Edit {
+        a,
+        b,
+        with: w.iter().map(|s| s.to_string()).collect(),
+    };
+    assert_eq!(
+        apply_edits(&l, &[e(2, 2, &["B"]), e(4, 3, &["x"])]).unwrap(),
+        ["a", "B", "c", "x", "d"]
+    );
+    assert_eq!(
+        apply_edits(&l, &[e(5, 4, &["e"])]).unwrap(),
+        ["a", "b", "c", "d", "e"]
+    );
+    assert_eq!(
+        apply_edits(&l, &[e(1, 4, &[])]).unwrap(),
+        Vec::<String>::new()
+    );
+    assert!(apply_edits(&l, &[e(1, 2, &[]), e(2, 3, &[])]).is_err());
+    assert!(apply_edits(&l, &[e(0, 1, &[])]).is_err());
+}
+
+#[test]
+fn vacuity_flags_gcd_vacuous_only() {
+    let rows = vacuity(&example("gcd-vacuous"));
+    let h = rows.iter().find(|r| r.func == "$gcd_harness").unwrap();
+    assert!(h.vacuous && h.witnesses == 0 && h.tried > 0, "{h:?}");
+    for ex in ["gcd", "isqrt", "parity", "hashtable", "primality"] {
+        for r in vacuity(&example(ex)) {
+            assert!(!r.vacuous && r.witnesses > 0, "{ex}: {r:?}");
+            assert!(!r.unconstraining, "{ex}: {r:?}");
+        }
+    }
+    // an always-true postcondition says nothing about the result
+    let src =
+        "(func $f (export \"f\") (param $x i32) (result (i32 | (i32.ge_u v 0)))\n  local.get $x\n)";
+    let lines: Vec<String> = src.lines().map(|s| s.to_string()).collect();
+    assert!(vacuity(&lines)[0].unconstraining);
+}
+
+#[test]
+fn mutation_operators_rewrite_one_site() {
+    let src = "(func $f (export \"f\") (param $a i32) (param $b i32) (result i32)\n  local.get $a ;; first\n  i32.const 7\n  i32.lt_u\n  nop\n  if (result i32)\n    local.get $a\n    i32.eqz\n  else\n    local.get $b\n    i64.extend_i32_u\n    i32.wrap_i64\n  end\n)";
+    let lines: Vec<String> = src.lines().map(|s| s.to_string()).collect();
+    let o = st(&lines).owners(&lines);
+    let ms = mutants(&lines, &o);
+    let got: Vec<String> = ms
+        .iter()
+        .map(|m| format!("{} {} {}", m.op, m.line, m.text))
+        .collect();
+    for want in [
+        "M5 2   local.get $b ;; first",
+        "M3 3   i32.const 8",
+        "M3 3   i32.const 6",
+        "M1 4   i32.le_u",
+        "M2 4   i32.lt_s",
+        "M6 5   i32.eqz",
+        "M6 8     nop",
+        "M2 11     i64.extend_i32_s",
+    ] {
+        assert!(got.contains(&want.to_string()), "missing {want}: {got:#?}");
+    }
+    assert!(ms.iter().all(|m| m.line != 1), "headers are never mutated");
+}
+
+fn run_mutation(ex: &str) -> Vec<(Mutant, Fate)> {
+    let lines = example(ex);
+    let o = st(&lines).owners(&lines);
+    let bench = Bench::new(&lines, 24);
+    mutants(&lines, &o)
+        .into_iter()
+        .map(|m| {
+            let f = fate(&lines, &m, &bench);
+            (m, f)
+        })
+        .collect()
+}
+
+#[test]
+fn mutation_testing_is_deterministic_and_finds_survivors() {
+    let t = Instant::now();
+    let a = run_mutation("isqrt");
+    let b = run_mutation("isqrt");
+    assert_eq!(a, b);
+    // the isqrt survivors are equivalent mutants the kernel still proves (65535 → 65536, …)
+    assert!(a.iter().any(|(m, f)| m.line == 37
+        && m.to == "i32.const 65536"
+        && *f == Fate::Survived { proven: true }));
+    assert!(
+        a.iter()
+            .filter(|(_, f)| matches!(f, Fate::Killed(_)))
+            .count()
+            >= 12
+    );
+    // a vacuous harness kills nothing
+    let v = run_mutation("gcd-vacuous");
+    assert!(!v.is_empty() && v.iter().all(|(_, f)| matches!(f, Fate::Survived { .. })));
+    // gcd's harness kills all but the signed remainder (equal on its inputs)
+    let g = run_mutation("gcd");
+    let surv: Vec<_> = g
+        .iter()
+        .filter(|(_, f)| matches!(f, Fate::Survived { .. }))
+        .collect();
+    assert!(surv.len() <= 2, "{surv:?}");
+    eprintln!(
+        "mutation timing (debug or release build): {:?}",
+        t.elapsed()
+    );
+}
+
+#[test]
+fn n4_assume_in_a_predicate_is_an_error() {
+    let src = "(func $p (param $x i32) (result i32)\n  assume (fact (i32.ne $x 0))\n  i32.const 1\n)\n(func $f (export \"f\") (param $x (i32 | $p)) (result i32)\n  local.get $x\n)";
+    let out = super::kernel::check_module(&super::ast::Module::parse(src), true);
+    let p = out.funcs.iter().find(|f| f.name == "$p").unwrap();
+    assert!(
+        p.line_errors
+            .iter()
+            .any(|(l, e)| *l == 2 && e.contains("not allowed inside a predicate")),
+        "{:?}",
+        p.line_errors
+    );
+    assert!(!p.verified);
+}
+
+#[test]
+fn n5_strict_mode_reports_unfed_cups_as_errors() {
+    let src = "(func $f (export \"f\") (param $x i32) (result i32)\n  i32.const 10\n  local.get $x\n  i32.div_u\n)";
+    let m = super::ast::Module::parse(src);
+    let g = super::kernel::check_module(&m, true);
+    let s = super::kernel::check_module(&m, false);
+    assert!(g.funcs[0].line_errors.is_empty());
+    assert!(
+        s.funcs[0]
+            .line_errors
+            .iter()
+            .any(|(l, e)| *l == 4 && e.starts_with("strict: needs")),
+        "{:?}",
+        s.funcs[0].line_errors
+    );
+    // the verdict itself is the same (the cup is unfed either way)
+    assert_eq!(g.funcs[0].cups[0].verdict, s.funcs[0].cups[0].verdict);
+}
+
+fn session_text(name: &str) -> String {
+    let p = format!(
+        "{}/public/examples/v2/sessions/{name}.json",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    std::fs::read_to_string(p).unwrap()
+}
+
+/// Replay a recorded session through the real kernel; returns the verdict kind of every round.
+fn replay(name: &str, verbose: bool) -> Vec<&'static str> {
+    use super::llm::*;
+    let s = parse_script(&session_text(name)).unwrap();
+    let start = SessionStart::new(&s.start);
+    let mut cur = s.start.clone();
+    let mut kinds = vec![];
+    for (i, t) in s.turns.iter().enumerate() {
+        let o = play_round(&start, &cur, &t.edits);
+        let k = verdict_kind(&o);
+        if verbose {
+            let j = o.judgement.as_ref();
+            eprintln!(
+                "{name} turn {}: {k} (expect {:?}) {:?} {}",
+                i + 1,
+                t.expect,
+                o.error,
+                j.map(|j| j.summary()).unwrap_or_default()
+            );
+            if let Some(j) = j {
+                for r in j
+                    .boundary
+                    .iter()
+                    .chain(&j.malformed)
+                    .chain(&j.strict)
+                    .take(6)
+                {
+                    eprintln!("    line {}: {}", r.line, r.msg);
+                }
+            }
+        }
+        cur = o.lines;
+        kinds.push(k);
+    }
+    kinds
+}
+
+#[test]
+fn sessions_replay_as_recorded() {
+    for name in ["isqrt", "parity", "gcd"] {
+        let s = super::llm::parse_script(&session_text(name)).unwrap();
+        let kinds = replay(name, true);
+        let want: Vec<String> = s.turns.iter().map(|t| t.expect.clone().unwrap()).collect();
+        assert_eq!(kinds, want, "{name}");
+        assert_eq!(kinds.last(), Some(&"accepted"), "{name} ends accepted");
+        assert!(
+            kinds.contains(&"rejected"),
+            "{name} has a boundary-crossing turn"
+        );
+    }
+}
+
+fn chat_reply(content: &str) -> String {
+    serde_json::json!({"choices": [{"message": {"role": "assistant", "content": content}}]})
+        .to_string()
+}
+
+/// The live loop against a mocked transport: the "model" replays the recorded isqrt session's
+/// responses, wrapped as OpenRouter replies (one fenced, one with prose around the JSON).
+#[test]
+fn live_loop_with_a_mock_transport() {
+    use super::llm::*;
+    let text = session_text("isqrt");
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let s = parse_script(&text).unwrap();
+    let mut live = Live::new(&s.start, &s.task, MAX_ROUNDS);
+    let mut sent = vec![];
+    let mut kinds = vec![];
+    for (i, t) in v["turns"].as_array().unwrap().iter().enumerate() {
+        let body = live.next_body("test/model").expect("a round");
+        assert_eq!(body["model"], "test/model");
+        let req: serde_json::Value =
+            serde_json::from_str(body["messages"][1]["content"].as_str().unwrap()).unwrap();
+        assert_eq!(req["round"], i as u64 + 1);
+        assert!(req["locked"].as_array().unwrap().len() >= 2);
+        assert!(
+            req["module"]
+                .as_str()
+                .unwrap()
+                .contains("  31| (func $isqrt")
+        );
+        sent.push(req);
+        let resp = t["response"].to_string();
+        let content = if i % 2 == 0 {
+            format!("```json\n{resp}\n```")
+        } else {
+            format!("Here you go: {resp} Done.")
+        };
+        kinds.push(verdict_kind(&live.on_reply(&chat_reply(&content))));
+    }
+    assert_eq!(
+        kinds,
+        [
+            "not-accepted",
+            "rejected",
+            "not-accepted",
+            "rejected",
+            "accepted"
+        ]
+    );
+    assert!(live.done && live.next_body("m").is_none());
+    // after the first round the request carries the failing cups with lane snapshots
+    let cups = sent[1]["cups"].as_array().unwrap();
+    assert!(
+        cups.iter().any(|c| c["verdict"] == "runtime-checked"),
+        "{cups:?}"
+    );
+    // after a rejected round, the reasons go back to the model
+    assert!(
+        sent[2]["last_round"]["verdict"]
+            .as_str()
+            .unwrap()
+            .starts_with("rejected: edited a locked line")
+    );
+    // with lanes: the third request's failing prove has its hypotheses in line_errors
+    assert!(
+        sent[3]["line_errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e[1].as_str().unwrap().contains("hypotheses"))
+    );
+    let lanes = sent[3]["cups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|c| !c["lane"].as_array().unwrap().is_empty());
+    assert!(lanes);
+    // the transcript can be saved as a scripted session and replays the same way
+    let saved = script_json(&Script {
+        title: "t".into(),
+        example: "v2/isqrt".into(),
+        task: s.task.clone(),
+        start: s.start.clone(),
+        turns: live.turns.clone(),
+    });
+    let again = parse_script(&saved.to_string()).unwrap();
+    assert_eq!(again.turns.len(), 5);
+}
+
+#[test]
+fn live_loop_handles_bad_replies() {
+    use super::llm::*;
+    let s = parse_script(&session_text("parity")).unwrap();
+    // an API error
+    let mut live = Live::new(&s.start, &s.task, 3);
+    live.next_body("m").unwrap();
+    let o = live.on_reply(r#"{"error": {"message": "No auth credentials found", "code": 401}}"#);
+    assert_eq!(
+        o.error.as_deref(),
+        Some("OpenRouter: No auth credentials found")
+    );
+    assert!(!o.applied && live.done && live.lines == s.start);
+    // prose without JSON, and edits outside the module
+    let mut live = Live::new(&s.start, &s.task, 3);
+    live.next_body("m").unwrap();
+    assert!(
+        live.on_reply(&chat_reply("I cannot do that."))
+            .error
+            .unwrap()
+            .contains("no JSON")
+    );
+    let mut live = Live::new(&s.start, &s.task, 3);
+    live.next_body("m").unwrap();
+    let o = live.on_reply(&chat_reply(
+        r#"{"edits": [{"replace_lines": [900, 901], "with": []}]}"#,
+    ));
+    assert!(o.error.unwrap().contains("outside"));
+    // max rounds
+    let mut live = Live::new(&s.start, &s.task, 2);
+    for _ in 0..2 {
+        live.next_body("m").unwrap();
+        live.on_reply(&chat_reply(r#"{"edits": [], "note": "nothing"}"#));
+    }
+    assert!(live.next_body("m").is_none());
+}

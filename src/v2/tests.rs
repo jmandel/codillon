@@ -851,7 +851,12 @@ fn b4_measure_without_result_never_drops_the_cup() {
 #[test]
 fn editor_examples_run_their_main() {
     // public/examples/v2: each example wrapped with a $main (first function) for the editor
-    let fails = ["parity-bug-gate", "gcd-bug-guard", "hashtable-stale"];
+    let fails = [
+        "parity-bug-gate",
+        "gcd-bug-guard",
+        "hashtable-stale",
+        "hashtable-bug-tombstone",
+    ];
     for ex in EXAMPLES {
         let p = format!("{}/public/examples/v2/{ex}.wat", env!("CARGO_MANIFEST_DIR"));
         let src = std::fs::read_to_string(&p).unwrap();
@@ -933,4 +938,192 @@ fn dump_example_out() {
         }
     }
     println!("MODERR {:?}", out.errors);
+}
+
+// ---------------- decision-procedure fuzz (reviewer's harness, research/17; deterministic subset) ----------------
+
+mod fuzz {
+    use super::super::ast::{IOp, ValTy};
+    use super::super::eval::eval_iop;
+    use super::super::solver::{Env, Outcome, Solver};
+    use super::super::term::{Atom, Rel, TermId, Terms};
+
+    struct NoEnv;
+    impl Env for NoEnv {
+        fn unfold(&mut self, _: &mut Terms, _: TermId) -> Option<TermId> {
+            None
+        }
+        fn eval_call(&mut self, _: &Terms, _: TermId) -> Option<u64> {
+            None
+        }
+        fn is_real(&self, _: TermId) -> bool {
+            false
+        }
+    }
+
+    /// A random term over x, y: the reviewer's generator (gen2.py), ported.
+    #[derive(Clone, Debug)]
+    enum E {
+        X,
+        Y,
+        C(u64),
+        Op(IOp, Box<E>, Box<E>),
+        Eqz(Box<E>),
+    }
+
+    const CONSTS: [u64; 13] = [
+        0,
+        1,
+        2,
+        3,
+        7,
+        8,
+        15,
+        16,
+        0x7FFF_FFFF,
+        0x8000_0000,
+        0xFFFF_FFFF,
+        0xFFFF_FFF0,
+        0xFFFF_FFFE,
+    ];
+    use IOp::*;
+    const BIN: [IOp; 11] = [Add, Sub, Mul, And, Or, Xor, Shl, ShrU, ShrS, DivU, RemU];
+    const CMP: [IOp; 10] = [Eq, Ne, LtU, LeU, GtU, GeU, LtS, LeS, GtS, GeS];
+
+    struct Rng(u64);
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            self.0
+        }
+        fn pick<T: Copy>(&mut self, v: &[T]) -> T {
+            v[(self.next() % v.len() as u64) as usize]
+        }
+        fn unit(&mut self) -> f64 {
+            (self.next() % 1000) as f64 / 1000.0
+        }
+    }
+
+    fn term(r: &mut Rng, depth: u32) -> E {
+        if depth == 0 || r.unit() < 0.3 {
+            return match r.next() % 5 {
+                0 | 3 => E::X,
+                1 | 4 => E::Y,
+                _ => E::C(r.pick(&CONSTS)),
+            };
+        }
+        let op = r.pick(&BIN);
+        let a = term(r, depth - 1);
+        let b = if matches!(op, DivU | RemU | Shl | ShrU | ShrS) && r.unit() < 0.8 {
+            E::C(r.pick(&[1, 2, 3, 7, 8, 16]))
+        } else if op == Mul && r.unit() < 0.7 {
+            E::C(r.pick(&[0, 1, 2, 3, 7, 0xFFFF_FFFF, 0x8000_0000]))
+        } else {
+            term(r, depth - 1)
+        };
+        E::Op(op, Box::new(a), Box::new(b))
+    }
+
+    fn goal(r: &mut Rng) -> E {
+        if r.unit() < 0.1 {
+            return E::Eqz(Box::new(term(r, 2)));
+        }
+        E::Op(r.pick(&CMP), Box::new(term(r, 2)), Box::new(term(r, 2)))
+    }
+
+    /// Exact Wasm semantics; a trap (division by zero) makes the goal false (B5's adopted reading).
+    fn ev(e: &E, x: u64, y: u64) -> Option<u64> {
+        Some(match e {
+            E::X => x,
+            E::Y => y,
+            E::C(c) => *c,
+            E::Eqz(a) => eval_iop(Eqz, ValTy::I32, &[ev(a, x, y)?]).ok()?,
+            E::Op(op, a, b) => eval_iop(*op, ValTy::I32, &[ev(a, x, y)?, ev(b, x, y)?]).ok()?,
+        })
+    }
+
+    fn build(t: &mut Terms, e: &E, x: TermId, y: TermId) -> TermId {
+        match e {
+            E::X => x,
+            E::Y => y,
+            E::C(c) => t.konst(ValTy::I32, *c),
+            E::Eqz(a) => {
+                let a = build(t, a, x, y);
+                t.op(Eqz, ValTy::I32, &[a])
+            }
+            E::Op(op, a, b) => {
+                let (a, b) = (build(t, a, x, y), build(t, b, x, y));
+                t.op(*op, ValTy::I32, &[a, b])
+            }
+        }
+    }
+
+    fn decide(e: &E, bound: u64) -> String {
+        let mut t = Terms::new(vec![]);
+        let x = t.leaf(ValTy::I32, "$x", None);
+        let y = t.leaf(ValTy::I32, "$y", None);
+        let b = t.konst(ValTy::I32, bound);
+        let hyps = vec![
+            Atom::cmp(Rel::Lt, false, x, b),
+            Atom::cmp(Rel::Lt, false, y, b),
+        ];
+        let g = build(&mut t, e, x, y);
+        let goal = t.atom_of(g, true);
+        match Solver::new(&mut t, &mut NoEnv).prove(&hyps, &goal) {
+            Outcome::Valid { .. } => "valid".into(),
+            Outcome::NotImplied(m) => format!("notimplied {m:?}"),
+            Outcome::Cap(c) => format!("cap {c}"),
+            Outcome::Inexact(c) => format!("inexact {c}"),
+        }
+    }
+
+    /// Soundness: `prove` never says Valid when some x, y < 16 falsifies the goal; and the same
+    /// problem gets the same answer twice. 600 cases over four seeds, well under a second.
+    #[test]
+    fn prove_is_sound_on_random_problems() {
+        let bound = 16;
+        let (mut valid, mut n) = (0, 0);
+        for seed in [0x5eed_0001u64, 0x5eed_0002, 0x5eed_0003, 0x5eed_0004] {
+            let mut r = Rng(seed);
+            for _ in 0..150 {
+                let g = goal(&mut r);
+                let truth =
+                    (0..bound).all(|x| (0..bound).all(|y| ev(&g, x, y).is_some_and(|v| v != 0)));
+                let a = decide(&g, bound);
+                assert_eq!(a, decide(&g, bound), "nondeterministic on {g:?}");
+                if a == "valid" {
+                    assert!(
+                        truth,
+                        "UNSOUND: Valid but false for some x, y < {bound}: {g:?}"
+                    );
+                    valid += 1;
+                }
+                n += 1;
+            }
+        }
+        assert!(
+            valid >= 20,
+            "too few valid cases to mean anything: {valid}/{n}"
+        );
+    }
+
+    /// The fuzz harness's own finds (B1 hang on x·y, B2 x − 1 < x, B5 virtual rem_u by zero).
+    #[test]
+    fn prove_regressions_found_by_fuzzing() {
+        let x = || Box::new(E::X);
+        let y = || Box::new(E::Y);
+        let c = |v| Box::new(E::C(v));
+        let b1 = E::Op(LeU, Box::new(E::Op(Mul, x(), y())), c(225));
+        assert!(!decide(&b1, 16).is_empty());
+        let b2 = E::Op(LtU, Box::new(E::Op(Sub, x(), c(1))), x());
+        assert_ne!(decide(&b2, 16), "valid");
+        let b5 = E::Op(
+            LtS,
+            Box::new(E::Op(RemU, x(), Box::new(E::Op(DivU, x(), c(16))))),
+            c(84),
+        );
+        assert_ne!(decide(&b5, 16), "valid");
+    }
 }

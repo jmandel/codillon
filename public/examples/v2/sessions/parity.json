@@ -1,0 +1,175 @@
+{
+ "title": "parity: half and the half_or_neg1 gate",
+ "example": "v2/parity",
+ "task": "make $half and $half_or_neg1 VERIFIED and the harness's ⊥ proven unreachable",
+ "start": [
+  ";; parity: is_even, half with an evenness precondition, and the half_or_neg1 gate (v2 syntax)",
+  "(func $main ;; runs $parity_ok on a passing input",
+  "  i32.const 6",
+  "  call $parity_ok",
+  ")",
+  "(func $is_even (param $x i32) (result i32)",
+  "  local.get $x",
+  "  i32.const 1",
+  "  i32.and",
+  "  i32.eqz",
+  ")",
+  "(func $is_half (param $v i32) (param $x i32) (result i32)",
+  "  local.get $v",
+  "  i64.extend_i32_s",
+  "  local.get $v",
+  "  i64.extend_i32_s",
+  "  i64.add",
+  "  local.get $x",
+  "  i64.extend_i32_s",
+  "  i64.eq",
+  ")",
+  "(func $hon_ok (param $v i32) (param $x i32) (result i32)",
+  "  local.get $x",
+  "  call $is_even",
+  "  if (result i32)",
+  "    local.get $v",
+  "    local.get $x",
+  "    call $is_half",
+  "  else",
+  "    local.get $v",
+  "    i32.const -1",
+  "    i32.eq",
+  "  end",
+  ")",
+  "(func $half (param $x (i32 | $is_even)) (result (i32 | $is_half $x))",
+  "  i32.const 0",
+  ")",
+  "(func $half_or_neg1 (export \"half_or_neg1\") (param $x i32) (result (i32 | $hon_ok $x))",
+  "  i32.const -1",
+  ")",
+  "(func $parity_ok (export \"harness:half_or_neg1\") (param $x i32)",
+  "  local.get $x",
+  "  call $half_or_neg1",
+  "  local.get $x",
+  "  call $hon_ok",
+  "  br_if 0",
+  "  prove 2",
+  "  unreachable",
+  ")"
+ ],
+ "turns": [
+  {
+   "note": "Implementations without proofs: x >> 1 for half; the gate tests evenness.",
+   "expect": "not-accepted",
+   "response": {
+    "note": "Implementations without proofs: x >> 1 for half; the gate tests evenness.",
+    "edits": [
+     {
+      "replace_lines": [
+       36,
+       36
+      ],
+      "with": [
+       "  local.get $x",
+       "  i32.const 1",
+       "  i32.shr_s"
+      ]
+     },
+     {
+      "replace_lines": [
+       39,
+       39
+      ],
+      "with": [
+       "  local.get $x",
+       "  call $is_even",
+       "  i32.eqz",
+       "  if (result i32)",
+       "    i32.const -1",
+       "  else",
+       "    local.get $x",
+       "    call $half",
+       "  end"
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "note": "Proofs for the gate; for half, assume the result is a half.",
+   "expect": "rejected",
+   "response": {
+    "note": "Proofs for the gate; for half, assume the result is a half.",
+    "edits": [
+     {
+      "replace_lines": [
+       36,
+       38
+      ],
+      "with": [
+       "  local.get $x",
+       "  i32.const 1",
+       "  i32.shr_s",
+       "  assume (fact (call $is_half (i32.shr_s $x 1) $x))"
+      ]
+     },
+     {
+      "replace_lines": [
+       41,
+       49
+      ],
+      "with": [
+       "  local.get $x",
+       "  call $is_even",
+       "  i32.eqz",
+       "  if (result (i32 | $hon_ok $x))",
+       "    i32.const -1",
+       "    prove 1",
+       "  else",
+       "    local.get $x",
+       "    call $half",
+       "    prove 2",
+       "  end"
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "note": "Without assume: one prove from the evenness of x; the gate's arms prove from the branch facts.",
+   "expect": "accepted",
+   "response": {
+    "note": "Without assume: one prove from the evenness of x; the gate's arms prove from the branch facts.",
+    "edits": [
+     {
+      "replace_lines": [
+       36,
+       38
+      ],
+      "with": [
+       "  local.get $x",
+       "  i32.const 1",
+       "  i32.shr_s",
+       "  prove 1"
+      ]
+     },
+     {
+      "replace_lines": [
+       41,
+       49
+      ],
+      "with": [
+       "  local.get $x",
+       "  call $is_even",
+       "  i32.eqz",
+       "  if (result (i32 | $hon_ok $x))",
+       "    i32.const -1",
+       "    prove 1",
+       "  else",
+       "    local.get $x",
+       "    call $half",
+       "    prove 2",
+       "  end"
+      ]
+     }
+    ]
+   }
+  }
+ ]
+}

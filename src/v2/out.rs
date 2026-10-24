@@ -150,6 +150,8 @@ pub struct CupOut {
     pub ghost: bool,
     /// for a taken-edge cup of br_if/br_table: the edge condition (the check runs only if it holds)
     pub guard: Option<Atom>,
+    /// for an unfed cup: the lane snapshot where it sits (in-scope facts, top first, with birth lines)
+    pub lane: Vec<(u32, String)>,
 }
 
 #[derive(Clone, Debug)]

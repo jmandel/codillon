@@ -1,0 +1,523 @@
+//! Vericoding mode (design 16 §7.1): the ownership boundary between the student's specification
+//! and the implementation and proofs written by an LLM (or a scripted session, or the student),
+//! and the kernel as the only judge of a submission. Pure Rust; the editor draws from it.
+
+use super::ast::{Ins, LineKind, Module, parse_line};
+use super::info::analyze;
+use super::kernel::check_module;
+use super::out::{CupKind, ModuleOut, Verdict};
+use std::collections::BTreeSet;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Owner {
+    /// the specification: locked while the LLM works
+    Student,
+    /// implementation and proofs: the LLM side
+    Llm,
+    /// blank and comment-only lines
+    Free,
+}
+
+/// Whether a function has a plain export (not a `role:` export): an implementation entry point.
+fn plain_export(f: &super::ast::Func) -> bool {
+    f.header.exports.iter().any(|e| !e.contains(':'))
+}
+
+/// Which functions' bodies belong to the student: predicates and measures (unless they are an
+/// exported implementation, like primality's `$prime`) and every function they call, harnesses,
+/// axioms and `$main`.
+pub fn student_bodies(m: &Module) -> BTreeSet<String> {
+    let info = analyze(m);
+    let spec = |i: usize| {
+        let f = &m.funcs[i];
+        !f.is_lemma() && (info[i].is_pred || info[i].is_measure) && !plain_export(f)
+    };
+    let mut set: BTreeSet<usize> = (0..m.funcs.len()).filter(|i| spec(*i)).collect();
+    let mut work: Vec<usize> = set.iter().copied().collect();
+    while let Some(i) = work.pop() {
+        for (_, ins) in &m.funcs[i].body {
+            if let Ins::Call(n) = ins
+                && let Some(g) = m.func_index(n)
+                && !m.funcs[g].is_lemma()
+                && !plain_export(&m.funcs[g])
+                && set.insert(g)
+            {
+                work.push(g);
+            }
+        }
+    }
+    for (i, f) in m.funcs.iter().enumerate() {
+        if f.is_harness() || f.is_axiom() || f.header.name.as_deref() == Some("$main") {
+            set.insert(i);
+        }
+    }
+    set.into_iter().map(|i| m.funcs[i].name()).collect()
+}
+
+/// Why a line is owned as it is (shown in the lock commentary).
+pub fn owner_reason(m: &Module, bodies: &BTreeSet<String>, line: u32) -> &'static str {
+    let Some(f) = m
+        .funcs
+        .iter()
+        .find(|f| f.header_line == line || (f.header_line < line && line <= f.end_line))
+    else {
+        return "a declaration of the spec";
+    };
+    if f.header_line == line || f.end_line == line {
+        return "a function header: the spec";
+    }
+    if f.is_harness() {
+        "a harness body: the spec"
+    } else if f.is_axiom() {
+        "an instructor axiom"
+    } else if f.header.name.as_deref() == Some("$main") {
+        "the runner $main"
+    } else if bodies.contains(&f.name()) {
+        "a predicate or measure body: the spec"
+    } else {
+        "an instructor assume or a marked spec line"
+    }
+}
+
+/// Classify every line (1-based line `i + 1` is `owners[i]`). `bodies`: the student-owned
+/// function bodies (frozen at session start).
+pub fn classify<S: AsRef<str>>(lines: &[S], bodies: &BTreeSet<String>) -> Vec<Owner> {
+    let m = Module::parse_lines(lines);
+    let mut owners = vec![Owner::Free; lines.len()];
+    for (i, t) in lines.iter().enumerate() {
+        let k = parse_line(t.as_ref(), i as u32 + 1);
+        owners[i] = match k {
+            LineKind::Memory(_) | LineKind::Global { .. } | LineKind::Import { .. } => {
+                Owner::Student
+            }
+            _ => Owner::Free,
+        };
+    }
+    for f in &m.funcs {
+        let hdr = if f.is_lemma() {
+            Owner::Llm
+        } else {
+            Owner::Student
+        };
+        let idx = f.header_line as usize - 1;
+        if idx < owners.len() {
+            owners[idx] = hdr;
+        }
+        if f.end_line == 0 {
+            continue;
+        }
+        owners[f.end_line as usize - 1] = hdr;
+        let body = if !f.is_lemma() && bodies.contains(&f.name()) {
+            Owner::Student
+        } else {
+            Owner::Llm
+        };
+        for l in f.header_line + 1..f.end_line {
+            let t = lines[l as usize - 1].as_ref();
+            let kind = parse_line(t, l);
+            owners[l as usize - 1] = match kind {
+                LineKind::Blank | LineKind::Other => Owner::Free,
+                LineKind::Instr(Ins::Assume(_)) => Owner::Student,
+                _ if t.contains(";; @own") => Owner::Student,
+                _ => body,
+            };
+        }
+    }
+    owners
+}
+
+/// The student zone: every student-owned line (1-based line, trimmed text), in order.
+pub fn zone<S: AsRef<str>>(lines: &[S], owners: &[Owner]) -> Vec<(u32, String)> {
+    owners
+        .iter()
+        .enumerate()
+        .filter(|(_, o)| **o == Owner::Student)
+        .map(|(i, _)| (i as u32 + 1, lines[i].as_ref().trim().to_string()))
+        .collect()
+}
+
+/// Locked ranges (1-based, inclusive) for the LLM request (§7.3).
+pub fn locked_ranges(owners: &[Owner]) -> Vec<(u32, u32)> {
+    let mut out: Vec<(u32, u32)> = vec![];
+    for (i, o) in owners.iter().enumerate() {
+        if *o != Owner::Student {
+            continue;
+        }
+        let l = i as u32 + 1;
+        match out.last_mut() {
+            Some((_, b)) if *b + 1 == l => *b = l,
+            _ => out.push((l, l)),
+        }
+    }
+    out
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Reason {
+    /// 1-based line of the submission (0: the whole module)
+    pub line: u32,
+    pub msg: String,
+}
+
+/// The state captured when a vericoding session starts (§7.1 (1): the student zone is hashed).
+#[derive(Clone, Debug)]
+pub struct SessionStart {
+    pub lines: Vec<String>,
+    pub bodies: BTreeSet<String>,
+    pub zone: Vec<(u32, String)>,
+    pub funcs: BTreeSet<String>,
+    assumes: Vec<String>,
+    imports: usize,
+}
+
+fn func_text(m: &Module, lines: &[String], name: &str) -> Option<Vec<String>> {
+    let f = m.funcs.iter().find(|f| f.name() == name)?;
+    if f.end_line == 0 {
+        return Some(vec![lines[f.header_line as usize - 1].trim().to_string()]);
+    }
+    Some(
+        (f.header_line..=f.end_line)
+            .map(|l| lines[l as usize - 1].trim().to_string())
+            .filter(|t| !t.is_empty())
+            .collect(),
+    )
+}
+
+fn assume_lines(lines: &[String]) -> Vec<String> {
+    lines
+        .iter()
+        .enumerate()
+        .filter(|(i, t)| {
+            matches!(
+                parse_line(t, *i as u32 + 1),
+                LineKind::Instr(Ins::Assume(_))
+            )
+        })
+        .map(|(_, t)| t.trim().to_string())
+        .collect()
+}
+
+impl SessionStart {
+    pub fn new(lines: &[String]) -> SessionStart {
+        let m = Module::parse_lines(lines);
+        let bodies = student_bodies(&m);
+        let owners = classify(lines, &bodies);
+        SessionStart {
+            lines: lines.to_vec(),
+            zone: zone(lines, &owners),
+            funcs: m.funcs.iter().map(|f| f.name()).collect(),
+            assumes: assume_lines(lines),
+            imports: lines
+                .iter()
+                .filter(|t| matches!(parse_line(t, 1), LineKind::Import { .. }))
+                .count(),
+            bodies,
+        }
+    }
+
+    pub fn owners(&self, lines: &[String]) -> Vec<Owner> {
+        classify(lines, &self.bodies)
+    }
+
+    /// §7.1 (1): the first difference between the frozen student zone and this text's.
+    pub fn zone_violation(&self, lines: &[String]) -> Option<Reason> {
+        let now = zone(lines, &self.owners(lines));
+        for i in 0..self.zone.len().max(now.len()) {
+            match (self.zone.get(i), now.get(i)) {
+                (Some(a), Some(b)) if a.1 == b.1 => continue,
+                (Some(a), Some(b)) => {
+                    // a deleted or inserted locked line shows as a shift: name the old one
+                    let msg = if now.iter().any(|x| x.1 == a.1) {
+                        format!("adds a line to the locked spec: `{}`", b.1)
+                    } else {
+                        format!("edited a locked line: {} (was `{}`)", b.0, a.1)
+                    };
+                    return Some(Reason { line: b.0, msg });
+                }
+                (Some(a), None) => {
+                    return Some(Reason {
+                        line: lines.len() as u32,
+                        msg: format!("deleted a locked line (`{}`)", a.1),
+                    });
+                }
+                (None, Some(b)) => {
+                    return Some(Reason {
+                        line: b.0,
+                        msg: format!("adds a line to the locked spec: `{}`", b.1),
+                    });
+                }
+                (None, None) => break,
+            }
+        }
+        None
+    }
+
+    /// §7.1 (2): what an LLM-side line may not do.
+    pub fn forbidden(&self, lines: &[String]) -> Vec<Reason> {
+        let m = Module::parse_lines(lines);
+        let mut out = vec![];
+        let mut old = self.assumes.clone();
+        for (i, t) in lines.iter().enumerate() {
+            let ln = i as u32 + 1;
+            match parse_line(t, ln) {
+                LineKind::Instr(Ins::Assume(_)) => {
+                    let t = t.trim().to_string();
+                    if let Some(p) = old.iter().position(|x| *x == t) {
+                        old.remove(p);
+                    } else {
+                        out.push(Reason {
+                            line: ln,
+                            msg: "adds an `assume`: the implementation may not assume (§7.1)"
+                                .into(),
+                        });
+                    }
+                }
+                LineKind::Instr(Ins::Call(n) | Ins::Lemma(n, _) | Ins::Unfold(n, _)) => {
+                    let known = self.funcs.contains(&n)
+                        || m.funcs.iter().any(|f| f.name() == n && f.is_lemma());
+                    if !known {
+                        out.push(Reason {
+                            line: ln,
+                            msg: format!(
+                                "calls {n}, which is neither in the module nor a new lemma"
+                            ),
+                        });
+                    }
+                }
+                _ => {}
+            }
+        }
+        for f in &m.funcs {
+            if self.funcs.contains(&f.name()) {
+                continue;
+            }
+            if f.is_axiom() {
+                out.push(Reason {
+                    line: f.header_line,
+                    msg: format!("adds an axiom ({}): only the instructor may", f.name()),
+                });
+            } else if f.imported {
+                out.push(Reason {
+                    line: f.header_line,
+                    msg: format!("adds an import ({})", f.name()),
+                });
+            } else if !f.is_lemma() {
+                out.push(Reason {
+                    line: f.header_line,
+                    msg: format!(
+                        "adds a function ({}): only lemma functions may be added",
+                        f.name()
+                    ),
+                });
+            }
+        }
+        let imports = lines
+            .iter()
+            .filter(|t| matches!(parse_line(t, 1), LineKind::Import { .. }))
+            .count();
+        if imports > self.imports && !out.iter().any(|r| r.msg.contains("import")) {
+            out.push(Reason {
+                line: 0,
+                msg: "adds an import".into(),
+            });
+        }
+        out
+    }
+
+    /// Functions whose text differs from the session start (new lemmas included).
+    pub fn touched(&self, lines: &[String]) -> Vec<String> {
+        let m0 = Module::parse_lines(&self.lines);
+        let m = Module::parse_lines(lines);
+        m.funcs
+            .iter()
+            .map(|f| f.name())
+            .filter(|n| func_text(&m0, &self.lines, n) != func_text(&m, lines, n))
+            .collect()
+    }
+
+    /// Judge one submission (§7.1): the boundary first, then strict-cleanness of what it touched.
+    pub fn judge(&self, lines: &[String]) -> Judgement {
+        let m = Module::parse_lines(lines);
+        let mut boundary = self.forbidden(lines);
+        if let Some(z) = self.zone_violation(lines)
+            && !boundary.iter().any(|r| r.line == z.line)
+        {
+            boundary.push(z);
+        }
+        let malformed: Vec<Reason> = m
+            .errors
+            .iter()
+            .map(|(l, e)| Reason {
+                line: *l,
+                msg: format!("does not parse: {e}"),
+            })
+            .collect();
+        let out = check_module(&m, false);
+        let touched = self.touched(lines);
+        let strict = strict_reasons(&m, &out, &touched);
+        Judgement {
+            accepted: boundary.is_empty() && malformed.is_empty() && strict.is_empty(),
+            boundary,
+            malformed,
+            strict,
+            touched,
+            out,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Judgement {
+    pub accepted: bool,
+    /// §7.1 (1)–(2): the round crossed the ownership boundary (it is rolled back)
+    pub boundary: Vec<Reason>,
+    pub malformed: Vec<Reason>,
+    /// §7.1 (3)–(4): not strict-clean (the round stays applied and runs in gradual mode)
+    pub strict: Vec<Reason>,
+    pub touched: Vec<String>,
+    /// the strict-mode kernel output
+    pub out: ModuleOut,
+}
+
+impl Judgement {
+    pub fn crossed(&self) -> bool {
+        !self.boundary.is_empty() || !self.malformed.is_empty()
+    }
+    pub fn summary(&self) -> String {
+        if self.accepted {
+            format!("accepted: {} verified", list(&self.touched))
+        } else if !self.boundary.is_empty() {
+            format!("rejected: {}", self.boundary[0].msg)
+        } else if !self.malformed.is_empty() {
+            format!("rejected: {}", self.malformed[0].msg)
+        } else {
+            let n = self.strict.len();
+            format!(
+                "not accepted: {n} obligation{} not proven (strict)",
+                if n == 1 { "" } else { "s" }
+            )
+        }
+    }
+}
+
+fn list(v: &[String]) -> String {
+    if v.is_empty() {
+        "nothing changed; all".into()
+    } else {
+        v.join(", ")
+    }
+}
+
+fn strict_ok(c: &super::out::CupOut) -> bool {
+    matches!(c.verdict, Verdict::Proven | Verdict::Assumed)
+        && c.depends_on_checks.is_empty()
+        && c.assumptions.iter().all(|o| o.kind == "axiom")
+}
+
+/// §7.1 (3)–(4): every cup of a touched function strict-clean, the function VERIFIED, and every
+/// harness `False` cup proven.
+pub fn strict_reasons(m: &Module, out: &ModuleOut, touched: &[String]) -> Vec<Reason> {
+    let mut r = vec![];
+    for f in &out.funcs {
+        let func = &m.funcs[f.func as usize];
+        let is_touched = touched.contains(&f.name);
+        if is_touched {
+            for c in f.cups.iter().filter(|c| !strict_ok(c)) {
+                let why = match c.verdict {
+                    Verdict::RuntimeChecked => "nothing feeds it".to_string(),
+                    Verdict::Refuted => "refuted".into(),
+                    _ if !c.depends_on_checks.is_empty() => "rests on runtime checks".into(),
+                    _ => "rests on an assume".into(),
+                };
+                r.push(Reason {
+                    line: c.line,
+                    msg: format!("⟨{}⟩ {why}", c.goal),
+                });
+            }
+            for (l, e) in &f.line_errors {
+                if !e.starts_with("strict: ") {
+                    r.push(Reason {
+                        line: *l,
+                        msg: e.clone(),
+                    });
+                }
+            }
+            if f.strict_clean && !f.verified {
+                r.push(Reason {
+                    line: f.header_line,
+                    msg: format!("{} calls a function that is not VERIFIED", f.name),
+                });
+            }
+        }
+        if func.is_harness() {
+            for c in f
+                .cups
+                .iter()
+                .filter(|c| c.kind == CupKind::False && !strict_ok(c))
+            {
+                r.push(Reason {
+                    line: c.line,
+                    msg: format!("harness {}: ⊥ is not proven unreachable", f.name),
+                });
+            }
+            if !f.verified && !r.iter().any(|x| x.line == f.header_line) {
+                // the ⊥ proof rests on the contracts of what it calls: those must be VERIFIED
+                let callees: Vec<&str> = func
+                    .body
+                    .iter()
+                    .filter_map(|(_, i)| match i {
+                        super::ast::Ins::Call(n) => Some(n.as_str()),
+                        _ => None,
+                    })
+                    .filter(|n| out.funcs.iter().any(|g| g.name == *n && !g.verified))
+                    .collect();
+                r.push(Reason {
+                    line: f.header_line,
+                    msg: format!(
+                        "harness {} is not VERIFIED{}",
+                        f.name,
+                        if callees.is_empty() {
+                            String::new()
+                        } else {
+                            format!(": {} is not", callees.join(", "))
+                        }
+                    ),
+                });
+            }
+        }
+    }
+    r.sort_by_key(|x| x.line);
+    r.dedup();
+    r
+}
+
+/// One LLM edit (§7.3): replace lines `a..=b` (1-based) with `with`; `b = a − 1` inserts before `a`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Edit {
+    pub a: u32,
+    pub b: u32,
+    pub with: Vec<String>,
+}
+
+/// Apply edits that all refer to the same numbering (bottom first).
+pub fn apply_edits(lines: &[String], edits: &[Edit]) -> Result<Vec<String>, String> {
+    let mut es = edits.to_vec();
+    es.sort_by_key(|e| std::cmp::Reverse(e.a));
+    let n = lines.len() as u32;
+    let mut prev_a = u32::MAX;
+    for e in &es {
+        if e.a == 0 || e.a > n + 1 || e.b + 1 < e.a || e.b > n {
+            return Err(format!("edit [{}, {}] is outside lines 1..{n}", e.a, e.b));
+        }
+        if e.b >= prev_a {
+            return Err(format!("edit [{}, {}] overlaps another", e.a, e.b));
+        }
+        prev_a = e.a;
+    }
+    let mut out = lines.to_vec();
+    for e in &es {
+        let (a, b) = (e.a as usize - 1, e.b as usize);
+        out.splice(a..b.max(a), e.with.iter().cloned());
+    }
+    Ok(out)
+}

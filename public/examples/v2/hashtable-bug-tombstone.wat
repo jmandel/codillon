@@ -1,8 +1,8 @@
 ;; hash table, seeded code bug: $remove writes 0 (empty) instead of -1 (tombstone), breaking probe chains
 (memory 1)
-(func $main ;; runs $table_harness on a passing input (no collision); (1, 9) shows the bug
+(func $main ;; runs $table_harness on (1, 9): 9 collides with 1, so $remove's missing tombstone breaks the probe chain
   i32.const 1
-  i32.const 2
+  i32.const 9
   call $table_harness
 )
 (func $hash (param $k i32) (result i32)

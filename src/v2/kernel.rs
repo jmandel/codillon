@@ -487,6 +487,7 @@ impl<'a, 'm> Pass<'a, 'm> {
             atom: r.atom.clone(),
             ghost: self.ghost,
             guard: None,
+            lane: vec![],
         });
         self.cup_deps.push(vec![]);
         (self.cups.len() - 1) as CupId
@@ -648,9 +649,28 @@ impl<'a, 'm> Pass<'a, 'm> {
             if let Some(h) = self.stale_hint(&r.atom) {
                 d = format!("{d}; {h}");
             }
-            if self.ghost {
-                self.line_errors.push((line, d.clone()));
+            // strict mode (§4.1): every unfed cup is an error, as in ghost code
+            if self.ghost || !self.cx.gradual {
+                let e = if self.ghost {
+                    d.clone()
+                } else {
+                    format!("strict: {d}")
+                };
+                self.line_errors.push((line, e));
             }
+            // the lane snapshot (§7.3): in-scope facts, top first, with birth lines
+            self.cups[c].lane = self
+                .lane
+                .iter()
+                .rev()
+                .take(8)
+                .map(|e| {
+                    (
+                        e.line,
+                        self.terms.render_atom(&self.facts[e.fact as usize].atom),
+                    )
+                })
+                .collect();
             self.cups[c].diag = Some(d);
         }
         produced.sort_by_key(|x| x.0);
@@ -1212,6 +1232,14 @@ impl<'a, 'm> Pass<'a, 'm> {
             }
             Ins::Lemma(name, args) => self.lemma_line(line, name, args),
             Ins::Unfold(name, args) => self.unfold_line(line, name, args),
+            Ins::Assume(e) if self.cx.info[self.f].is_pred || self.cx.info[self.f].is_measure => {
+                // N4: a predicate must be total; an assumed fact could discharge its trap cups
+                let _ = e;
+                self.line_errors.push((
+                    line,
+                    "assume is not allowed inside a predicate or measure (R34)".into(),
+                ));
+            }
             Ins::Assume(e) => {
                 let b = self.cur_bind();
                 let a = self.inst_atom(e, &b, None);
@@ -2456,7 +2484,6 @@ pub fn check_module(m: &Module, gradual: bool) -> super::out::ModuleOut {
             break;
         }
     }
-    let _ = cx.gradual;
     let mut res = super::out::ModuleOut {
         funcs: vec![],
         errors: m.errors.clone(),
