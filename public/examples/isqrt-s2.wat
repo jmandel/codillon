@@ -1,7 +1,7 @@
-;; S2 (spec bug): < and <= swapped in the postcondition. It fails exactly on
-;; perfect squares: isqrt(4) = 2 is right, but 2*2 < 4 is false.
+;; S2 (spec bug): < and <= swapped in the postcondition. Your run (n = 10) holds;
+;; the input search finds n = 0, a perfect square, where the postcondition fails.
 (func $main
-  i32.const 4
+  i32.const 10
   call $isqrt
   drop
 )

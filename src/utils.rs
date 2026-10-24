@@ -926,6 +926,15 @@ pub const STORE_ADDR_TAG: u32 = 0xC000_0000;
 pub const STORE_VALUE_TAG: u32 = 0xE000_0000;
 pub const STORE_SEQ_MASK: u32 = 0x1FFF_FFFF;
 
+/// Options for the instrumented binary (the defaults give Codillon's usual binary).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct InstrumentOptions {
+    /// Record each store's address and value (for specifications that read memory).
+    pub record_stores: bool,
+    /// Also export every function as `f<index>` (to run one directly, e.g. a witness).
+    pub export_all: bool,
+}
+
 /// (static offset, width in bytes) of every store instruction, in module order.
 pub fn store_ops(module: &ValidModule) -> Vec<(u64, u32)> {
     let mut ret = vec![];
@@ -1070,7 +1079,7 @@ impl<'a> ValidModule<'a> {
     }
 
     pub fn build_instrumented_binary(self, types: &TypedModule) -> Result<Vec<u8>> {
-        self.build_instrumented_binary_with(types, false)
+        self.build_instrumented_binary_with(types, &InstrumentOptions::default())
     }
 
     /// As `build_instrumented_binary`; with `record_stores`, every store also records its
@@ -1078,8 +1087,9 @@ impl<'a> ValidModule<'a> {
     pub fn build_instrumented_binary_with(
         self,
         types: &TypedModule,
-        record_stores: bool,
+        options: &InstrumentOptions,
     ) -> Result<Vec<u8>> {
+        let record_stores = options.record_stores;
         use wasm_encoder::*;
         let mut module = Module::default();
 
@@ -1342,6 +1352,11 @@ impl<'a> ValidModule<'a> {
             let mut exports = ExportSection::new();
             if !self.functions.is_empty() {
                 exports.export("main", ExportKind::Func, num_func_imports);
+            }
+            if options.export_all {
+                for i in 0..self.functions.len() as u32 {
+                    exports.export(&format!("f{i}"), ExportKind::Func, num_func_imports + i);
+                }
             }
             module.section(&exports);
         }
@@ -4987,15 +5002,16 @@ pub(crate) mod tests {
     mod spec_checks {
         use super::*;
         use crate::checker::{CheckKind, CheckResults, Outcome, SpecPlan, build_plan, check_run};
-        use crate::syntax::LineKind;
+        use crate::syntax::{InstrKind, LineKind};
         use pretty_assertions::assert_eq;
 
         struct SpecRun {
             editor: FakeTextBuffer,
-            plan: SpecPlan,
+            plan: std::rc::Rc<SpecPlan>,
             results: CheckResults,
             log: RunLog,
             binary: Vec<u8>, // the plain module (before instrumentation)
+            instrumented: Vec<u8>,
         }
 
         fn load(src: &str) -> FakeTextBuffer {
@@ -5024,9 +5040,18 @@ pub(crate) mod tests {
             indent_and_frame(&mut editor, &validized, &types, None);
             let plan = build_plan(&editor, &validized, &types);
             let binary = wasm_bin.clone();
-            let instrumented =
-                validized.build_instrumented_binary_with(&types, plan.uses_memory)?;
-            let log = test_execution(&instrumented, &[], &mut [])?;
+            let options = InstrumentOptions {
+                record_stores: plan.uses_memory,
+                export_all: !crate::checker::search_targets(&plan).is_empty(),
+            };
+            let instrumented = validized.build_instrumented_binary_with(&types, &options)?;
+            let args: Vec<wasmtime::Val> = plan
+                .run_args
+                .as_ref()
+                .map(|(_, a)| a.iter().map(|x| wasmtime::Val::I32(*x as i32)).collect())
+                .unwrap_or_default();
+            let log = test_execution(&instrumented, &args, &mut [])?;
+            let plan = std::rc::Rc::new(plan);
             let results = check_run(&plan, &log);
             Ok(SpecRun {
                 editor,
@@ -5034,6 +5059,7 @@ pub(crate) mod tests {
                 results,
                 log,
                 binary,
+                instrumented,
             })
         }
 
@@ -5086,6 +5112,10 @@ pub(crate) mod tests {
                 include_str!("../public/examples/hashtable.wat"),
             ),
             ("hello", include_str!("../public/examples/hello.wat")),
+            (
+                "isqrt-args",
+                include_str!("../public/examples/isqrt-args.wat"),
+            ),
             ("triangle", include_str!("../public/examples/triangle.wat")),
             (
                 "triangle-bug",
@@ -5153,7 +5183,10 @@ pub(crate) mod tests {
                 let a = run_spec(src)?;
                 let b = run_spec(&erased)?;
                 assert_eq!(a.binary, b.binary, "{name}: erased binary differs");
-                assert_eq!(a.log.step_count(), b.log.step_count(), "{name}");
+                if a.plan.run_args.is_none() {
+                    // (with (@run …) the erased program runs on default arguments instead)
+                    assert_eq!(a.log.step_count(), b.log.step_count(), "{name}");
+                }
             }
             Ok(())
         }
@@ -5187,8 +5220,9 @@ pub(crate) mod tests {
 
         #[test]
         fn isqrt_bugs() -> Result<()> {
-            // S3: start at 1 with n = 0: invariant and measure fail on loop entry
-            let src = include_str!("../public/examples/isqrt-s3.wat");
+            // S3: start at 1 with n = 0 (the witness): invariant and measure fail on entry
+            let src = &include_str!("../public/examples/isqrt-s3.wat")
+                .replace("i32.const 10\n  call", "i32.const 0\n  call");
             let r = run_spec(src)?;
             let f = failures(&r);
             let inv = line_of(src, "(@invariant");
@@ -5207,7 +5241,8 @@ pub(crate) mod tests {
                 .with_step(first, |line, _, _| assert_eq!(line as usize, loop_line));
 
             // S2: spec bug, perfect square 4
-            let src = include_str!("../public/examples/isqrt-s2.wat");
+            let src = &include_str!("../public/examples/isqrt-s2.wat")
+                .replace("i32.const 10\n  call", "i32.const 4\n  call");
             let r = run_spec(src)?;
             let f = failures(&r);
             assert_eq!(f.len(), 1, "{f:?}");
@@ -5291,19 +5326,373 @@ i32.store offset=8
             let plain = run_spec(&src.replace("load8(", "abs(").replace("load(", "abs("))?;
             assert!(!plain.plan.uses_memory);
 
-            // the hash table runs with its stores recorded; checks that need the ghost
-            // map are reported as not checked, never as held
+            // the hash table runs with its stores recorded and its ghost map executed:
+            // every check (R, the probe invariants, the dependent results) holds
             let src = include_str!("../public/examples/hashtable.wat");
             let r = run_spec(src)?;
             assert!(r.plan.uses_memory);
             assert_eq!(r.log.termination_type(), TerminationType::Success);
             assert!(
-                r.results
-                    .events
-                    .iter()
-                    .any(|e| e.outcome == Outcome::Unknown)
+                r.results.events.iter().all(|e| e.outcome == Outcome::Held),
+                "{:?}",
+                r.results.events.iter().find(|e| e.outcome != Outcome::Held)
             );
             assert_eq!(failures(&r), vec![]);
+            Ok(())
+        }
+
+        // Codillon's steps, counted the way research/fixture.json counts them: one step per
+        // executed instruction line, not counting `end`/`else`, a function's entry and closing
+        // lines, or $main (the fixture calls each operation from the host).
+        fn fixture_steps_through(r: &SpecRun, step: usize) -> usize {
+            let main = r.plan.funcs[0].lines;
+            let headers: Vec<usize> = r.plan.funcs.iter().map(|f| f.lines.0).collect();
+            let closers: Vec<usize> = r.plan.funcs.iter().map(|f| f.lines.2).collect();
+            let mut n = 0;
+            for s in 0..=step.min(r.log.step_count() - 1) {
+                let line = r.log.with_step(s, |l, _, _| (l & 0x7fff_ffff) as usize);
+                let kind = &r.editor.lines[line].info.kind;
+                if (main.0..=main.2).contains(&line)
+                    || headers.contains(&line)
+                    || closers.contains(&line)
+                    || matches!(kind, LineKind::Instr(InstrKind::End | InstrKind::Else))
+                {
+                    continue;
+                }
+                n += 1;
+            }
+            n
+        }
+
+        // The fixture's step for a check event: checks at a return attach to the call's
+        // return step (the callee's last step for a call made by $main).
+        fn fixture_step(r: &SpecRun, e: &crate::checker::CheckEvent) -> usize {
+            let n = fixture_steps_through(r, e.step);
+            if matches!(e.kind, CheckKind::Ensures | CheckKind::ResultRefinement) {
+                let main = r.plan.funcs[0].lines;
+                let caller = r
+                    .log
+                    .with_step(e.step + 1, |l, _, _| (l & 0x7fff_ffff) as usize);
+                if !(main.0..=main.2).contains(&caller) {
+                    return n + 1;
+                }
+            }
+            n
+        }
+
+        #[test]
+        fn hashtable_matches_the_fixture() -> Result<()> {
+            // the correct table: the fixture's run is 383 steps and fails nothing
+            let src = include_str!("../public/examples/hashtable.wat");
+            let r = run_spec(src)?;
+            assert_eq!(failures(&r), vec![]);
+            assert_eq!(fixture_steps_through(&r, r.log.step_count() - 1), 383);
+            assert!(held(&r, line_of(src, "(@invariant forall $d in 0..$j: passed")) > 0);
+
+            // (first failing check: fixture step, fixture kind, the line it is written on)
+            let cases: [(&str, &str, usize, CheckKind, &str); 4] = [
+                (
+                    "a",
+                    include_str!("../public/examples/hashtable-a.wat"),
+                    143,
+                    CheckKind::Invariant,
+                    "(@invariant !($k in $M)",
+                ),
+                (
+                    "b",
+                    include_str!("../public/examples/hashtable-b.wat"),
+                    241,
+                    CheckKind::ResultRefinement,
+                    "(result $v (i32 | ($v == -1",
+                ),
+                (
+                    "c",
+                    include_str!("../public/examples/hashtable-c.wat"),
+                    43,
+                    CheckKind::Invariant,
+                    "(@invariant !($k in $M)",
+                ),
+                (
+                    "d",
+                    include_str!("../public/examples/hashtable-d.wat"),
+                    488,
+                    CheckKind::Ensures,
+                    "(@ensures R && $M == ($ok == 1",
+                ),
+            ];
+            for (name, src, step, kind, needle) in cases {
+                let r = run_spec(src)?;
+                let first = r
+                    .results
+                    .events
+                    .iter()
+                    .find(|e| e.outcome == Outcome::Failed)
+                    .unwrap_or_else(|| panic!("{name}: no failure"));
+                assert_eq!(first.kind, kind, "{name}: {}", first.message);
+                assert_eq!(first.spec_line, line_of(src, needle), "{name}");
+                assert_eq!(fixture_step(&r, first), step, "{name}: {}", first.message);
+            }
+            // (a) ends in a trap, (d) at the step budget
+            let r = run_spec(include_str!("../public/examples/hashtable-a.wat"))?;
+            assert_eq!(r.log.termination_type(), TerminationType::Error);
+            let r = run_spec(include_str!("../public/examples/hashtable-d.wat"))?;
+            assert_eq!(r.log.termination_type(), TerminationType::TooManySteps);
+            // (b') R3 and R4 fail at delete's return
+            let src = include_str!("../public/examples/hashtable-b2.wat");
+            let r = run_spec(src)?;
+            let first = r
+                .results
+                .events
+                .iter()
+                .find(|e| e.outcome == Outcome::Failed)
+                .unwrap();
+            assert_eq!(first.kind, CheckKind::Ensures);
+            assert_eq!(fixture_step(&r, first), 218);
+            assert!(
+                first.message.contains("R3") || first.message.contains("R4"),
+                "{}",
+                first.message
+            );
+            Ok(())
+        }
+
+        // Run one witness candidate natively, checking as it runs (as debug::run_witness
+        // does in the browser).
+        fn run_candidate(
+            r: &SpecRun,
+            func: usize,
+            args: &[i128],
+            budget: usize,
+        ) -> Result<crate::checker::WitnessRun> {
+            use crate::checker::StreamingCheck;
+            use wasmtime::*;
+            let engine = Engine::default();
+            let module = Module::new(&engine, &r.instrumented)?;
+            let mut store = Store::new(&engine, StreamingCheck::new(r.plan.clone(), budget));
+            let mut linker = Linker::new(&engine);
+            type Ctx<'a> = Caller<'a, StreamingCheck>;
+            linker.func_wrap(
+                "codillon_debug",
+                "record_step",
+                |mut c: Ctx<'_>, n| -> i32 { c.data_mut().step(n).into() },
+            )?;
+            linker.func_wrap("codillon_debug", "record_invalid", |mut c: Ctx<'_>| {
+                c.data_mut().mark_invalid()
+            })?;
+            linker.func_wrap(
+                "codillon_debug",
+                "record_i32",
+                |mut c: Ctx<'_>, v: i32, s| c.data_mut().record_slot(s, v.into()),
+            )?;
+            linker.func_wrap(
+                "codillon_debug",
+                "record_f32",
+                |mut c: Ctx<'_>, v: f32, s| c.data_mut().record_slot(s, v.into()),
+            )?;
+            linker.func_wrap(
+                "codillon_debug",
+                "record_i64",
+                |mut c: Ctx<'_>, v: i64, s| c.data_mut().record_slot(s, v.into()),
+            )?;
+            linker.func_wrap(
+                "codillon_debug",
+                "record_f64",
+                |mut c: Ctx<'_>, v: f64, s| c.data_mut().record_slot(s, v.into()),
+            )?;
+            linker.func_wrap("codillon_debug", "enter_func", |mut c: Ctx<'_>, f| {
+                c.data_mut().frame_op(CallFrameOp::EnterFunc(f))
+            })?;
+            linker.func_wrap("codillon_debug", "before_call", |mut c: Ctx<'_>| {
+                c.data_mut().frame_op(CallFrameOp::BeforeCall)
+            })?;
+            linker.func_wrap("codillon_debug", "after_call", |mut c: Ctx<'_>, f| {
+                c.data_mut().frame_op(CallFrameOp::AfterCall(f))
+            })?;
+            linker.func_wrap("codillon_debug", "before_tail_call", |mut c: Ctx<'_>| {
+                c.data_mut().frame_op(CallFrameOp::BeforeTailCall)
+            })?;
+            linker.func_wrap("codillon_debug", "enter_block", |mut c: Ctx<'_>, b| {
+                c.data_mut().frame_op(CallFrameOp::EnterBlock(b))
+            })?;
+            let instance = linker.instantiate(&mut store, &module)?;
+            let f = instance
+                .get_func(&mut store, &format!("f{func}"))
+                .expect("exported function");
+            let params: Vec<Val> = args.iter().map(|a| Val::I32(*a as i32)).collect();
+            let mut results = vec![Val::I32(0); f.ty(&store).results().len()];
+            let res = f.call(&mut store, &params, &mut results);
+            let outcome = match res {
+                Ok(()) => Ok(results
+                    .iter()
+                    .filter_map(|v| v.i32())
+                    .map(|v| v as i128)
+                    .collect()),
+                Err(e) => Err(e.to_string()),
+            };
+            Ok(store.into_data().finish(outcome))
+        }
+
+        // The first counterexample among the candidates (as the editor's search does).
+        fn search(r: &SpecRun, budget: usize) -> Result<Option<(usize, Vec<i128>, Verdict)>> {
+            for f in crate::checker::search_targets(&r.plan) {
+                for args in crate::checker::candidates(&r.plan, f) {
+                    let run = run_candidate(r, f, &args, budget)?;
+                    if matches!(run.verdict, Verdict::Refuted { .. } | Verdict::Trapped(_)) {
+                        return Ok(Some((f, args, run.verdict)));
+                    }
+                }
+            }
+            Ok(None)
+        }
+
+        use crate::checker::Verdict;
+
+        #[test]
+        fn witness_search() -> Result<()> {
+            // the searched inputs include the edges and the fences' neighbours
+            let r = run_spec(include_str!("../public/examples/triangle.wat"))?;
+            let c = crate::checker::candidates(&r.plan, 1);
+            for v in [0, 1, 2, 9, 999, 1000] {
+                assert!(c.contains(&vec![v]), "{v} missing");
+            }
+            // ... but none that the precondition 0 <= $n <= 1000 rejects
+            assert!(!c.contains(&vec![-1]) && !c.contains(&vec![1001]));
+
+            // the bugs are found without a hand-chosen input
+            let cases = [
+                (
+                    "isqrt-s2",
+                    include_str!("../public/examples/isqrt-s2.wat"),
+                    "$isqrt",
+                    vec![0],
+                ),
+                (
+                    "isqrt-s3",
+                    include_str!("../public/examples/isqrt-s3.wat"),
+                    "$isqrt",
+                    vec![0],
+                ),
+                (
+                    "parity-p3",
+                    include_str!("../public/examples/parity-p3.wat"),
+                    "$half",
+                    vec![0],
+                ),
+                (
+                    "parity-p2",
+                    include_str!("../public/examples/parity-p2.wat"),
+                    "$half",
+                    vec![-2],
+                ),
+                (
+                    "gcd-g3",
+                    include_str!("../public/examples/gcd-g3.wat"),
+                    "$gcd",
+                    vec![0, 1],
+                ),
+                (
+                    "triangle-bug",
+                    include_str!("../public/examples/triangle-bug.wat"),
+                    "$triangle",
+                    vec![0],
+                ),
+            ];
+            for (name, src, func, args) in cases {
+                let r = run_spec(src)?;
+                let (f, found, verdict) =
+                    search(&r, 20_000)?.unwrap_or_else(|| panic!("{name}: no witness"));
+                assert_eq!(r.plan.funcs[f].display_name(), func, "{name}");
+                assert_eq!(found, args, "{name}: {verdict:?}");
+            }
+            // G1 traps: a trap is a counterexample too
+            let r = run_spec(include_str!("../public/examples/gcd-g1.wat"))?;
+            let (_, args, verdict) = search(&r, 20_000)?.expect("gcd-g1 witness");
+            assert!(
+                matches!(verdict, Verdict::Trapped(_)),
+                "{args:?} {verdict:?}"
+            );
+            // correct programs: no counterexample among the inputs tried
+            for src in [
+                include_str!("../public/examples/parity.wat"),
+                include_str!("../public/examples/gcd.wat"),
+                include_str!("../public/examples/triangle.wat"),
+            ] {
+                let r = run_spec(src)?;
+                assert!(search(&r, 20_000)?.is_none());
+            }
+            Ok(())
+        }
+
+        // S1 fails only for n >= 2147395600, about 695,000 steps into the run: beyond
+        // Codillon's 100,000-step log, but within the search's budget.
+        #[test]
+        fn witness_beyond_the_step_budget() -> Result<()> {
+            let src = include_str!("../public/examples/isqrt-s1.wat");
+            let r = run_spec(src)?;
+            let f = crate::checker::search_targets(&r.plan)[0];
+            assert!(crate::checker::candidates(&r.plan, f).contains(&vec![i32::MAX as i128]));
+            let run = run_candidate(&r, f, &[i32::MAX as i128], crate::checker::WITNESS_BUDGET)?;
+            match run.verdict {
+                Verdict::Refuted {
+                    step,
+                    kind,
+                    message,
+                    ..
+                } => {
+                    assert!(step > crate::debug::MAX_STEPS, "{step}");
+                    assert_eq!(kind, CheckKind::Invariant);
+                    assert!(message.contains("46341"), "{message}");
+                }
+                v => panic!("{v:?}"),
+            }
+            // a correct input that large still holds
+            let run = run_candidate(&r, f, &[2147395599], crate::checker::WITNESS_BUDGET)?;
+            assert_eq!(run.verdict, Verdict::Held);
+            Ok(())
+        }
+
+        #[test]
+        fn main_takes_arguments_from_run() -> Result<()> {
+            let src = "(func $main (param $n i32)
+(@run 4)
+local.get $n
+call $isqrt
+drop
+)
+(func $isqrt (param $n (i32 | 0 <= $n)) (result $root (i32 | $root * $root <= $n < ($root + 1) * ($root + 1)))
+(local $r i32)
+block $done
+loop $grow
+local.get $r
+i32.const 1
+i32.add
+local.get $r
+i32.const 1
+i32.add
+i32.mul
+local.get $n
+i32.gt_u
+br_if $done
+local.get $r
+i32.const 1
+i32.add
+local.set $r
+br $grow
+end
+end
+local.get $r
+)
+";
+            let r = run_spec(src)?;
+            assert_eq!(r.plan.run_args, Some((1, vec![4])));
+            assert_eq!(r.log.termination_type(), TerminationType::Success);
+            // isqrt(4) took 3 iterations; the result refinement held once
+            assert_eq!(held(&r, line_of(src, "(func $isqrt")), 2);
+            let bad = run_spec(&src.replace("(@run 4)", "(@run 4 5)"))?;
+            assert_eq!(
+                bad.plan.errors,
+                vec![(1, "$main takes 1 argument(s)".to_string())]
+            );
             Ok(())
         }
 
@@ -5363,7 +5752,8 @@ i32.store offset=8
                         && m.contains("2147483646"))
             );
 
-            let src = include_str!("../public/examples/parity-p3.wat");
+            let src = &include_str!("../public/examples/parity-p3.wat")
+                .replace("i32.const 7\n  call", "i32.const 0\n  call");
             let r = run_spec(src)?;
             let f = failures(&r);
             assert_eq!(f.len(), 1, "{f:?}");

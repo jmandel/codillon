@@ -3,7 +3,8 @@ use crate::{
     dom_struct::DomStruct,
     dom_text::DomText,
     dom_vec::DomVec,
-    jet::{AccessToken, Component, ElementFactory, ElementHandle, WithElement},
+    jet::{AccessToken, Component, ElementFactory, ElementHandle, ReactiveComponent, WithElement},
+    witness_track::WitnessTrack,
 };
 use thousands::Separable;
 use web_sys::{HtmlDivElement, HtmlInputElement, HtmlSpanElement};
@@ -12,6 +13,7 @@ type TickSpan = DomStruct<(DomText, ()), HtmlSpanElement>;
 
 pub struct Slider {
     container: ElementHandle<HtmlDivElement>,
+    track: ReactiveComponent<WitnessTrack>,
     tick_labels: DomVec<TickSpan, HtmlDivElement>,
     input: ElementHandle<HtmlInputElement>,
     factory: ElementFactory,
@@ -29,15 +31,22 @@ impl Slider {
         input.set_attribute("list", "slider-ticks");
         container.set_attribute("class", "slider-container");
         tick_labels.set_attribute("class", "slider-ticks");
+        let track = ReactiveComponent::new(WitnessTrack::new(&factory));
+        container.append_node(&track);
         container.append_node(&tick_labels);
         container.append_node(&input);
         Self {
             container,
+            track,
             tick_labels,
             input,
             factory,
             visible: true,
         }
+    }
+
+    pub fn track_mut(&mut self) -> &mut ReactiveComponent<WitnessTrack> {
+        &mut self.track
     }
 
     pub fn is_visible(&self) -> bool {
@@ -168,6 +177,7 @@ impl Component for Slider {
     #[cfg(debug_assertions)]
     fn audit(&self) {
         self.container.audit();
+        self.track.audit();
         self.input.audit();
         self.tick_labels.audit();
     }

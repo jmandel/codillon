@@ -39,6 +39,7 @@ const REFINED_H: f32 = 14.0;
 
 #[derive(Debug, PartialEq)]
 pub struct FractionInfo {
+    pub extra: u16, // extra px of a row with a refined number line (the code shifts right)
     pub line_no: usize,
     pub indent: u16,
     pub ty: AnnotatedOperatorType,
@@ -96,6 +97,8 @@ impl SymbolUse {
     }
 }
 struct FrameLine {
+    extra_top: f64, // the start and end rows' extra indentation (refined number lines)
+    extra_bot: f64,
     info: Option<FrameInfo>,
     loop_was_taken: bool,
     animated_indent: Option<f64>,
@@ -134,6 +137,8 @@ impl FrameLine {
 
     fn new(factory: &ElementFactory) -> Self {
         let mut ret = Self {
+            extra_top: 0.0,
+            extra_bot: 0.0,
             info: None,
             loop_was_taken: false,
             animated_indent: None,
@@ -257,6 +262,7 @@ impl FrameLine {
     }
 
     fn draw(&mut self) -> AnimationRequest {
+        let (extra_top, extra_bot) = (self.extra_top, self.extra_bot);
         let Self {
             info: Some(info),
             loop_was_taken,
@@ -268,6 +274,7 @@ impl FrameLine {
             bwidth_factor,
             hheight,
             w3,
+            ..
         } = self
         else {
             panic!();
@@ -350,7 +357,10 @@ impl FrameLine {
             )
         } else {
             &format!(
-                "M {x_right},{y_top} h -{width} c -{backup},0 -{backup},{dist1} -{backup},{hheight} 0,{dist2} 0,{hheight} {w3},{hheight} h {bwidth}"
+                "M {},{y_top} h -{} c -{backup},0 -{backup},{dist1} -{backup},{hheight} 0,{dist2} 0,{hheight} {w3},{hheight} h {}",
+                x_right + extra_top,
+                width + extra_top,
+                bwidth + extra_bot * bwidth_factor
             )
         };
 
@@ -405,6 +415,7 @@ struct Arrow {
     y: Tween,
 
     line_idx: Option<usize>,
+    extra: usize, // the row's extra indentation (refined number lines)
 }
 delegate_element_component!(Arrow, elem, SvggElement);
 
@@ -418,6 +429,7 @@ impl Arrow {
             x: Default::default(),
             y: Default::default(),
             line_idx: None,
+            extra: 0,
         };
         ret.target_elem().set_attribute("class", "arrow-target");
         ret
@@ -431,8 +443,8 @@ impl Arrow {
         &mut self.elem.get_mut().1.0
     }
 
-    fn goto(&mut self, smooth: bool, loc: Option<(usize, bool, usize)>) -> AnimationRequest {
-        let Some((line_idx, below_line, indent)) = loc else {
+    fn goto(&mut self, smooth: bool, loc: Option<(usize, bool, usize, u16)>) -> AnimationRequest {
+        let Some((line_idx, below_line, indent, extra)) = loc else {
             self.arrow_elem().remove_attribute("href");
             self.line_idx = None;
             return AnimationRequest(false);
@@ -440,8 +452,9 @@ impl Arrow {
 
         self.arrow_elem().set_attribute("href", "#arrow");
         self.line_idx = Some(line_idx);
+        self.extra = extra as usize;
 
-        let target_x = X_OFFSET_PX + indent * INDENT_PX - 4;
+        let target_x = X_OFFSET_PX + indent * INDENT_PX - 4 + self.extra;
         let target_y = line_idx * LINE_SPACING
             + LINE_SPACING / 2
             + LINE_OFFSET_PX
@@ -466,7 +479,7 @@ impl Arrow {
             .line_idx
             .and_then(|idx| animated_indents.get(&idx).copied());
         if let Some(actual_indent) = animated_indent {
-            let target_x = BASE_X_OFFSET_PX as f64 + actual_indent - 4.0;
+            let target_x = BASE_X_OFFSET_PX as f64 + actual_indent - 4.0 + self.extra as f64;
             self.x.retarget(target_x);
         }
         if self.x.is_pending().0 {
@@ -1049,6 +1062,21 @@ A 15,10 0 0 1 14.827,-8.484 15,10 0 0 1 0.003,-0 15,10 0 0 1 -14.826,-8.481 15,1
         }
     }
 
+    // Rows whose code moved right (refined number lines): frames that start or end on
+    // them reach further, so their arms still meet the code.
+    pub fn set_frame_extras(&mut self, line_extra: &HashMap<usize, u16>) {
+        get_mut!(self.contents, blocks).for_each_mut(|_, block| {
+            let Some(info) = &block.info else { return };
+            let top = line_extra.get(&info.start).copied().unwrap_or(0) as f64;
+            let bot = line_extra.get(&info.end).copied().unwrap_or(0) as f64;
+            if top != block.extra_top || bot != block.extra_bot {
+                block.extra_top = top;
+                block.extra_bot = bot;
+                let _ = block.draw();
+            }
+        });
+    }
+
     pub fn set_loops_taken(&mut self, loops_taken: &HashSet<u32>) {
         get_mut!(self.contents, blocks).for_each_mut(|id, block| {
             let taken = loops_taken.contains(id);
@@ -1373,7 +1401,7 @@ A 15,10 0 0 1 14.827,-8.484 15,10 0 0 1 0.003,-0 15,10 0 0 1 -14.826,-8.481 15,1
     pub fn set_arrow_location(
         &mut self,
         smooth: bool,
-        loc: Option<(usize, bool, usize)>,
+        loc: Option<(usize, bool, usize, u16)>,
     ) -> AnimationRequest {
         self.arrow_mut().goto(smooth, loc)
     }
@@ -1647,10 +1675,29 @@ struct OperatorFraction {
     output_x: Vec<f32>, // (likewise, for the non-stranded outputs)
 }
 
+/// How much further right a row's code goes to make room for its number lines.
+pub fn refined_row_extra(ty: &AnnotatedOperatorType) -> u16 {
+    let max_width = (indent_px(BLOCK_BOUNDARY_INDENT) - 2 * MARGIN + 1) as f32;
+    let width = |slots: &[SlotInfo]| -> f32 {
+        if !slots.iter().any(|s| s.refined) {
+            return 0.0;
+        }
+        slots
+            .iter()
+            .map(|s| 2.0 * if s.refined { REFINED_HW } else { SYM_HW })
+            .sum()
+    };
+    let w = width(&ty.inputs).max(width(&ty.outputs));
+    (w - max_width).clamp(0.0, MAX_REFINED_EXTRA).round() as u16
+}
+
+const MAX_REFINED_EXTRA: f32 = 108.0;
+
 // Horizontal layout of a row of slots: their centres, and the scale that fits the row.
 // Without refined slots this is Codillon's layout: centred, and scaled to the column.
-// A refined (number-line) slot is wider; such a row is right-aligned to the column and
-// may extend to the left of it, into the space before the code's indentation.
+// A refined (number-line) slot is wider; such a row is right-aligned to the column, whose
+// centre has moved right with the code (refined_row_extra), so its left edge stays where
+// the column's left edge was.
 fn layout_slots(slots: &[SlotInfo]) -> (Vec<f32>, f32) {
     let max_width = (indent_px(BLOCK_BOUNDARY_INDENT) - 2 * MARGIN + 1) as f32;
     let n = slots.len();
@@ -1673,7 +1720,7 @@ fn layout_slots(slots: &[SlotInfo]) -> (Vec<f32>, f32) {
         .map(|s| 2.0 * if s.refined { REFINED_HW } else { SYM_HW })
         .collect();
     let total: f32 = widths.iter().sum();
-    let room = max_width + 2.0 * (REFINED_HW - SYM_HW);
+    let room = max_width + MAX_REFINED_EXTRA;
     let scale = if total > room { room / total } else { 1.0 };
     let mut right = max_width / 2.0 / scale;
     let mut centres = vec![0.0; n];
@@ -1818,12 +1865,15 @@ impl OperatorFraction {
         else {
             panic!();
         };
+        let extra = info.extra as f64;
         let target_x_final = (X_OFFSET_PX + indent_px(info.indent)
             - indent_px(BLOCK_BOUNDARY_INDENT) / 2
-            - MARGIN / 2) as f64;
+            - MARGIN / 2) as f64
+            + extra;
         let target_x = if let Some(actual_indent) = animated_indent {
             BASE_X_OFFSET_PX as f64 + *actual_indent
                 - (indent_px(BLOCK_BOUNDARY_INDENT) / 2 + MARGIN / 2) as f64
+                + extra
         } else {
             target_x_final
         };

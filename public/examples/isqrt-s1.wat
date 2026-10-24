@@ -1,7 +1,6 @@
-;; S1 (subtle): signed comparison i32.gt_s. Correct for every n < 2147395600.
-;; For larger n the product (r+1)*(r+1) wraps negative and the loop overruns;
-;; at n = INT_MAX it never terminates. That input needs ~695,000 steps, beyond
-;; Codillon's 100,000-step budget, so this run (n = 10) passes every check.
+;; S1 (subtle): signed comparison i32.gt_s. Correct for every n < 2147395600; your
+;; run (n = 10) holds. The input search finds n = 2147483646, which fails about 695,000
+;; steps in: beyond Codillon's 100,000-step budget, so it cannot be replayed here.
 (func $main
   i32.const 10
   call $isqrt

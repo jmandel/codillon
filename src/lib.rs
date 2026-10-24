@@ -21,3 +21,4 @@ pub mod slider;
 pub mod spec;
 pub mod symbolic;
 pub mod syntax;
+pub mod witness_track;

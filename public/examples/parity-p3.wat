@@ -1,10 +1,10 @@
 ;; P3 (spec bug): "half is smaller" is false for 0 and for negative even numbers.
-;; The code is right; the spec is wrong. With x = 0 the result refinement fails.
+;; Your run holds; the input search finds $half(0). The code is right; the spec is wrong.
 (func $main
   i32.const 6
   call $half_or_neg1
   drop
-  i32.const 0
+  i32.const 7
   call $half_or_neg1
   drop
 )

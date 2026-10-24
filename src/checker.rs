@@ -14,6 +14,7 @@
 
 use crate::{
     debug::{CallFrameOp, RunLog, WasmValue},
+    spec::GhostType,
     spec::{
         self, Annotation, DeclKind, Define, Env, Expr, LineSpec, Val, explain_false, is_builtin,
         show_value,
@@ -21,7 +22,7 @@ use crate::{
     syntax::{InstrKind, LineInfos, LineKind},
     utils::{TypedModule, ValidModule},
 };
-use std::collections::HashMap;
+use std::{cell::Cell, collections::HashMap, rc::Rc};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CheckKind {
@@ -87,6 +88,16 @@ pub struct FuncPlan {
     pub local_checks: HashMap<usize, Vec<Check>>, // var index -> refinement checks
     pub loops: Vec<LoopPlan>,
     pub asserts: HashMap<usize, Vec<Check>>, // instruction line -> checks made on arrival
+    pub ghost_locals: Vec<(String, GhostType)>,
+    pub sets: HashMap<usize, Vec<GhostSet>>, // instruction line -> ghost updates on arrival
+}
+
+/// `(@set $x := e)`: a ghost update, executed when control reaches the next instruction.
+#[derive(Debug, Clone)]
+pub struct GhostSet {
+    pub line: usize,
+    pub name: String,
+    pub value: Expr,
 }
 
 impl FuncPlan {
@@ -109,7 +120,9 @@ pub struct SpecPlan {
     pub notes: Vec<(usize, String)>,  // line -> status note (e.g. not checked yet)
     pub spec_lines: Vec<usize>,       // lines carrying checkable specs
     pub uses_memory: bool,            // some predicate reads memory: record stores
-    store_ops: Vec<(u64, u32)>,       // (offset, width) of each store, in module order
+    pub ghost_globals: Vec<(String, GhostType)>,
+    pub run_args: Option<(usize, Vec<i128>)>, // (@run …) on $main: (line, arguments)
+    store_ops: Vec<(u64, u32)>,               // (offset, width) of each store, in module order
     slot_owner: HashMap<u32, (usize, usize)>, // slot -> (func, var index)
     global_of_slot: HashMap<u32, usize>,
     call_output: HashMap<u32, (usize, usize)>, // slot -> (caller func, result position)
@@ -124,6 +137,7 @@ impl SpecPlan {
                 || !f.local_checks.is_empty()
                 || !f.loops.is_empty()
                 || !f.asserts.is_empty()
+                || !f.sets.is_empty()
         })
     }
 }
@@ -314,7 +328,13 @@ pub fn build_plan(lines: &impl LineInfos, module: &ValidModule, types: &TypedMod
                         }
                     }
                 }
-                Annotation::Ghost { name, .. } => ghosts.push(name.clone()),
+                Annotation::Ghost { name, scope, .. } => {
+                    if *scope == spec::GhostScope::Global && ghosts.contains(name) {
+                        plan.errors
+                            .push((line, format!("${name} is already a ghost")));
+                    }
+                    ghosts.push(name.clone())
+                }
                 _ => {}
             }
             annotations.push((line, a));
@@ -490,6 +510,7 @@ pub fn build_plan(lines: &impl LineInfos, module: &ValidModule, types: &TypedMod
         }
 
         // annotation lines in this function
+        let mut pending_sets: Vec<(usize, GhostSet)> = vec![];
         for &(line, a) in &annotations {
             if line < start || line > end {
                 continue;
@@ -588,11 +609,75 @@ pub fn build_plan(lines: &impl LineInfos, module: &ValidModule, types: &TypedMod
                     };
                     fp.asserts.entry(at).or_default().push(mk(kind, e));
                 }
-                Annotation::Ghost { .. } | Annotation::Set { .. } | Annotation::Run(_) => {
-                    plan.notes
-                        .push((line, "ghost state and @run come in phase 4".to_string()));
+                Annotation::Ghost { scope, name, ty } => match scope {
+                    spec::GhostScope::Local => fp.ghost_locals.push((name.clone(), ty.clone())),
+                    spec::GhostScope::Global => plan
+                        .errors
+                        .push((line, "a ghost global belongs outside functions".to_string())),
+                },
+                Annotation::Set { name, value } => {
+                    if line < first_op {
+                        plan.errors
+                            .push((line, "@set belongs in the function body".to_string()));
+                        continue;
+                    }
+                    let mut at = end;
+                    for l in line + 1..end {
+                        if lines.info(l).is_instr() {
+                            at = l;
+                            break;
+                        }
+                    }
+                    pending_sets.push((
+                        at,
+                        GhostSet {
+                            line,
+                            name: name.clone(),
+                            value: value.clone(),
+                        },
+                    ));
+                }
+                Annotation::Run(args) => {
+                    if f != 0 || line > first_op {
+                        plan.errors.push((
+                            line,
+                            "@run belongs with the header of the first function".to_string(),
+                        ));
+                    } else if args.len() != fp.nparams {
+                        plan.errors
+                            .push((line, format!("$main takes {} argument(s)", fp.nparams)));
+                    } else {
+                        plan.run_args = Some((line, args.clone()));
+                    }
                 }
                 Annotation::Define(_) => {}
+            }
+        }
+
+        // ghost updates: only ghosts may be set; the value may use what a body may use
+        for (at, set) in pending_sets {
+            if !ghosts.contains(&set.name) {
+                plan.errors.push((
+                    set.line,
+                    format!(
+                        "@set only changes ghost state; ${} is not a ghost",
+                        set.name
+                    ),
+                ));
+                continue;
+            }
+            let scope = Scope {
+                func: Some(&fp),
+                params: true,
+                locals: true,
+                results: false,
+                old: true,
+                globals: &plan.global_names,
+                ghosts: &ghosts,
+            };
+            match check_names(&set.value, &scope, &define_arity, &mut vec![]) {
+                Ok(()) => fp.sets.entry(at).or_default().push(set),
+                Err(e) => plan.errors.push((set.line, e)),
             }
         }
 
@@ -722,7 +807,13 @@ pub fn build_plan(lines: &impl LineInfos, module: &ValidModule, types: &TypedMod
             continue;
         }
         match a {
-            Annotation::Define(_) | Annotation::Ghost { .. } => {}
+            Annotation::Define(_) => {}
+            Annotation::Ghost { scope, name, ty } => match scope {
+                spec::GhostScope::Global => plan.ghost_globals.push((name.clone(), ty.clone())),
+                spec::GhostScope::Local => plan
+                    .errors
+                    .push((line, "a ghost local belongs inside a function".to_string())),
+            },
             Annotation::Set { .. } | Annotation::Run(_) => {
                 plan.errors
                     .push((line, format!("@{} belongs inside a function", a.keyword())));
@@ -826,18 +917,27 @@ struct Frame {
     vals: Vec<Option<i128>>,
     entry_vals: Vec<Option<i128>>,
     entry_globals: Vec<Option<i128>>,
-    measures: HashMap<usize, i128>, // loop idx -> measure at the previous arrival
-    caller_line: Option<usize>,     // the call instruction (step before entry)
-    entered: bool,                  // params and locals recorded
+    entry_ghosts: HashMap<String, Val>, // ghost globals at entry (for old)
+    ghosts: HashMap<String, Val>,       // ghost locals
+    measures: HashMap<usize, i128>,     // loop idx -> measure at the previous arrival
+    caller_line: Option<usize>,         // the call instruction (step before entry)
+    entered: bool,                      // params and locals recorded
+}
+
+/// The program state the checks see (besides the frame).
+struct World<'a> {
+    globals: &'a [Option<i128>],
+    ghosts: &'a HashMap<String, Val>,
+    memory: &'a HashMap<u64, u8>,
+    fuel: &'a Cell<u64>,
 }
 
 struct FrameEnv<'a> {
     plan: &'a SpecPlan,
     func: &'a FuncPlan,
     frame: &'a Frame,
-    globals: &'a [Option<i128>],
+    world: &'a World<'a>,
     results: Option<&'a [Option<i128>]>,
-    memory: &'a HashMap<u64, u8>,
 }
 
 impl Env for FrameEnv<'_> {
@@ -849,6 +949,9 @@ impl Env for FrameEnv<'_> {
                 }
             }
         }
+        if let Some(v) = self.frame.ghosts.get(name) {
+            return Some(v.clone());
+        }
         for (i, v) in self.func.vars.iter().enumerate() {
             if v.name.as_deref() == Some(name) {
                 return self.frame.vals[i].map(Val::Int);
@@ -856,10 +959,10 @@ impl Env for FrameEnv<'_> {
         }
         for (g, n) in self.plan.global_names.iter().enumerate() {
             if n.as_deref() == Some(name) {
-                return self.globals[g].map(Val::Int);
+                return self.world.globals[g].map(Val::Int);
             }
         }
-        None
+        self.world.ghosts.get(name).cloned()
     }
 
     fn old_var(&self, name: &str) -> Option<Val> {
@@ -873,7 +976,7 @@ impl Env for FrameEnv<'_> {
                 return self.frame.entry_globals[g].map(Val::Int);
             }
         }
-        None
+        self.frame.entry_ghosts.get(name).cloned()
     }
 
     fn width(&self, name: &str) -> u32 {
@@ -899,7 +1002,7 @@ impl Env for FrameEnv<'_> {
         }
         let mut v = 0u64;
         for i in 0..bytes as u64 {
-            let b = *self.memory.get(&(addr as u64 + i)).unwrap_or(&0);
+            let b = *self.world.memory.get(&(addr as u64 + i)).unwrap_or(&0);
             v |= (b as u64) << (8 * i);
         }
         Ok(v)
@@ -907,6 +1010,10 @@ impl Env for FrameEnv<'_> {
 
     fn define(&self, name: &str) -> Option<&Define> {
         self.plan.defines.iter().find(|d| d.name == name)
+    }
+
+    fn fuel(&self) -> Option<&Cell<u64>> {
+        Some(self.world.fuel)
     }
 }
 
@@ -927,20 +1034,30 @@ fn int_of(v: &WasmValue) -> Option<i128> {
     }
 }
 
-struct Replay<'a> {
-    plan: &'a SpecPlan,
-    results: CheckResults,
-    memory: HashMap<u64, u8>, // linear memory as written so far (it starts all zero)
+fn initial(ty: &GhostType) -> Val {
+    match ty {
+        GhostType::Map => Val::Map(Default::default()),
+        GhostType::Scalar(_) => Val::Int(0),
+    }
 }
 
-impl Replay<'_> {
+/// How much predicate evaluation one run may spend (evaluation steps).
+pub const CHECK_FUEL: u64 = 40_000_000;
+
+// Where check events go.
+struct Sink {
+    results: CheckResults,
+}
+
+impl Sink {
     #[allow(clippy::too_many_arguments)]
     fn evaluate(
         &mut self,
+        plan: &SpecPlan,
+        world: &World,
         check: &Check,
         func: usize,
         frame: &Frame,
-        globals: &[Option<i128>],
         results: Option<&[Option<i128>]>,
         step: usize,
         at_line: usize,
@@ -950,14 +1067,12 @@ impl Replay<'_> {
             self.results.truncated = true;
             return;
         }
-        let fp = &self.plan.funcs[func];
         let env = FrameEnv {
-            plan: self.plan,
-            func: fp,
+            plan,
+            func: &plan.funcs[func],
             frame,
-            globals,
+            world,
             results,
-            memory: &self.memory,
         };
         let (outcome, message) = match spec::eval_bool(&check.expr, &env) {
             Ok(true) => (Outcome::Held, String::new()),
@@ -988,11 +1103,12 @@ impl Replay<'_> {
     #[allow(clippy::too_many_arguments)]
     fn evaluate_measure(
         &mut self,
+        plan: &SpecPlan,
+        world: &World,
         check: &Check,
         func: usize,
         loop_idx: usize,
         frame: &mut Frame,
-        globals: &[Option<i128>],
         step: usize,
         at_line: usize,
         back_edge: bool,
@@ -1001,14 +1117,12 @@ impl Replay<'_> {
             self.results.truncated = true;
             return;
         }
-        let fp = &self.plan.funcs[func];
         let env = FrameEnv {
-            plan: self.plan,
-            func: fp,
+            plan,
+            func: &plan.funcs[func],
             frame,
-            globals,
+            world,
             results: None,
-            memory: &self.memory,
         };
         let value = spec::eval_int(&check.expr, &env);
         let previous = frame.measures.get(&loop_idx).copied();
@@ -1051,66 +1165,178 @@ impl Replay<'_> {
     }
 }
 
-/// Evaluate every checkpoint of `plan` along the run recorded in `log`.
-pub fn check_run(plan: &SpecPlan, log: &RunLog) -> CheckResults {
-    let mut replay = Replay {
-        plan,
-        results: CheckResults::default(),
-        memory: HashMap::new(),
-    };
-    let mut store_addr: HashMap<u32, u64> = HashMap::new();
-    if !plan.has_checks() {
-        return replay.results;
-    }
-    let mut globals: Vec<Option<i128>> = vec![None; plan.global_names.len()];
-    let mut frames: Vec<Frame> = vec![];
-    let mut prev_line: Option<usize> = None;
-    let step_count = log.step_count();
+/// Replays a run one step at a time (from a stored run log, or live as a run executes)
+/// and evaluates every checkpoint of the plan, executing ghost updates as it goes.
+pub struct Replay {
+    plan: Rc<SpecPlan>,
+    sink: Sink,
+    memory: HashMap<u64, u8>, // linear memory as written so far (it starts all zero)
+    store_addr: HashMap<u32, u64>,
+    globals: Vec<Option<i128>>,
+    ghosts: HashMap<String, Val>, // ghost globals
+    frames: Vec<Frame>,
+    prev_line: Option<usize>,
+    step: usize,
+    fuel: Cell<u64>,
+    failed: bool,
+}
 
-    for step in 0..step_count {
-        let (line_word, assignments, ops) = log.with_step(step, |line, a, o| {
-            (
-                line,
-                a.to_vec(),
-                o.iter()
-                    .map(|op| match op {
-                        CallFrameOp::EnterFunc(f) => CallFrameOp::EnterFunc(*f),
-                        CallFrameOp::BeforeCall => CallFrameOp::BeforeCall,
-                        CallFrameOp::AfterCall(f) => CallFrameOp::AfterCall(*f),
-                        CallFrameOp::BeforeTailCall => CallFrameOp::BeforeTailCall,
-                        CallFrameOp::EnterBlock(b) => CallFrameOp::EnterBlock(*b),
-                    })
-                    .collect::<Vec<_>>(),
-            )
-        });
+impl Replay {
+    pub fn new(plan: Rc<SpecPlan>) -> Self {
+        let globals = vec![None; plan.global_names.len()];
+        let ghosts = plan
+            .ghost_globals
+            .iter()
+            .map(|(n, t)| (n.clone(), initial(t)))
+            .collect();
+        Self {
+            plan,
+            sink: Sink {
+                results: CheckResults::default(),
+            },
+            memory: HashMap::new(),
+            store_addr: HashMap::new(),
+            globals,
+            ghosts,
+            frames: vec![],
+            prev_line: None,
+            step: 0,
+            fuel: Cell::new(CHECK_FUEL),
+            failed: false,
+        }
+    }
+
+    /// Has any check failed so far?
+    pub fn failed(&self) -> bool {
+        self.failed
+    }
+
+    pub fn steps(&self) -> usize {
+        self.step
+    }
+
+    pub fn finish(mut self) -> CheckResults {
+        self.sink.results.events.sort_by_key(|e| e.step);
+        self.sink.results
+    }
+
+    /// The outermost call returned `results` to the host (no caller saw it return):
+    /// check its exit conditions at its last step.
+    pub fn returned(&mut self, results: &[i128]) {
+        let plan = self.plan.clone();
+        let plan = &*plan;
+        if self.frames.len() != 1 {
+            return;
+        }
+        let frame = self.frames.pop().unwrap();
+        let Some(fp) = plan.funcs.get(frame.func) else {
+            return;
+        };
+        let results: Vec<Option<i128>> = (0..fp.results.len())
+            .map(|i| results.get(i).copied())
+            .collect();
+        let step = self.step.saturating_sub(1);
+        let at_line = self.prev_line.unwrap_or(fp.lines.2);
+        let world = World {
+            globals: &self.globals,
+            ghosts: &self.ghosts,
+            memory: &self.memory,
+            fuel: &self.fuel,
+        };
+        let before = self.sink.results.events.len();
+        for c in &fp.exit_checks {
+            self.sink.evaluate(
+                plan,
+                &world,
+                c,
+                frame.func,
+                &frame,
+                Some(&results),
+                step,
+                at_line,
+                "",
+            );
+        }
+        if self.sink.results.events[before..]
+            .iter()
+            .any(|e| e.outcome == Outcome::Failed)
+        {
+            self.failed = true;
+        }
+    }
+
+    /// Feed one step of the run (as recorded by Codillon's instrumentation).
+    pub fn step(&mut self, line_word: u32, assignments: &[(u32, WasmValue)], ops: &[CallFrameOp]) {
+        let step = self.step;
+        self.step += 1;
+        let events_before = self.sink.results.events.len();
+        self.step_inner(step, line_word, assignments, ops);
+        if self.sink.results.events[events_before..]
+            .iter()
+            .any(|e| e.outcome == Outcome::Failed)
+        {
+            self.failed = true;
+        }
+    }
+
+    fn step_inner(
+        &mut self,
+        step: usize,
+        line_word: u32,
+        assignments: &[(u32, WasmValue)],
+        ops: &[CallFrameOp],
+    ) {
+        let plan = self.plan.clone();
+        let plan = &*plan;
         let line = (line_word & 0x7fff_ffff) as usize;
         let below = line_word & 0x8000_0000 != 0;
+        let prev_line = self.prev_line;
+        self.prev_line = Some(line);
+        if !plan.has_checks() {
+            return;
+        }
 
         let mut entered: Option<usize> = None; // frame index entered at this step
         let mut returned: Option<Frame> = None;
         let mut arrivals: Vec<usize> = vec![]; // block indices
-        for op in &ops {
+        for op in ops {
             match op {
                 CallFrameOp::EnterFunc(f) => {
                     let f = *f as usize;
-                    let nvars = plan.funcs.get(f).map(|fp| fp.vars.len()).unwrap_or(0);
-                    frames.push(Frame {
+                    let fp = plan.funcs.get(f);
+                    let nvars = fp.map(|fp| fp.vars.len()).unwrap_or(0);
+                    let ghosts = fp
+                        .map(|fp| {
+                            fp.ghost_locals
+                                .iter()
+                                .map(|(n, t)| (n.clone(), initial(t)))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let caller_line = if self.frames.is_empty() {
+                        None
+                    } else {
+                        prev_line
+                    };
+                    self.frames.push(Frame {
                         func: f,
                         vals: vec![None; nvars],
                         entry_vals: vec![],
                         entry_globals: vec![],
+                        entry_ghosts: HashMap::new(),
+                        ghosts,
                         measures: HashMap::new(),
-                        caller_line: if frames.is_empty() { None } else { prev_line },
+                        caller_line,
                         entered: false,
                     });
-                    entered = Some(frames.len() - 1);
+                    entered = Some(self.frames.len() - 1);
                 }
                 CallFrameOp::AfterCall(_) => {
-                    returned = frames.pop();
+                    returned = self.frames.pop();
                 }
                 CallFrameOp::BeforeTailCall => {
                     // the frame is replaced by the callee; its exit is not observed
-                    frames.pop();
+                    self.frames.pop();
                 }
                 CallFrameOp::EnterBlock(b) => arrivals.push(*b as usize),
                 CallFrameOp::BeforeCall => {}
@@ -1119,16 +1345,17 @@ pub fn check_run(plan: &SpecPlan, log: &RunLog) -> CheckResults {
 
         let mut call_results: Vec<(usize, i128)> = vec![];
         let mut local_sets: Vec<usize> = vec![]; // var indices of the top frame
-        for (slot, value) in &assignments {
+        for (slot, value) in assignments {
             use crate::utils::{STORE_ADDR_TAG, STORE_SEQ_MASK, STORE_VALUE_TAG};
             if *slot & STORE_VALUE_TAG == STORE_VALUE_TAG {
                 let seq = *slot & STORE_SEQ_MASK;
-                if let (Some(addr), Some((_, width))) =
-                    (store_addr.remove(&seq), plan.store_ops.get(seq as usize))
-                {
+                if let (Some(addr), Some((_, width))) = (
+                    self.store_addr.remove(&seq),
+                    plan.store_ops.get(seq as usize),
+                ) {
                     let bits = bits_of(value);
                     for i in 0..*width as u64 {
-                        replay.memory.insert(addr + i, (bits >> (8 * i)) as u8);
+                        self.memory.insert(addr + i, (bits >> (8 * i)) as u8);
                     }
                 }
                 continue;
@@ -1138,14 +1365,14 @@ pub fn check_run(plan: &SpecPlan, log: &RunLog) -> CheckResults {
                 if let (WasmValue::I32(base), Some((offset, _))) =
                     (value, plan.store_ops.get(seq as usize))
                 {
-                    store_addr.insert(seq, *base as u32 as u64 + offset);
+                    self.store_addr.insert(seq, *base as u32 as u64 + offset);
                 }
                 continue;
             }
             if let Some(&g) = plan.global_of_slot.get(slot) {
-                globals[g] = int_of(value);
+                self.globals[g] = int_of(value);
             } else if let Some(&(f, var)) = plan.slot_owner.get(slot) {
-                if let Some(frame) = frames.iter_mut().rev().find(|fr| fr.func == f) {
+                if let Some(frame) = self.frames.iter_mut().rev().find(|fr| fr.func == f) {
                     frame.vals[var] = int_of(value);
                     if frame.entered {
                         local_sets.push(var);
@@ -1158,14 +1385,29 @@ pub fn check_run(plan: &SpecPlan, log: &RunLog) -> CheckResults {
             }
         }
 
+        let Replay {
+            sink,
+            memory,
+            globals,
+            ghosts,
+            frames,
+            fuel,
+            ..
+        } = self;
+
         // function entry: requires, param refinements, initial values of refined locals
         if let Some(idx) = entered {
-            let (head, rest) = frames.split_at_mut(idx);
-            let _ = head;
-            let frame = &mut rest[0];
+            let frame = &mut frames[idx];
             frame.entered = true;
             frame.entry_vals = frame.vals.clone();
             frame.entry_globals = globals.clone();
+            frame.entry_ghosts = ghosts.clone();
+            let world = World {
+                globals,
+                ghosts,
+                memory,
+                fuel,
+            };
             let f = frame.func;
             if let Some(fp) = plan.funcs.get(f) {
                 let (show_step, at_line) = match frame.caller_line {
@@ -1178,17 +1420,36 @@ pub fn check_run(plan: &SpecPlan, log: &RunLog) -> CheckResults {
                     String::new()
                 };
                 for c in &fp.entry_checks {
-                    replay.evaluate(c, f, frame, &globals, None, show_step, at_line, &context);
+                    sink.evaluate(
+                        plan, &world, c, f, frame, None, show_step, at_line, &context,
+                    );
                 }
                 let mut vars: Vec<&usize> = fp.local_checks.keys().collect();
                 vars.sort();
                 for var in vars {
                     for c in &fp.local_checks[var] {
-                        replay.evaluate(c, f, frame, &globals, None, step, fp.lines.0, "initially");
+                        sink.evaluate(
+                            plan,
+                            &world,
+                            c,
+                            f,
+                            frame,
+                            None,
+                            step,
+                            fp.lines.0,
+                            "initially",
+                        );
                     }
                 }
             }
         }
+
+        let world = World {
+            globals,
+            ghosts,
+            memory,
+            fuel,
+        };
 
         // function exit: ensures and result refinements, with the call's outputs
         if let Some(frame) = returned
@@ -1204,11 +1465,12 @@ pub fn check_run(plan: &SpecPlan, log: &RunLog) -> CheckResults {
             let show_step = step.saturating_sub(1);
             let at_line = prev_line.unwrap_or(fp.lines.2);
             for c in &fp.exit_checks {
-                replay.evaluate(
+                sink.evaluate(
+                    plan,
+                    &world,
                     c,
                     frame.func,
                     &frame,
-                    &globals,
                     Some(&results),
                     show_step,
                     at_line,
@@ -1225,11 +1487,12 @@ pub fn check_run(plan: &SpecPlan, log: &RunLog) -> CheckResults {
                 if let Some(cs) = fp.local_checks.get(&var) {
                     let at_line = prev_line.unwrap_or(line);
                     for c in cs {
-                        replay.evaluate(
+                        sink.evaluate(
+                            plan,
+                            &world,
                             c,
                             frame.func,
                             frame,
-                            &globals,
                             None,
                             step.saturating_sub(1),
                             at_line,
@@ -1256,30 +1519,101 @@ pub fn check_run(plan: &SpecPlan, log: &RunLog) -> CheckResults {
                 };
                 let show_step = step.saturating_sub(1);
                 for c in &lp.invariants {
-                    replay.evaluate(c, f, frame, &globals, None, show_step, from, context);
+                    sink.evaluate(plan, &world, c, f, frame, None, show_step, from, context);
                 }
                 if let Some(c) = &lp.decreases {
-                    replay.evaluate_measure(c, f, l, frame, &globals, show_step, from, back_edge);
+                    sink.evaluate_measure(plan, &world, c, f, l, frame, show_step, from, back_edge);
                 }
             }
         }
 
-        // @assert / @assume lines, on arrival at the instruction that follows them
+        // @assert / @assume and @set lines, in line order, on arrival at the next instruction
         if !below
             && let Some(frame) = frames.last()
             && let Some(fp) = plan.funcs.get(frame.func)
-            && let Some(cs) = fp.asserts.get(&line)
+            && (fp.asserts.contains_key(&line) || fp.sets.contains_key(&line))
         {
-            for c in cs {
-                replay.evaluate(c, frame.func, frame, &globals, None, step, line, "");
+            enum Act<'p> {
+                Check(&'p Check),
+                Set(&'p GhostSet),
+            }
+            let mut acts: Vec<(usize, Act)> = vec![];
+            for c in fp.asserts.get(&line).into_iter().flatten() {
+                acts.push((c.spec_line, Act::Check(c)));
+            }
+            for s in fp.sets.get(&line).into_iter().flatten() {
+                acts.push((s.line, Act::Set(s)));
+            }
+            acts.sort_by_key(|(l, _)| *l);
+            let func = frame.func;
+            let mut new_frame_ghosts: Vec<(String, Val)> = vec![];
+            let mut new_globals: Vec<(String, Val)> = vec![];
+            for (_, act) in acts {
+                let frame = frames.last().unwrap();
+                let world = World {
+                    globals,
+                    ghosts,
+                    memory,
+                    fuel,
+                };
+                match act {
+                    Act::Check(c) => {
+                        sink.evaluate(plan, &world, c, func, frame, None, step, line, "")
+                    }
+                    Act::Set(s) => {
+                        let env = FrameEnv {
+                            plan,
+                            func: fp,
+                            frame,
+                            world: &world,
+                            results: None,
+                        };
+                        match spec::eval(&s.value, &env) {
+                            Ok(v) => {
+                                if frame.ghosts.contains_key(&s.name) {
+                                    new_frame_ghosts.push((s.name.clone(), v));
+                                } else {
+                                    new_globals.push((s.name.clone(), v));
+                                }
+                            }
+                            Err(e) => sink.results.events.push(CheckEvent {
+                                step,
+                                spec_line: s.line,
+                                at_line: line,
+                                kind: CheckKind::Assert,
+                                outcome: Outcome::Unknown,
+                                message: format!("not executed: {}", e.0),
+                                func,
+                            }),
+                        }
+                    }
+                }
+                // apply ghost updates before the next action
+                let frame = frames.last_mut().unwrap();
+                for (n, v) in new_frame_ghosts.drain(..) {
+                    frame.ghosts.insert(n, v);
+                }
+                for (n, v) in new_globals.drain(..) {
+                    ghosts.insert(n, v);
+                }
             }
         }
-
-        prev_line = Some(line);
     }
+}
 
-    replay.results.events.sort_by_key(|e| e.step);
-    replay.results
+/// Evaluate every checkpoint of `plan` along the run recorded in `log`.
+pub fn check_run(plan: &Rc<SpecPlan>, log: &RunLog) -> CheckResults {
+    let mut replay = Replay::new(plan.clone());
+    if !plan.has_checks() {
+        return replay.finish();
+    }
+    for step in 0..log.step_count() {
+        log.with_step(step, |line, a, o| replay.step(line, a, o));
+    }
+    if log.termination_type() == crate::debug::TerminationType::Success {
+        replay.returned(&log.returned());
+    }
+    replay.finish()
 }
 
 /// Per-line summary of the checks up to (and including) a step of the run.
@@ -1462,5 +1796,293 @@ impl Env for SlotEnv<'_> {
 
     fn define(&self, name: &str) -> Option<&Define> {
         self.plan.defines.iter().find(|d| d.name == name)
+    }
+}
+
+// ---------------------------------------------------------------------------------------
+// Witness search: run a function on edge inputs its precondition admits, checking as it
+// runs, and report the first input that refutes a check.
+
+/// Steps a witness candidate may run (beyond Codillon's own 100,000-step log).
+pub const WITNESS_BUDGET: usize = 1_000_000;
+/// Inputs tried per function.
+pub const MAX_CANDIDATES: usize = 160;
+
+/// Functions worth searching: they take integer params, have checks, and are not $main.
+pub fn search_targets(plan: &SpecPlan) -> Vec<usize> {
+    plan.funcs
+        .iter()
+        .enumerate()
+        .filter(|(i, f)| {
+            *i != 0
+                && f.nparams > 0
+                && f.vars[..f.nparams]
+                    .iter()
+                    .all(|v| v.width == 32 || v.width == 64)
+                && (!f.exit_checks.is_empty()
+                    || !f.loops.is_empty()
+                    || !f.asserts.is_empty()
+                    || !f.local_checks.is_empty()
+                    || f.entry_checks.iter().any(|c| c.kind == CheckKind::Requires))
+        })
+        .map(|(i, _)| i)
+        .collect()
+}
+
+fn edge_values(fences: &[i128]) -> Vec<i128> {
+    let (min, max) = (i32::MIN as i128, i32::MAX as i128);
+    let mut v: Vec<i128> = vec![0, 1, -1, 2, -2, 3, -3, 4, 5, 6, 7, 8, -8, 10, 12];
+    for k in 3..=10i128 {
+        v.push(k * k); // small squares
+    }
+    for k in 4..=30u32 {
+        let p = 1i128 << k;
+        v.extend([p - 1, p, p + 1, -p]); // powers of two and their neighbours
+    }
+    v.extend([max, max - 1, min, min + 1]);
+    for f in fences {
+        v.extend([f - 1, *f, f + 1]);
+    }
+    let mut v: Vec<i128> = v.into_iter().filter(|x| (min..=max).contains(x)).collect();
+    // cheap inputs first: smaller magnitudes, then the extremes
+    v.sort_by_key(|x| (x.unsigned_abs(), *x < 0));
+    v.dedup();
+    v
+}
+
+// An environment holding only a candidate's arguments.
+struct ArgsEnv<'a> {
+    plan: &'a SpecPlan,
+    func: &'a FuncPlan,
+    args: &'a [i128],
+}
+
+impl Env for ArgsEnv<'_> {
+    fn var(&self, name: &str) -> Option<Val> {
+        let i = self.func.vars[..self.func.nparams]
+            .iter()
+            .position(|v| v.name.as_deref() == Some(name))?;
+        Some(Val::Int(self.args[i]))
+    }
+    fn define(&self, name: &str) -> Option<&Define> {
+        self.plan.defines.iter().find(|d| d.name == name)
+    }
+}
+
+/// Edge inputs for `func`: 0, ±1, 2, small squares, powers of two and their neighbours,
+/// the extremes of i32, and the values next to the fences of its refinements and requires.
+/// Inputs that the precondition visibly rejects are left out (the run checks the rest).
+pub fn candidates(plan: &SpecPlan, func: usize) -> Vec<Vec<i128>> {
+    let fp = &plan.funcs[func];
+    let n = fp.nparams;
+    let mut per_param: Vec<Vec<i128>> = vec![];
+    for p in 0..n {
+        let mut fences = vec![];
+        if let Some(name) = &fp.vars[p].name {
+            let env = ArgsEnv {
+                plan,
+                func: fp,
+                args: &vec![0; n],
+            };
+            for c in &fp.entry_checks {
+                let r = crate::refine::region(&c.expr, name, &env);
+                for b in [r.lower, r.upper].into_iter().flatten() {
+                    fences.push(b.value);
+                }
+            }
+        }
+        per_param.push(edge_values(&fences));
+    }
+    // tuples in order of the sum of their parts' ranks (cheap and simple first)
+    let mut tuples: Vec<(usize, Vec<i128>)> = vec![];
+    let limit = per_param.iter().map(|v| v.len()).max().unwrap_or(0);
+    let mut ranks = vec![0usize; n];
+    'outer: loop {
+        if n == 0 {
+            break;
+        }
+        let tuple: Vec<i128> = ranks.iter().zip(&per_param).map(|(r, v)| v[*r]).collect();
+        tuples.push((ranks.iter().sum(), tuple));
+        // next combination (odometer)
+        let mut i = 0;
+        loop {
+            ranks[i] += 1;
+            if ranks[i] < per_param[i].len().min(if n > 1 { 24 } else { limit }) {
+                break;
+            }
+            ranks[i] = 0;
+            i += 1;
+            if i == n {
+                break 'outer;
+            }
+        }
+    }
+    tuples.sort_by_key(|(r, _)| *r);
+    let mut out = vec![];
+    for (_, args) in tuples {
+        let env = ArgsEnv {
+            plan,
+            func: fp,
+            args: &args,
+        };
+        let rejected = fp
+            .entry_checks
+            .iter()
+            .any(|c| matches!(spec::eval_bool(&c.expr, &env), Ok(false)));
+        if !rejected {
+            out.push(args);
+        }
+        if out.len() >= MAX_CANDIDATES {
+            break;
+        }
+    }
+    // keep the extremes even when the list is long
+    out
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Verdict {
+    NotAdmitted, // the precondition rejected this input
+    Held,        // every check held, and the call returned
+    Refuted {
+        step: usize,
+        spec_line: usize,
+        kind: CheckKind,
+        message: String,
+    },
+    Trapped(String),
+    Budget, // still running when the witness budget ran out
+}
+
+#[derive(Debug)]
+pub struct WitnessRun {
+    pub verdict: Verdict,
+    pub steps: usize,
+}
+
+/// Checks a candidate run as it executes, without storing its steps, and stops it at the
+/// first refutation, when its precondition rejects the input, or at the step budget.
+pub struct StreamingCheck {
+    replay: Replay,
+    budget: usize,
+    assignments: Vec<(u32, WasmValue)>,
+    ops: Vec<CallFrameOp>,
+    last_line: u32,
+    halted: Option<Verdict>,
+    admitted: Option<bool>,
+}
+
+impl StreamingCheck {
+    pub fn new(plan: Rc<SpecPlan>, budget: usize) -> Self {
+        Self {
+            replay: Replay::new(plan),
+            budget,
+            assignments: vec![],
+            ops: vec![],
+            last_line: 0,
+            halted: None,
+            admitted: None,
+        }
+    }
+
+    pub fn record_slot(&mut self, slot: u32, value: WasmValue) {
+        self.assignments.push((slot, value));
+    }
+
+    pub fn frame_op(&mut self, op: CallFrameOp) {
+        self.ops.push(op);
+    }
+
+    /// The run reached invalid code (it traps next).
+    pub fn mark_invalid(&mut self) {
+        if self.halted.is_none() && self.admitted == Some(true) {
+            self.halted = Some(Verdict::Trapped("invalid code".to_string()));
+        }
+    }
+
+    fn first_failure(&self) -> Option<&CheckEvent> {
+        self.replay
+            .sink
+            .results
+            .events
+            .iter()
+            .filter(|e| e.outcome == Outcome::Failed)
+            .min_by_key(|e| e.step)
+    }
+
+    /// One step of the run; false asks the run to stop.
+    pub fn step(&mut self, line: u32) -> bool {
+        if self.halted.is_some() {
+            return false;
+        }
+        let assignments = std::mem::take(&mut self.assignments);
+        let ops = std::mem::take(&mut self.ops);
+        self.replay.step(line, &assignments, &ops);
+        self.last_line = line;
+        if self.admitted.is_none() {
+            // the first step enters the function: its entry checks decide admission
+            let ok = self
+                .replay
+                .sink
+                .results
+                .events
+                .iter()
+                .filter(|e| matches!(e.kind, CheckKind::Requires | CheckKind::ParamRefinement))
+                .all(|e| e.outcome == Outcome::Held);
+            self.admitted = Some(ok);
+            if !ok {
+                self.halted = Some(Verdict::NotAdmitted);
+                return false;
+            }
+        }
+        if self.replay.failed() {
+            let e = self.first_failure().unwrap();
+            self.halted = Some(Verdict::Refuted {
+                step: e.step,
+                spec_line: e.spec_line,
+                kind: e.kind,
+                message: e.message.clone(),
+            });
+            return false;
+        }
+        if self.replay.steps() >= self.budget {
+            self.halted = Some(Verdict::Budget);
+            return false;
+        }
+        true
+    }
+
+    /// The run ended: it returned `Ok(results)`, or trapped (including our own halt).
+    pub fn finish(mut self, outcome: Result<Vec<i128>, String>) -> WitnessRun {
+        if self.halted.is_none() && (!self.assignments.is_empty() || !self.ops.is_empty()) {
+            let line = self.last_line;
+            self.step(line);
+        }
+        let trap = match outcome {
+            Ok(results) => {
+                if self.halted.is_none() && self.admitted == Some(true) {
+                    self.replay.returned(&results);
+                    if self.replay.failed() {
+                        let e = self.first_failure().unwrap();
+                        self.halted = Some(Verdict::Refuted {
+                            step: e.step,
+                            spec_line: e.spec_line,
+                            kind: e.kind,
+                            message: e.message.clone(),
+                        });
+                    }
+                }
+                None
+            }
+            Err(msg) => Some(msg),
+        };
+        let steps = self.replay.steps();
+        let verdict = match (self.halted, trap) {
+            (Some(v), _) => v,
+            (None, Some(msg)) if self.admitted == Some(true) => Verdict::Trapped(msg),
+            (None, Some(_)) => Verdict::NotAdmitted,
+            (None, None) => Verdict::Held,
+        };
+        WitnessRun { verdict, steps }
     }
 }

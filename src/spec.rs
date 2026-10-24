@@ -1346,6 +1346,10 @@ pub trait Env {
         Err(EvalError::new("memory is not available here"))
     }
     fn define(&self, name: &str) -> Option<&Define>;
+    /// A budget of evaluation steps shared by many checks (None: unlimited).
+    fn fuel(&self) -> Option<&std::cell::Cell<u64>> {
+        None
+    }
 }
 
 // (each level of spec recursion costs several KB of native stack; keep well inside the 1 MB wasm stack)
@@ -1422,6 +1426,12 @@ impl<'a> Evaluator<'a> {
     }
 
     pub fn eval(&mut self, e: &Expr) -> EResult<Val> {
+        if let Some(fuel) = self.env.fuel() {
+            if fuel.get() == 0 {
+                return Err(EvalError::new("the run's budget for checking is used up"));
+            }
+            fuel.set(fuel.get() - 1);
+        }
         Ok(match e {
             Expr::Int(i) => Val::Int(*i),
             Expr::Bool(b) => Val::Bool(*b),
@@ -1777,6 +1787,42 @@ fn side(e: &Expr, ev: &mut Evaluator) -> String {
 
 // The innermost false part of a false predicate, as (source text, explanation).
 fn false_part(e: &Expr, ev: &mut Evaluator) -> (String, String) {
+    // a defined predicate: look inside it, e.g. R → R3 → forall …
+    let unfold = match e {
+        Expr::Name(n) if ev.bound(n).is_none() => Some((n, vec![])),
+        Expr::Call(n, args) if !is_builtin(n) => Some((n, args.clone())),
+        _ => None,
+    };
+    if let Some((n, args)) = unfold
+        && let Some(d) = ev.env.define(n)
+        && d.params.len() == args.len()
+        && ev.depth < 8
+    {
+        let d = d.clone();
+        let vals: Option<Vec<Val>> = args.iter().map(|a| ev.eval(a).ok()).collect();
+        if let Some(vals) = vals {
+            let saved = std::mem::take(&mut ev.scopes);
+            for (p, v) in d.params.iter().zip(vals) {
+                ev.scopes.push((p.clone(), v));
+            }
+            ev.depth += 1;
+            let (src, why) = false_part(&d.body, ev);
+            ev.depth -= 1;
+            ev.scopes = saved;
+            // name the path of definitions (R → R3), then say why the innermost one is false
+            let path = if src.contains('\u{2192}') || is_name_path(&src) {
+                format!("{e} \u{2192} {src}")
+            } else {
+                e.to_string()
+            };
+            let why = if why.is_empty() || why == src {
+                src
+            } else {
+                why
+            };
+            return (path, why);
+        }
+    }
     match e {
         Expr::Bin(BinOp::And, a, b) => {
             if let Ok(false) = ev.boolean(a) {
@@ -1835,6 +1881,10 @@ fn false_part(e: &Expr, ev: &mut Evaluator) -> (String, String) {
     }
 }
 
+fn is_name_path(s: &str) -> bool {
+    !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
 /// Explain why `e` is false: `conjunct : substituted values ✗`.
 pub fn explain_false(e: &Expr, env: &dyn Env) -> String {
     const LONG: usize = 56;
@@ -1843,6 +1893,9 @@ pub fn explain_false(e: &Expr, env: &dyn Env) -> String {
     let whole = src == e.to_string();
     if why.is_empty() || why == src {
         return format!("{src} \u{2717}");
+    }
+    if src.contains('\u{2192}') {
+        return format!("{src} : {why} \u{2717}");
     }
     let (ls, lw) = (src.chars().count(), why.chars().count());
     if ls + lw <= LONG + 16 {

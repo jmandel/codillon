@@ -416,7 +416,7 @@ html.embed .share-button {
 }
 
 /* checks that held on this run: a count, never a check mark */
-span.debug[data-held]::before {
+span.instr[data-held]::after {
     font-family: 'MLMSansDemiCond10-Regular';
     font-style: normal;
     font-size: 13pt;
@@ -437,4 +437,70 @@ span.debug[data-held]::before {
 
 .current-slider-tick.spec-fail-current {
     box-shadow: 0 0 0 1.5px darkred;
+}
+
+/* the input search, above the slider: a dashed track for a witness not yet replayed,
+   a solid pill once it is the run, a quiet note otherwise */
+.witness-track {
+    font-family: 'MLMSansDemiCond10-Regular';
+    font-size: 11pt;
+    margin: 0 8px 4px 8px;
+    padding: 1px 8px;
+    cursor: default;
+    user-select: none;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.witness-track.hidden {
+    display: none;
+}
+
+.witness-track.note {
+    color: slategray;
+    border-top: 1.5px dotted #b0b8c4;
+}
+
+.witness-track.not-replayed {
+    color: darkred;
+    border-top: 1.5px dashed darkred;
+    cursor: pointer;
+}
+
+.witness-track.replayed {
+    color: white;
+    background-color: darkred;
+    border-radius: 10px;
+    cursor: pointer;
+    width: fit-content;
+    max-width: calc(100% - 32px);
+}
+
+/* A line is a row: gutter, code, then the rest. Commentary floats right in the rest
+   and is cut short (full text on hover) rather than wrapping onto the next row. */
+.line {
+    display: flex;
+    align-items: baseline;
+}
+
+.line::before {
+    flex: none;
+}
+
+.line > span.instr {
+    flex: none;
+}
+
+.line > span.comment {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+span.comment[data-commentary]::after {
+    max-width: calc(100% - 12px);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    box-sizing: border-box;
 }

@@ -1,18 +1,30 @@
 ;; An 8-slot open-addressing hash table in linear memory (03-sample-programs, Part B).
-;; The ghost map $M and the (@set ...) lines are executed only in phase 4; for now the
-;; spec lines are parsed and erased, and checks that need $M are reported as unknown.
+;; The ghost map $M is the table's meaning; R ties memory to $M. $main runs the fixture's
+;; operations: insert(3,30), insert(11,110), delete(3), lookup(11,-1), lookup(3,-1).
 (memory 1)
 (global $used (mut i32) (i32.const 0))
 (@ghost global $M (map i32 i32))
 (@define EMPTY = 0, FULL = 1, TOMB = 2, CAP = 8, BASE = 65440)
-(@define st($s) = load(BASE + 12 * $s), key($s) = load(BASE + 12 * $s + 4), val($s) = load(BASE + 12 * $s + 8))
-(@define h($k) = $k & 7, at($k, $d) = (h($k) + $d) & 7, dist($k, $s) = ($s - h($k)) & 7)
+(@define st($s) = load(BASE + 12 * $s))
+(@define key($s) = load(BASE + 12 * $s + 4))
+(@define val($s) = load(BASE + 12 * $s + 8))
+(@define h($k) = $k & 7, at($k, $d) = (h($k) + $d) & 7)
+(@define dist($k, $s) = ($s - h($k)) & 7)
 (@define R0 = forall $s in 0..CAP: st($s) in {EMPTY, FULL, TOMB})
-(@define R1 = forall $s in 0..CAP: st($s) == FULL ==> key($s) in $M && $M[key($s)] == val($s))
-(@define R2 = forall $k in $M: (count $s in 0..CAP: st($s) == FULL && key($s) == $k) == 1)
-(@define R3 = forall $s in 0..CAP: st($s) == FULL ==> (forall $d in 0..dist(key($s), $s) + 1: st(at(key($s), $d)) != EMPTY))
-(@define R4 = (count $s in 0..CAP: st($s) == FULL) == size($M) && $used == (count $s in 0..CAP: st($s) != EMPTY) && $used < CAP)
+(@define stored($s) = key($s) in $M && $M[key($s)] == val($s))
+(@define R1 = forall $s in 0..CAP: st($s) == FULL ==> stored($s))
+(@define copies($k) = count $s in 0..CAP: st($s) == FULL && key($s) == $k)
+(@define R2 = forall $k in $M: copies($k) == 1)
+(@define open($k, $d) = st(at($k, $d)) != EMPTY)
+(@define reach($s) = forall $d in 0..dist(key($s), $s) + 1: open(key($s), $d))
+(@define R3 = forall $s in 0..CAP: st($s) == FULL ==> reach($s))
+(@define FULLS = count $s in 0..CAP: st($s) == FULL)
+(@define USED = count $s in 0..CAP: st($s) != EMPTY)
+(@define R4 = FULLS == size($M) && $used == USED && $used < CAP)
 (@define R = R0 && R1 && R2 && R3 && R4)
+(@define holds($s, $k) = 0 <= $s < CAP && st($s) == FULL && key($s) == $k)
+(@define other($k, $s) = st($s) == FULL && key($s) != $k)
+(@define passed($k, $d) = st(at($k, $d)) == TOMB || other($k, at($k, $d)))
 (func $main
   i32.const 3
   i32.const 30
@@ -29,6 +41,10 @@
   i32.const -1
   call $lookup
   drop
+  i32.const 3
+  i32.const -1
+  call $lookup
+  drop
 )
 (func $slot (param $i (i32 | 0 <= $i && $i < CAP))
   (result $a (i32 | $a == BASE + 12 * $i))
@@ -39,7 +55,7 @@
   i32.add
 )
 (func $find (param $k i32)
-  (result $v (i32 | ($v == -1 && !($k in $M)) || (0 <= $v && $v < CAP && st($v) == FULL && key($v) == $k)))
+  (result $v (i32 | ($v == -1 && !($k in $M)) || holds($v, $k)))
   (@requires R)
   (local $i i32)
   (local $p i32)
@@ -50,7 +66,7 @@
   local.set $i
   loop $probe
     (@invariant 0 <= $j && $j <= $used && $i == at($k, $j))
-    (@invariant forall $d in 0..$j: st(at($k, $d)) == TOMB || (st(at($k, $d)) == FULL && key(at($k, $d)) != $k))
+    (@invariant forall $d in 0..$j: passed($k, $d))
     (@decreases CAP - $j)
     local.get $i
     call $slot
@@ -192,3 +208,4 @@
   (@set $M := $M[$k -> $x])
   i32.const 1
 )
+

@@ -4,21 +4,24 @@ use crate::{
     action_history::{ActionHistory, Edit},
     autocomplete::Autocomplete,
     checker::{
-        CheckKind, CheckResults, Outcome, RefinedSlot, SlotEnv, SpecPlan, build_plan, check_run,
-        refined_slots,
+        CheckKind, CheckResults, Outcome, RefinedSlot, SlotEnv, SpecPlan, StreamingCheck, Verdict,
+        WITNESS_BUDGET, build_plan, candidates, check_run, refined_slots, search_targets,
     },
-    debug::{ExecutionState, ExecutionStatus, RUN_LOG, TerminationType, run_binary},
+    debug::{
+        ExecutionState, ExecutionStatus, RUN_LOG, RunArg, TerminationType, compile_module,
+        run_binary, run_witness,
+    },
     dom_canvas::DomCanvas,
     dom_struct::DomStruct,
     dom_vec::DomVec,
-    graphics::{DomImage, FractionInfo},
+    graphics::{DomImage, FractionInfo, refined_row_extra},
     jet::{
         AccessToken, Component, ControlHandlers, DocumentHandle, ElementFactory, InputEventHandle,
         NodeRef, RangeLike, ReactiveComponent, StorageHandle, WebOffset, WindowHandle, WithElement,
         compare_document_position, fetch_text, get_selection, now_ms, set_selection_range,
     },
     line::{Activity, CodeLine, LineInfo, Position, PositionRange, SpecMark},
-    link::{LinkParams, ProgramSource, StepRequest, decode_program, share_fragment},
+    link::{LinkParams, ProgramSource, StepRequest, args_fragment, decode_program, share_fragment},
     refine::refined_draw,
     save_status::SaveStatus,
     share::ShareButton,
@@ -29,8 +32,8 @@ use crate::{
     },
     utils::{
         AnimationRequest, AnnotatedOperatorType, ConnectionSource, FmtError, FunctionIdCache,
-        OperatorType, RawModule, SlotConnections, SlotInfo, TypedModule, ValidModule,
-        find_connections, indent_and_frame, str_to_binary,
+        InstrumentOptions, OperatorType, RawModule, SlotConnections, SlotInfo, TypedModule,
+        ValidModule, find_connections, indent_and_frame, str_to_binary,
     },
 };
 use anyhow::{Context, Result, bail};
@@ -42,6 +45,7 @@ use std::{
     collections::{HashMap, HashSet},
     rc::{Rc, Weak},
 };
+use thousands::Separable;
 use wasm_bindgen::{closure::Closure, prelude::ScopedClosure};
 use web_sys::{BeforeUnloadEvent, HtmlDivElement, console::log_1};
 
@@ -127,7 +131,11 @@ struct Editor {
     factory: ElementFactory,
     action_history: ActionHistory,
     storage: Option<StorageHandle>,
-    pending_binary: Option<(Vec<u8>, usize)>,
+    pending_binary: Option<(Vec<u8>, usize, String, Vec<RunArg>)>, // binary, version, entry, args
+    current_binary: Rc<Vec<u8>>,
+    replay: Option<(usize, Vec<i128>)>, // a witness loaded as the run: (function, input)
+    witness: WitnessSearch,
+    witness_version: usize, // the version the search ran (or runs) for
     previous_instrumented_binary_hash: u64,
     worker_running: bool,
     pending_save: Option<Closure<dyn Fn()>>,
@@ -157,6 +165,29 @@ struct LinkState {
     loaded_text: String,         // the program text as loaded from the link
     pending_step: Option<StepRequest>,
     load_generation: usize,
+    args: Option<Vec<i128>>, // #args=… for $main
+}
+
+/// What the input search has found for the current version of the program.
+#[derive(Default, Clone)]
+enum WitnessSearch {
+    #[default]
+    Idle,
+    Searching {
+        tried: usize,
+    },
+    NoneFound {
+        tried: usize,
+        funcs: usize,
+    },
+    Found(Witness),
+}
+
+#[derive(Clone)]
+struct Witness {
+    func: usize,
+    args: Vec<i128>,
+    verdict: Verdict,
 }
 
 pub struct EditorHolder(Rc<RefCell<Editor>>);
@@ -404,9 +435,10 @@ impl Editor {
             } = &self.execution_state.status
             && let Some(indent) = &self.text()[*line_num].info().indent.clone()
         {
+            let extra = self.text()[*line_num].extra_px();
             self.animations.arrow = get_mut!(self.component, image).set_arrow_location(
                 !source_changed,
-                Some((*line_num, *below_line, *indent as usize)),
+                Some((*line_num, *below_line, *indent as usize, extra)),
             );
             if self.scroll_on_next_input {
                 get_mut!(self.component, image).scroll_to_arrow();
@@ -517,6 +549,18 @@ impl Editor {
                 }
             }
         }
+        // a run that hit the step budget says so where it stopped
+        let count = RUN_LOG.with(|r| r.step_count());
+        if count > 0
+            && step + 1 >= count
+            && RUN_LOG.with(|r| r.termination_type()) == TerminationType::TooManySteps
+            && let Some(line) = self.execution_state.status.line_num
+        {
+            marks.entry(line).or_default().note = Some(format!(
+                "the run stopped here, at the {}-step budget",
+                crate::debug::MAX_STEPS.separate_with_commas()
+            ));
+        }
         for (line, labels) in at_labels {
             let m = marks.entry(line).or_default();
             if m.failed.is_none() {
@@ -536,7 +580,8 @@ impl Editor {
     }
 
     fn execute(&mut self, binary: &[u8], version: usize) {
-        self.pending_binary = Some((binary.to_vec(), version));
+        let (entry, args) = self.run_config();
+        self.pending_binary = Some((binary.to_vec(), version, entry, args));
         if self.worker_running {
             return;
         }
@@ -546,10 +591,12 @@ impl Editor {
 
         wasm_bindgen_futures::spawn_local(async move {
             loop {
-                let Some((binary, version)) = holder.borrow_mut().pending_binary.take() else {
+                let Some((binary, version, entry, args)) =
+                    holder.borrow_mut().pending_binary.take()
+                else {
                     break;
                 };
-                run_binary(&binary)
+                run_binary(&binary, &entry, &args)
                     .await
                     .unwrap_or_else(|e| log_1(&format!("Codillon runtime error: {e}").into()));
 
@@ -591,8 +638,249 @@ impl Editor {
                 ed.slider_mut()
                     .inner_mut()
                     .set_value_as_number(slider_step as f64);
+                ed.start_witness_search();
             }
             holder.borrow_mut().worker_running = false;
+        });
+    }
+
+    // The function a run calls, and its arguments: $main (with #args=, else its (@run …),
+    // else zeros), or a witness that was loaded as the run.
+    fn run_config(&self) -> (String, Vec<RunArg>) {
+        let plan = &self.spec_plan;
+        let to_args = |func: usize, vals: &[i128]| -> Vec<RunArg> {
+            let Some(fp) = plan.funcs.get(func) else {
+                return vec![];
+            };
+            fp.vars[..fp.nparams]
+                .iter()
+                .enumerate()
+                .map(|(i, v)| {
+                    let x = vals.get(i).copied().unwrap_or(0);
+                    if v.width == 64 {
+                        RunArg::I64(x as i64)
+                    } else {
+                        RunArg::I32(x as i32)
+                    }
+                })
+                .collect()
+        };
+        if let Some((f, args)) = &self.replay
+            && *f < plan.funcs.len()
+        {
+            return (format!("f{f}"), to_args(*f, args));
+        }
+        let vals = self
+            .link
+            .args
+            .clone()
+            .or_else(|| plan.run_args.as_ref().map(|(_, a)| a.clone()))
+            .unwrap_or_default();
+        ("main".to_string(), to_args(0, &vals))
+    }
+
+    fn run_hash(&self, binary: &[u8]) -> u64 {
+        use std::hash::{DefaultHasher, Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        binary.hash(&mut hasher);
+        self.run_config().hash(&mut hasher);
+        hasher.finish()
+    }
+
+    // Run the current binary again (the run's function or arguments changed).
+    fn rerun(&mut self, step: Option<StepRequest>) {
+        self.version += 1;
+        self.witness_version = self.version; // same program: keep the search's result
+        self.link.pending_step = step;
+        let binary = self.current_binary.clone();
+        self.previous_instrumented_binary_hash = self.run_hash(&binary);
+        self.execute(&binary, self.version);
+    }
+
+    fn func_label(&self, func: usize, args: &[i128]) -> String {
+        let name = self
+            .spec_plan
+            .funcs
+            .get(func)
+            .map(|f| f.display_name())
+            .unwrap_or_default();
+        let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+        format!("{name}({})", args.join(", "))
+    }
+
+    // Show the state of the input search above the slider.
+    fn show_witness(&mut self) {
+        use crate::witness_track::TrackState;
+        let budget = crate::debug::MAX_STEPS;
+        let (state, text, title) = match (&self.witness, &self.replay) {
+            (WitnessSearch::Found(w), Some((f, args))) => {
+                let call = self.func_label(*f, args);
+                match &w.verdict {
+                    Verdict::Refuted { step, .. } if *step >= budget => (
+                        TrackState::Replayed,
+                        format!(
+                            "\u{2696} counterexample {call} \u{b7} replayed up to the {}-step budget; it fails at step {} \u{2014} click to return to your run",
+                            budget.separate_with_commas(),
+                            step.separate_with_commas()
+                        ),
+                        String::new(),
+                    ),
+                    _ => (
+                        TrackState::Replayed,
+                        format!(
+                            "\u{2696} counterexample {call} \u{b7} replayed \u{2014} click to return to your run"
+                        ),
+                        String::new(),
+                    ),
+                }
+            }
+            (_, Some(_)) => (TrackState::Hidden, String::new(), String::new()),
+            (WitnessSearch::Idle, None) => (TrackState::Hidden, String::new(), String::new()),
+            (WitnessSearch::Searching { tried }, None) => (
+                TrackState::Note,
+                format!("searching inputs\u{2026} {tried} tried"),
+                String::new(),
+            ),
+            (WitnessSearch::NoneFound { tried, funcs }, None) => (
+                TrackState::Note,
+                format!(
+                    "\u{2218} no counterexample among {tried} inputs to {funcs} function{} (held on these inputs, not proven)",
+                    if *funcs == 1 { "" } else { "s" }
+                ),
+                String::new(),
+            ),
+            (WitnessSearch::Found(w), None) => {
+                let call = self.func_label(w.func, &w.args);
+                match &w.verdict {
+                    Verdict::Refuted { step, message, .. } if *step >= budget => (
+                        TrackState::NotReplayed,
+                        format!(
+                            "\u{2696} input {call} fails at step {} \u{b7} not replayed: beyond the {}-step budget",
+                            step.separate_with_commas(),
+                            budget.separate_with_commas()
+                        ),
+                        format!(
+                            "{message}\nA replay stops at step {} before the failure; click to replay up to there",
+                            budget.separate_with_commas()
+                        ),
+                    ),
+                    Verdict::Refuted { message, .. } => (
+                        TrackState::NotReplayed,
+                        format!(
+                            "\u{2696} input {call} fails \u{b7} not replayed \u{2014} click to replay"
+                        ),
+                        message.clone(),
+                    ),
+                    Verdict::Trapped(msg) => (
+                        TrackState::NotReplayed,
+                        format!(
+                            "\u{2696} input {call} traps \u{b7} not replayed \u{2014} click to replay"
+                        ),
+                        msg.clone(),
+                    ),
+                    _ => (TrackState::Hidden, String::new(), String::new()),
+                }
+            }
+        };
+        self.slider_mut()
+            .inner_mut()
+            .track_mut()
+            .inner_mut()
+            .set(state, &text, &title);
+    }
+
+    // Clicking the witness track: replay the witness, or return to the user's run.
+    fn toggle_replay(&mut self) {
+        if self.replay.is_some() {
+            self.replay = None;
+            self.rerun(None);
+        } else if let WitnessSearch::Found(w) = &self.witness {
+            self.replay = Some((w.func, w.args.clone()));
+            self.rerun(Some(StepRequest::Fail));
+        } else {
+            return;
+        }
+        self.show_witness();
+    }
+
+    // After a run of a new version: search edge inputs for a counterexample, one fresh
+    // instance per input, each checked as it runs (debug::run_witness).
+    fn start_witness_search(&mut self) {
+        if self.witness_version == self.version || self.replay.is_some() {
+            return;
+        }
+        self.witness_version = self.version;
+        let plan = self.spec_plan.clone();
+        let targets = search_targets(&plan);
+        if targets.is_empty() {
+            self.witness = WitnessSearch::Idle;
+            self.show_witness();
+            return;
+        }
+        self.witness = WitnessSearch::Searching { tried: 0 };
+        self.show_witness();
+        let version = self.version;
+        let binary = self.current_binary.clone();
+        let holder = self.holder();
+        wasm_bindgen_futures::spawn_local(async move {
+            let Ok(module) = compile_module(&binary).await else {
+                return;
+            };
+            let mut tried = 0;
+            for &f in &targets {
+                for args in candidates(&plan, f) {
+                    let run_args: Vec<RunArg> = plan.funcs[f].vars[..plan.funcs[f].nparams]
+                        .iter()
+                        .zip(&args)
+                        .map(|(v, x)| {
+                            if v.width == 64 {
+                                RunArg::I64(*x as i64)
+                            } else {
+                                RunArg::I32(*x as i32)
+                            }
+                        })
+                        .collect();
+                    if holder.borrow().witness_version != version {
+                        return; // the program changed
+                    }
+                    let check = StreamingCheck::new(plan.clone(), WITNESS_BUDGET);
+                    let Ok(run) = run_witness(&module, &format!("f{f}"), &run_args, check).await
+                    else {
+                        continue;
+                    };
+                    let mut ed = holder.borrow_mut();
+                    if ed.witness_version != version {
+                        return;
+                    }
+                    match run.verdict {
+                        Verdict::NotAdmitted => continue,
+                        Verdict::Refuted { .. } | Verdict::Trapped(_) => {
+                            ed.witness = WitnessSearch::Found(Witness {
+                                func: f,
+                                args,
+                                verdict: run.verdict,
+                            });
+                            ed.show_witness();
+                            return;
+                        }
+                        Verdict::Held | Verdict::Budget => {
+                            tried += 1;
+                            if tried % 8 == 0 {
+                                ed.witness = WitnessSearch::Searching { tried };
+                                ed.show_witness();
+                            }
+                        }
+                    }
+                }
+            }
+            let mut ed = holder.borrow_mut();
+            if ed.witness_version == version {
+                ed.witness = WitnessSearch::NoneFound {
+                    tried,
+                    funcs: targets.len(),
+                };
+                ed.show_witness();
+            }
         });
     }
 
@@ -621,6 +909,7 @@ impl Editor {
         }
 
         let saved_selection = self.get_lines_and_positions(&get_selection())?; // in case we need to revert
+        self.replay = None; // an edit returns to the user's own run
         let target = self.get_lines_and_positions(target_range)?;
         self.replace_range(&target, &saved_selection, new_str, true)
     }
@@ -1006,9 +1295,13 @@ impl Editor {
         self.update_displayed_types(&validized, &types)?;
 
         // instrumentation
-        let instrumented_binary =
-            &validized.build_instrumented_binary_with(&types, self.spec_plan.uses_memory)?;
-        let instrumented_binary_hash = Self::hash_binary(instrumented_binary);
+        let options = InstrumentOptions {
+            record_stores: self.spec_plan.uses_memory,
+            export_all: !search_targets(&self.spec_plan).is_empty(),
+        };
+        let instrumented_binary = &validized.build_instrumented_binary_with(&types, &options)?;
+        self.current_binary = Rc::new(instrumented_binary.clone());
+        let instrumented_binary_hash = self.run_hash(instrumented_binary);
         let step_count = RUN_LOG.with(|r| r.step_count());
         if self.previous_instrumented_binary_hash != instrumented_binary_hash {
             self.version += 1;
@@ -1109,6 +1402,7 @@ impl Editor {
             tagged_types.insert(
                 global.position_id,
                 FractionInfo {
+                    extra: 0,
                     line_no: global.line_idx,
                     indent: 0,
                     ty: AnnotatedOperatorType {
@@ -1138,6 +1432,7 @@ impl Editor {
                 tagged_types.insert(
                     func.positions.0,
                     FractionInfo {
+                        extra: 0,
                         line_no: func.lines.0,
                         indent: 0,
                         ty: AnnotatedOperatorType {
@@ -1166,6 +1461,7 @@ impl Editor {
                             tagged_types.insert(
                                 self.line(line_idx).id(),
                                 FractionInfo {
+                                    extra: 0,
                                     line_no: line_idx,
                                     indent,
                                     ty: AnnotatedOperatorType {
@@ -1194,6 +1490,7 @@ impl Editor {
                     tagged_types.insert(
                         self.line(local_line_idx).id(),
                         FractionInfo {
+                            extra: 0,
                             line_no: local_line_idx,
                             indent,
                             ty: AnnotatedOperatorType {
@@ -1257,6 +1554,7 @@ impl Editor {
                     tagged_types.insert(
                         op.position_id,
                         FractionInfo {
+                            extra: 0,
                             line_no: op.line_idx,
                             indent,
                             ty: AnnotatedOperatorType { inputs, outputs },
@@ -1265,6 +1563,23 @@ impl Editor {
                 }
             }
         }
+
+        // rows with a number line are wider: their code shifts right to make room
+        let mut line_extra: HashMap<usize, u16> = HashMap::new();
+        for info in tagged_types.values_mut() {
+            info.extra = refined_row_extra(&info.ty);
+            if info.extra > 0 {
+                let e = line_extra.entry(info.line_no).or_default();
+                *e = (*e).max(info.extra);
+            }
+        }
+        for idx in 0..self.len() {
+            let extra = line_extra.get(&idx).copied().unwrap_or(0);
+            if self.line(idx).extra_px() != extra {
+                self.line_mut(idx).set_extra_px(extra);
+            }
+        }
+        get_mut!(self.component, image).set_frame_extras(&line_extra);
 
         let animated_indents = self.animated_indents();
         let line_count = self.len();
@@ -1325,13 +1640,6 @@ impl Editor {
         });
         self.window.set_timeout_with_callback(&closure, delay_ms);
         self.pending_save = Some(closure);
-    }
-
-    fn hash_binary(binary: &[u8]) -> u64 {
-        use std::hash::{DefaultHasher, Hash, Hasher};
-        let mut hasher = DefaultHasher::new();
-        binary.hash(&mut hasher);
-        hasher.finish()
     }
 
     fn apply_selection(
@@ -1471,6 +1779,10 @@ impl Editor {
             action_history: ActionHistory::default(),
             storage: StorageHandle::new(),
             pending_binary: None,
+            current_binary: Default::default(),
+            replay: None,
+            witness: Default::default(),
+            witness_version: 0,
             previous_instrumented_binary_hash: 0,
             worker_running: false,
             pending_save: None,
@@ -1552,6 +1864,15 @@ impl Editor {
             });
 
         let e = self.holder();
+        self.slider_mut()
+            .inner_mut()
+            .track_mut()
+            .set_onmousedown(move |ev| {
+                ev.prevent_default();
+                e.borrow_mut().toggle_replay();
+            });
+
+        let e = self.holder();
         self.share_mut().set_onmousedown(move |ev| {
             ev.prevent_default();
             e.borrow_mut().share_link();
@@ -1582,6 +1903,8 @@ impl Editor {
         self.flush_save();
         self.link.load_generation += 1;
         self.link.embed = params.embed;
+        self.link.args = params.args.clone();
+        self.replay = None;
         self.link.storage_key = params.storage_key(STORAGE_ID);
         self.link.example = None;
         self.share_mut().inner_mut().set_embed(params.embed);
@@ -1691,9 +2014,9 @@ impl Editor {
                     Some(StepRequest::Last) => f.push_str("&step=last"),
                     _ => {}
                 }
-                f
+                f + &args_fragment(&self.link.args)
             }
-            _ => share_fragment(&text, step, false),
+            _ => share_fragment(&text, step, false) + &args_fragment(&self.link.args),
         };
         let url = self.window.location_without_hash() + &fragment;
         if self.link.embed {

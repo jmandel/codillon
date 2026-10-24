@@ -1,7 +1,7 @@
-;; S3 (edge case): the search starts at r = 1. Only n = 0 is wrong:
-;; the invariant r*r <= n fails on loop entry, and so does the measure.
+;; S3 (edge case): the search starts at r = 1. Your run (n = 10) is right; the input
+;; search finds n = 0, where the invariant r*r <= n fails on loop entry.
 (func $main
-  i32.const 0
+  i32.const 10
   call $isqrt
   drop
 )

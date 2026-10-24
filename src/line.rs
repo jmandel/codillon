@@ -176,6 +176,7 @@ pub struct SpecMark {
     pub held: usize,            // checks written here that held so far on this run
     pub unknown: Option<String>, // why some check could not be evaluated
     pub assumed: bool,          // an (@assume …) line: taken without proof, checked at run time
+    pub note: Option<String>,   // a remark on the run (e.g. it stopped at the step budget)
 }
 
 impl SpecMark {
@@ -197,6 +198,7 @@ pub struct CodeLine {
     info: LineInfo,
     animation_state: AnimationState,
     spec_mark: SpecMark,
+    extra_px: u16, // extra indentation of a row with a (wider) refined number line
 }
 
 impl WithElement for CodeLine {
@@ -264,6 +266,8 @@ impl Component for CodeLine {
             && !reason.is_empty()
         {
             assert_eq!(comment, Some(reason.as_str()));
+        } else if let Some(note) = &self.spec_mark.note {
+            assert_eq!(comment, Some(note.as_str()));
         } else {
             assert_eq!(comment, None);
         }
@@ -467,6 +471,7 @@ impl CodeLine {
             info: LineInfo::default(),
             animation_state: Default::default(),
             spec_mark: Default::default(),
+            extra_px: 0,
         };
 
         ret.contents.get_mut().0.set_attribute("class", "instr");
@@ -488,12 +493,14 @@ impl CodeLine {
                 .1
                 .0
                 .set_attribute("data-commentary", msg);
+            self.contents.get_mut().1.0.set_attribute("title", msg);
         } else if let LineKind::Malformed(reason) = &self.info.kind {
             self.contents
                 .get_mut()
                 .1
                 .0
                 .set_attribute("data-commentary", reason);
+            self.contents.get_mut().1.0.set_attribute("title", reason);
         } else if let Activity::Inactive(reason) = &self.info.active
             && !reason.is_empty()
         {
@@ -502,12 +509,14 @@ impl CodeLine {
                 .1
                 .0
                 .set_attribute("data-commentary", reason);
+            self.contents.get_mut().1.0.set_attribute("title", reason);
         } else if let Some(msg) = &self.spec_mark.failed {
             self.contents
                 .get_mut()
                 .1
                 .0
                 .set_attribute("data-commentary", msg);
+            self.contents.get_mut().1.0.set_attribute("title", msg);
         } else if let Some(reason) = &self.info.invalid
             && !reason.is_empty()
         {
@@ -516,12 +525,21 @@ impl CodeLine {
                 .1
                 .0
                 .set_attribute("data-commentary", reason);
+            self.contents.get_mut().1.0.set_attribute("title", reason);
+        } else if let Some(note) = &self.spec_mark.note {
+            self.contents
+                .get_mut()
+                .1
+                .0
+                .set_attribute("data-commentary", note);
+            self.contents.get_mut().1.0.set_attribute("title", note);
         } else {
             self.contents
                 .get_mut()
                 .1
                 .0
                 .remove_attribute("data-commentary");
+            self.contents.get_mut().1.0.remove_attribute("title");
         }
 
         self.contents.set_attribute("class", &self.class());
@@ -711,14 +729,27 @@ impl CodeLine {
         // otherwise, snap change
         self.info.indent = Some(val);
         self.animation_state.indent.snap(indent_px(4 + val) as f64);
-        self.contents.get_mut().0.set_attribute(
-            "style",
-            &format!(
-                "margin-left: {}px;",
-                self.animation_state.indent.value().unwrap()
-            ),
-        );
+        self.apply_margin();
         AnimationRequest(false)
+    }
+
+    fn apply_margin(&mut self) {
+        if let Some(v) = self.animation_state.indent.value() {
+            let px = v + self.extra_px as f64;
+            self.contents
+                .get_mut()
+                .0
+                .set_attribute("style", &format!("margin-left: {px}px;"));
+        }
+    }
+
+    pub fn extra_px(&self) -> u16 {
+        self.extra_px
+    }
+
+    pub fn set_extra_px(&mut self, px: u16) {
+        self.extra_px = px;
+        self.apply_margin();
     }
 
     pub fn unset_indent(&mut self) {
@@ -728,13 +759,7 @@ impl CodeLine {
 
     pub fn animate(&mut self, t: f64) -> AnimationRequest {
         self.animation_state.indent.animate(t);
-        self.contents.get_mut().0.set_attribute(
-            "style",
-            &format!(
-                "margin-left: {}px;",
-                self.animation_state.indent.value().unwrap()
-            ),
-        );
+        self.apply_margin();
 
         self.animation_state.indent.is_pending()
     }
@@ -760,14 +785,15 @@ impl CodeLine {
         if mark == self.spec_mark {
             return;
         }
-        let debug_span = &mut self.contents.get_mut().1.1.0;
+        // the count follows the code (on the instruction span)
+        let instr_span = &mut self.contents.get_mut().0;
         match mark.held_label() {
-            Some(label) => debug_span.set_attribute("data-held", &label),
-            None => debug_span.remove_attribute("data-held"),
+            Some(label) => instr_span.set_attribute("data-held", &label),
+            None => instr_span.remove_attribute("data-held"),
         }
         match &mark.unknown {
-            Some(reason) => debug_span.set_attribute("title", reason),
-            None => debug_span.remove_attribute("title"),
+            Some(reason) => instr_span.set_attribute("title", reason),
+            None => instr_span.remove_attribute("title"),
         }
         self.spec_mark = mark;
         self.conform();

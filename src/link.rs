@@ -28,6 +28,8 @@ pub struct LinkParams {
     pub source: Option<ProgramSource>,
     pub step: Option<StepRequest>,
     pub embed: bool,
+    pub fit: Option<bool>,       // fit=1: scale the editor to the frame width
+    pub args: Option<Vec<i128>>, // arguments for $main (overrides its (@run …))
 }
 
 impl LinkParams {
@@ -55,6 +57,15 @@ impl LinkParams {
                     }
                 }
                 "embed" => ret.embed = value == "1" || value.is_empty(),
+                "fit" => ret.fit = Some(value == "1" || value.is_empty()),
+                "args" => {
+                    ret.args = value
+                        .split(',')
+                        .filter(|s| !s.is_empty())
+                        .map(|s| s.trim().parse::<i128>())
+                        .collect::<Result<Vec<_>, _>>()
+                        .ok()
+                }
                 _ => {}
             }
         }
@@ -148,6 +159,20 @@ pub fn decode_program(payload: &str) -> Result<String> {
     Ok(String::from_utf8(bytes)?)
 }
 
+/// The `&args=…` part of a fragment.
+pub fn args_fragment(args: &Option<Vec<i128>>) -> String {
+    match args {
+        Some(a) => format!(
+            "&args={}",
+            a.iter()
+                .map(|x| x.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
+        None => String::new(),
+    }
+}
+
 /// Build the fragment for a shareable link to `text` at slider position `step`.
 pub fn share_fragment(text: &str, step: Option<StepRequest>, embed: bool) -> String {
     let mut ret = format!("#src={}", encode_program(text));
@@ -175,6 +200,11 @@ mod tests {
         assert_eq!(p.source, Some(ProgramSource::Example("isqrt-s3".into())));
         assert_eq!(p.step, Some(StepRequest::Fail));
         assert!(p.embed);
+        let p = LinkParams::parse("#ex=isqrt&args=10,-3");
+        assert_eq!(p.args, Some(vec![10, -3]));
+        assert_eq!(args_fragment(&p.args), "&args=10,-3");
+        assert_eq!(LinkParams::parse("#args=1,x").args, None);
+        assert_eq!(LinkParams::parse("#embed=1&fit=1").fit, Some(true));
         let p = LinkParams::parse("step=12&ex=gcd");
         assert_eq!(p.step, Some(StepRequest::Number(12)));
         assert!(!p.embed);
