@@ -124,6 +124,9 @@ struct Editor {
     storage: Option<StorageHandle>,
     pending_binary: Option<(Vec<u8>, usize, Vec<RunArg>)>,
     main_params: Vec<wasmparser::ValType>, // the parameter types of $main
+    /// the v2 kernel's result for the current text (design 16): per-cup verdicts, chips, the
+    /// runtime-check plan of gradual mode. Phase D draws from this.
+    v2: Option<Rc<V2State>>,
     previous_instrumented_binary_hash: u64,
     worker_running: bool,
     pending_save: Option<Closure<dyn Fn()>>,
@@ -151,6 +154,12 @@ struct LinkState {
     pending_step: Option<StepRequest>,
     load_generation: usize,
     args: Option<Vec<i128>>, // #args=… for $main
+}
+
+/// The v2 kernel's view of the current text.
+pub struct V2State {
+    pub out: crate::v2::out::ModuleOut,
+    pub plan: Rc<crate::v2::runtime::RuntimePlan>,
 }
 
 pub struct EditorHolder(Rc<RefCell<Editor>>);
@@ -506,10 +515,47 @@ impl Editor {
             .collect()
     }
 
-    // Placeholder for a proof kernel: re-evaluate whatever it checks against the program
-    // and the current run (called after each run, and when an edit leaves the binary
-    // unchanged). No kernel is wired in yet.
+    // Re-evaluate what the proof kernel says against the current run (called after each run,
+    // and when an edit leaves the binary unchanged). The kernel itself runs in `run_v2_kernel`;
+    // a failed runtime check is already the run's error (RUN_LOG). Drawing is phase D.
     fn recheck_proofs(&mut self) {}
+
+    /// The v2 kernel's output for the current text, if it has been checked (for phase D).
+    #[allow(dead_code)]
+    pub fn v2(&self) -> Option<&V2State> {
+        self.v2.as_deref()
+    }
+
+    /// Whole-document v2 erasure (§1.8): lines whose erasure depends on context (lemma bodies,
+    /// fact-handle get/set/tee) are re-classified by their erased text. Per-line erasure already
+    /// happened when each line's text changed.
+    fn apply_v2_erasure(&mut self) {
+        let texts: Vec<String> = (0..self.len()).map(|i| self.line(i).instr().get().to_string()).collect();
+        let doc = crate::v2::erase::erase_lines(&texts);
+        for (i, e) in doc.iter().enumerate() {
+            let code = crate::v2::sexpr::split_comment(e).0.trim_end().to_string();
+            let want = if code.trim() == texts[i].trim() { None } else { Some(code) };
+            if self.line(i).info().erased != want {
+                self.line_mut(i).set_erasure(want);
+            }
+        }
+    }
+
+    /// Run the v2 kernel on the current text (one pass per function; deterministic).
+    fn run_v2_kernel(&mut self) -> Rc<V2State> {
+        let texts: Vec<String> = (0..self.len())
+            .map(|i| {
+                let l = self.line(i);
+                format!("{}{}", l.instr().get(), l.comment().get())
+            })
+            .collect();
+        let module = crate::v2::ast::Module::parse_lines(&texts);
+        let out = crate::v2::kernel::check_module(&module, true);
+        let plan = Rc::new(crate::v2::runtime::RuntimePlan::new(&module, &out));
+        let state = Rc::new(V2State { out, plan });
+        self.v2 = Some(state.clone());
+        state
+    }
 
     fn reset_execution_state(&mut self) {
         self.execution_state.reset(&self.slot_connections);
@@ -891,6 +937,10 @@ impl Editor {
     }
 
     fn on_change(&mut self) -> Result<()> {
+        // v2: erase proof syntax by context, then check proofs
+        self.apply_v2_erasure();
+        let v2 = self.run_v2_kernel();
+
         // repair syntax
         fix_syntax(self);
 
@@ -915,7 +965,9 @@ impl Editor {
             .unwrap_or_default();
 
         // instrumentation
-        let instrumented_binary = &validized.build_instrumented_binary(&types)?;
+        // gradual mode: unfed cups become runtime checks in the instrumented run (R35)
+        RUN_LOG.with(|r| r.set_v2_plan(Some(v2.plan.clone())));
+        let instrumented_binary = &validized.build_instrumented_binary_with_checks(&types, Some(&v2.plan))?;
         let instrumented_binary_hash = self.run_hash(instrumented_binary);
         let step_count = RUN_LOG.with(|r| r.step_count());
         if self.previous_instrumented_binary_hash != instrumented_binary_hash {
@@ -1370,6 +1422,7 @@ impl Editor {
             storage: StorageHandle::new(),
             pending_binary: None,
             main_params: vec![],
+            v2: None,
             previous_instrumented_binary_hash: 0,
             worker_running: false,
             pending_save: None,

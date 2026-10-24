@@ -75,6 +75,23 @@ impl InstrImports {
     ];
 }
 
+/// Slot numbers at and above this carry values sent to a v2 runtime check (never real slots).
+pub const V2_CHECK_SLOT_BASE: u32 = 0x4000_0000;
+/// A step-function argument with this bit set (and bit 31 clear) runs v2 runtime check `arg & !flag`.
+pub const V2_CHECK_FLAG: u32 = 0x4000_0000;
+/// The instrumented module exports its memory under this name when it has runtime checks.
+pub const V2_MEMORY_EXPORT: &str = "codillon_v2_memory";
+
+fn v2_val_type(t: crate::v2::ast::ValTy) -> wasm_encoder::ValType {
+    use crate::v2::ast::ValTy;
+    match t {
+        ValTy::I32 => wasm_encoder::ValType::I32,
+        ValTy::I64 => wasm_encoder::ValType::I64,
+        ValTy::F32 => wasm_encoder::ValType::F32,
+        ValTy::F64 => wasm_encoder::ValType::F64,
+    }
+}
+
 #[derive(PartialEq, Eq)]
 pub enum HelperImportKind<'a> {
     Func {
@@ -1021,6 +1038,19 @@ impl<'a> ValidModule<'a> {
     }
 
     pub fn build_instrumented_binary(self, types: &TypedModule) -> Result<Vec<u8>> {
+        self.build_instrumented_binary_with_checks(types, None)
+    }
+
+    /// Instrument, and (gradual mode, design 16 R35) compile the v2 kernel's runtime checks in:
+    /// opaque values are copied into shadow locals where they are born, and before a line with
+    /// checks their values are sent to the host (`record_*` with slot numbers from
+    /// `V2_CHECK_SLOT_BASE`) and the step function is called with `V2_CHECK_FLAG | check id`;
+    /// the host evaluates the check and stops the run if it fails.
+    pub fn build_instrumented_binary_with_checks(
+        self,
+        types: &TypedModule,
+        checks: Option<&crate::v2::runtime::RuntimePlan>,
+    ) -> Result<Vec<u8>> {
         use wasm_encoder::*;
         let mut module = Module::default();
 
@@ -1248,6 +1278,10 @@ impl<'a> ValidModule<'a> {
             if !self.functions.is_empty() {
                 exports.export("main", ExportKind::Func, num_func_imports);
             }
+            // the host reads memory to evaluate memory-reading predicates in runtime checks
+            if checks.is_some() && !self.memory.is_empty() {
+                exports.export(V2_MEMORY_EXPORT, ExportKind::Memory, 0);
+            }
             module.section(&exports);
         }
 
@@ -1269,12 +1303,17 @@ impl<'a> ValidModule<'a> {
 
             // First in code section: the original functions
             for func_idx in 0..self.functions.len() {
+                let plan = checks.and_then(|c| c.for_defined(func_idx)).filter(|p| {
+                    // the kernel's view of the function must match the binary's
+                    p.n_locals as usize == types.funcs[func_idx].params.len() + types.funcs[func_idx].locals.len()
+                });
                 let function = self.build_function(
                     func_idx,
                     types,
                     step_function_idx,
                     &mut block_count,
                     &info,
+                    plan,
                 )?;
                 code_section.function(&function);
             }
@@ -1321,18 +1360,59 @@ impl<'a> ValidModule<'a> {
         step_function_idx: u32,
         block_count: &mut usize,
         info: &FunctionHelperInfo,
+        checks: Option<&crate::v2::runtime::FuncPlan>,
     ) -> Result<wasm_encoder::Function> {
         use wasm_encoder::Instruction::*;
         let orig_function = &self.functions[func_idx];
         let typed_function = &types.funcs[func_idx];
         let num_instr_imports = InstrImports::TYPE_INDICES.len() as u32; // also idx of step function
-        let mut new_function = wasm_encoder::Function::new_with_locals_types(
-            orig_function
-                .locals
-                .iter()
-                .map(|ty| RoundtripReencoder.val_type(ty.inner).fmt_err())
-                .collect::<Result<Vec<_>>>()?,
-        );
+        let mut local_tys = orig_function
+            .locals
+            .iter()
+            .map(|ty| RoundtripReencoder.val_type(ty.inner).fmt_err())
+            .collect::<Result<Vec<_>>>()?;
+        if let Some(p) = checks {
+            local_tys.extend(p.shadow_tys.iter().map(|t| v2_val_type(*t)));
+        }
+        let mut new_function = wasm_encoder::Function::new_with_locals_types(local_tys);
+        // v2 runtime checks: shadow captures and check calls
+        let shadow_base = checks.map(|p| p.n_locals).unwrap_or(0);
+        let captures = |f: &mut wasm_encoder::Function, acts: &[crate::v2::runtime::ShadowAct]| {
+            use crate::v2::out::Capture;
+            for a in acts {
+                match a.how {
+                    Capture::Param(i) | Capture::Local(i) => {
+                        f.instruction(&LocalGet(i));
+                        f.instruction(&LocalSet(shadow_base + a.shadow));
+                    }
+                    Capture::Top => {
+                        f.instruction(&LocalTee(shadow_base + a.shadow));
+                    }
+                    Capture::Global(i) => {
+                        f.instruction(&GlobalGet(i));
+                        f.instruction(&LocalSet(shadow_base + a.shadow));
+                    }
+                }
+            }
+        };
+        let emit_checks = |f: &mut wasm_encoder::Function, line: u32| {
+            let Some(p) = checks else { return };
+            let Some(ids) = p.before.get(&line) else { return };
+            for &id in ids {
+                for (k, sh) in p.sends_of(id).iter().enumerate() {
+                    f.instruction(&LocalGet(shadow_base + sh.0));
+                    f.instruction(&I32Const((V2_CHECK_SLOT_BASE + k as u32) as i32));
+                    f.instruction(&Call(match sh.1 {
+                        crate::v2::ast::ValTy::I32 => InstrImports::RecordI32,
+                        crate::v2::ast::ValTy::I64 => InstrImports::RecordI64,
+                        crate::v2::ast::ValTy::F32 => InstrImports::RecordF32,
+                        crate::v2::ast::ValTy::F64 => InstrImports::RecordF64,
+                    } as u32));
+                }
+                f.instruction(&I32Const((V2_CHECK_FLAG | id) as i32));
+                f.instruction(&Call(step_function_idx));
+            }
+        };
 
         let transparent_record_results =
             |f: &mut wasm_encoder::Function, results: &Vec<SlotUse>| {
@@ -1402,10 +1482,14 @@ impl<'a> ValidModule<'a> {
         }
 
         step_debug(&mut new_function, orig_function.lines.0, false);
+        if let Some(p) = checks {
+            captures(&mut new_function, &p.entry);
+        }
 
         // Record all operators, translating func idxes as necessary
         for (i, codillon_operator) in orig_function.operators.iter().enumerate() {
             step_debug(&mut new_function, codillon_operator.line_idx, false);
+            emit_checks(&mut new_function, codillon_operator.line_idx as u32 + 1);
 
             let mut op = RoundtripReencoder.instruction(codillon_operator.inner.op.clone())?;
             let op_type = &typed_function.ops[i];
@@ -1499,6 +1583,11 @@ impl<'a> ValidModule<'a> {
 
             // record result operands
             transparent_record_results(&mut new_function, &op_type.outputs);
+
+            // v2: capture opaque values born on this line
+            if let Some(acts) = checks.and_then(|p| p.after.get(&(codillon_operator.line_idx as u32 + 1))) {
+                captures(&mut new_function, acts);
+            }
 
             match op {
                 // signal back from function call
@@ -3053,17 +3142,39 @@ pub(crate) mod tests {
 
     impl FakeTextLine {
         fn new(s: &str, id: u32) -> Self {
-            let kind = parse_line(s);
-            let symbols = parse_line_symbols(s, &kind);
+            let (kind, ann) = crate::syntax::parse_line_spec(s);
+            let erased = ann.map(|crate::syntax::LineAnnotation::Erased(e)| e);
+            let symbols = parse_line_symbols(erased.as_deref().unwrap_or(s), &kind);
             Self {
                 instr_text: String::from(s),
                 info: LineInfo {
                     kind,
                     id,
                     symbols,
+                    erased,
                     ..Default::default()
                 },
             }
+        }
+    }
+
+    impl FakeTextBuffer {
+        /// A v2 program, erased line by line in context (as the editor's document pass does).
+        fn from_v2(src: &str) -> Self {
+            let lines: Vec<&str> = src.lines().collect();
+            let mut b = FakeTextBuffer::default();
+            for (i, e) in crate::v2::erase::erase_lines(&lines).iter().enumerate() {
+                let code = crate::v2::sexpr::split_comment(e).0.trim_end().to_string();
+                let (text, _) = crate::v2::sexpr::split_comment(lines[i]);
+                b.push_line(text.trim_end());
+                let l = b.lines.last_mut().unwrap();
+                if code.trim() != l.instr_text.trim() {
+                    l.info.kind = parse_line(&code);
+                    l.info.symbols = parse_line_symbols(&code, &l.info.kind);
+                    l.info.erased = Some(code);
+                }
+            }
+            b
         }
     }
 
@@ -3121,6 +3232,13 @@ pub(crate) mod tests {
     }
 
     fn test_editor_flow(editor: &mut FakeTextBuffer) -> Result<EditorOutput> {
+        test_editor_flow_with(editor, None)
+    }
+
+    fn test_editor_flow_with(
+        editor: &mut FakeTextBuffer,
+        checks: Option<&crate::v2::runtime::RuntimePlan>,
+    ) -> Result<EditorOutput> {
         use anyhow::Context;
 
         fix_syntax(editor);
@@ -3152,7 +3270,7 @@ pub(crate) mod tests {
         let connections = find_connections(&validized, &types);
 
         let instrumented_binary = validized
-            .build_instrumented_binary(&types)
+            .build_instrumented_binary_with_checks(&types, checks)
             .context("build_executable_binary")?;
 
         let instrumented_text =
@@ -3180,13 +3298,21 @@ pub(crate) mod tests {
 
         let engine = Engine::default();
         let module = Module::new(&engine, binary)?;
-        let mut store = Store::new(&engine, RunLog::default());
+        let log = RunLog::default();
+        V2_TEST_PLAN.with(|p| log.set_v2_plan(p.borrow().clone()));
+        let mut store = Store::new(&engine, log);
         let mut linker = Linker::new(&engine);
 
         type Ctx<'a> = Caller<'a, RunLog>;
 
         // Match the imports provided in make_imports() (excluding graphics for now)
-        linker.func_wrap("codillon_debug", "record_step", |ctx: Ctx<'_>, n| -> i32 {
+        linker.func_wrap("codillon_debug", "record_step", |mut ctx: Ctx<'_>, n: u32| -> i32 {
+            if n & (1 << 31) == 0 && n & V2_CHECK_FLAG != 0
+                && let Some(Extern::Memory(m)) = ctx.get_export(V2_MEMORY_EXPORT)
+            {
+                let bytes = m.data(&ctx).to_vec();
+                ctx.data().set_v2_memory_bytes(Some(bytes));
+            }
             ctx.data().wasm_step(n).into()
         })?;
         linker.func_wrap("codillon_debug", "record_invalid", |ctx: Ctx<'_>| {
@@ -3230,6 +3356,59 @@ pub(crate) mod tests {
         store.data().finish(res.map_err(|x| x.to_string()))?;
 
         Ok(store.into_data())
+    }
+
+    fn test_execution_with_checks(binary: &[u8], plan: std::rc::Rc<crate::v2::runtime::RuntimePlan>) -> Result<RunLog> {
+        V2_TEST_PLAN.with(|p| *p.borrow_mut() = Some(plan));
+        let r = test_execution(binary, &[], &mut []);
+        V2_TEST_PLAN.with(|p| *p.borrow_mut() = None);
+        r
+    }
+
+    thread_local! {
+        static V2_TEST_PLAN: std::cell::RefCell<Option<std::rc::Rc<crate::v2::runtime::RuntimePlan>>> = Default::default();
+    }
+
+    /// Gradual mode end to end: the v2 examples' $main runs in the real instrumented binary, with
+    /// the kernel's runtime checks compiled in; a failing check stops the run on its cup's line.
+    #[test]
+    fn v2_runtime_checks_in_the_instrumented_binary() -> Result<()> {
+        let cases: &[(&str, Option<u32>)] = &[
+            ("parity", None),
+            ("parity-missing-proof", None),
+            ("parity-bug-gate", Some(46 + 4)),
+            ("isqrt", None),
+            ("isqrt-wrong-cup", None),
+            ("gcd", None),
+            ("gcd-bug-guard", Some(121 + 5)),
+            ("primality", None),
+            ("hashtable", None),
+            ("hashtable-stale", Some(320 + 5)),
+            ("hashtable-bug-tombstone", None),
+        ];
+        for (name, fail_line) in cases {
+            let path = format!("{}/public/examples/v2/{name}.wat", env!("CARGO_MANIFEST_DIR"));
+            let src = std::fs::read_to_string(&path)?;
+            let mut editor = FakeTextBuffer::from_v2(&src);
+            for (i, line) in editor.lines.iter().enumerate() {
+                assert!(!matches!(line.info.kind, LineKind::Malformed(_)), "{name}:{} malformed: {}", i + 1, line.instr_text);
+            }
+            let m = crate::v2::ast::Module::parse(&src);
+            let out = crate::v2::kernel::check_module(&m, true);
+            let plan = std::rc::Rc::new(crate::v2::runtime::RuntimePlan::new(&m, &out));
+            let EditorOutput { binary, .. } = test_editor_flow_with(&mut editor, Some(&plan))?;
+            let log = test_execution_with_checks(&binary, plan.clone())?;
+            match fail_line {
+                None => assert_eq!(TerminationType::Success, log.termination_type(), "{name}: {:?}", log.v2_failure()),
+                Some(l) => {
+                    assert_eq!(TerminationType::Error, log.termination_type(), "{name}");
+                    let f = log.v2_failure().expect("a failed check");
+                    assert_eq!(f.line, *l, "{name}: {}", f.message);
+                    assert!(f.message.starts_with("check failed"), "{}", f.message);
+                }
+            }
+        }
+        Ok(())
     }
 
     const EXPECTED_TYPES: &str = r#"  (type (func))

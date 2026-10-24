@@ -26,6 +26,13 @@ use wasm_bindgen::{JsCast, prelude::*};
 const MAX_STEP_COUNT: usize = 100_001;
 
 pub struct RunLog {
+    /// v2 runtime checks (gradual mode): the plan, values sent for the next check, the memory to
+    /// read, and the failed check that stopped the run (line index, message)
+    v2_plan: std::cell::RefCell<Option<std::rc::Rc<crate::v2::runtime::RuntimePlan>>>,
+    v2_vals: std::cell::RefCell<Vec<u64>>,
+    v2_memory: std::cell::RefCell<Option<JsValue>>,
+    v2_mem_bytes: std::cell::RefCell<Option<Vec<u8>>>,
+    v2_failure: std::cell::RefCell<Option<V2CheckFailure>>,
     termination: Cell<TerminationType>,
     error_str: CodillonCell<String>,
     step_count: Cell<usize>,
@@ -36,6 +43,11 @@ pub struct RunLog {
 impl Default for RunLog {
     fn default() -> Self {
         Self {
+            v2_plan: Default::default(),
+            v2_vals: Default::default(),
+            v2_memory: Default::default(),
+            v2_mem_bytes: Default::default(),
+            v2_failure: Default::default(),
             termination: Cell::new(Default::default()),
             error_str: CodillonCell::new(Default::default()),
             step_count: Cell::new(0),
@@ -47,7 +59,74 @@ impl Default for RunLog {
     }
 }
 
+/// A v2 runtime check that failed and stopped the run.
+#[derive(Clone, Debug, PartialEq)]
+pub struct V2CheckFailure {
+    /// 1-based line of the cup
+    pub line: u32,
+    pub check: u32,
+    pub message: String,
+}
+
+impl WasmValue {
+    pub fn bits(&self) -> u64 {
+        match self {
+            WasmValue::I32(v) => *v as u32 as u64,
+            WasmValue::I64(v) => *v as u64,
+            WasmValue::F32(v) => v.to_bits() as u64,
+            WasmValue::F64(v) => v.to_bits(),
+        }
+    }
+}
+
 impl RunLog {
+    /// The runtime-check plan for the next run (None: no checks).
+    pub fn set_v2_plan(&self, plan: Option<std::rc::Rc<crate::v2::runtime::RuntimePlan>>) {
+        *self.v2_plan.borrow_mut() = plan;
+    }
+
+    pub fn set_v2_memory(&self, mem: Option<JsValue>) {
+        *self.v2_memory.borrow_mut() = mem;
+    }
+
+    /// The check that stopped the last run, if one did.
+    pub fn v2_failure(&self) -> Option<V2CheckFailure> {
+        self.v2_failure.borrow().clone()
+    }
+
+    /// A memory snapshot supplied by the host directly (native runs).
+    pub fn set_v2_memory_bytes(&self, bytes: Option<Vec<u8>>) {
+        *self.v2_mem_bytes.borrow_mut() = bytes;
+    }
+
+    fn v2_memory_bytes(&self) -> Option<Vec<u8>> {
+        if let Some(b) = self.v2_mem_bytes.borrow_mut().take() {
+            return Some(b);
+        }
+        let mem = self.v2_memory.borrow();
+        let mem = mem.as_ref()?;
+        let buf = Reflect::get(mem, &JsValue::from_str("buffer")).ok()?;
+        Some(js_sys::Uint8Array::new(&buf).to_vec())
+    }
+
+    /// Evaluate v2 runtime check `id` on the values just sent. Returns whether the run continues.
+    fn v2_check(&self, id: u32) -> bool {
+        use crate::v2::runtime::CheckOutcome;
+        let vals = std::mem::take(&mut *self.v2_vals.borrow_mut());
+        let plan = self.v2_plan.borrow().clone();
+        let Some(plan) = plan else { return true };
+        let Some(spec) = plan.checks.get(id as usize) else { return true };
+        let needs_mem = !plan.module.memory_min.is_none();
+        let mem = if needs_mem { self.v2_memory_bytes() } else { None };
+        match plan.eval_check(id, &vals, mem.as_deref()) {
+            CheckOutcome::Holds | CheckOutcome::Unknown(_) => true,
+            CheckOutcome::Fails(message) => {
+                *self.v2_failure.borrow_mut() = Some(V2CheckFailure { line: spec.line, check: id, message });
+                false
+            }
+        }
+    }
+
     pub fn termination_type(&self) -> TerminationType {
         self.termination.get()
     }
@@ -61,6 +140,8 @@ impl RunLog {
     }
 
     fn reset(&self) {
+        self.v2_vals.borrow_mut().clear();
+        *self.v2_failure.borrow_mut() = None;
         self.termination.set(Default::default());
         self.error_str.set(String::new());
         self.step_count.set(0);
@@ -104,6 +185,10 @@ impl RunLog {
 
     pub fn wasm_step(&self, line_num: u32) -> bool {
         use TerminationType::*;
+        if line_num & (1 << 31) == 0 && line_num & crate::utils::V2_CHECK_FLAG != 0 {
+            // a v2 runtime check, not a step
+            return self.v2_check(line_num & !crate::utils::V2_CHECK_FLAG);
+        }
 
         self.with_current_step_mut(|step| step.line_num = line_num);
         self.commit_step();
@@ -134,7 +219,12 @@ impl RunLog {
     }
 
     pub fn record_slot(&self, val: impl Into<WasmValue>, slot: u32) {
-        self.with_current_step_mut(|step| step.slot_assignments.push((slot, val.into())));
+        let val = val.into();
+        if slot >= crate::utils::V2_CHECK_SLOT_BASE {
+            self.v2_vals.borrow_mut().push(val.bits());
+            return;
+        }
+        self.with_current_step_mut(|step| step.slot_assignments.push((slot, val)));
     }
 
     pub fn call_frame_op(&self, op: CallFrameOp) {
@@ -163,7 +253,11 @@ impl RunLog {
                     }
                     self.commit_step();
                     self.set_termination_type(TerminationType::Error);
-                    self.set_error_string(err);
+                    // a failed v2 runtime check stops the run with `unreachable`: say why
+                    match self.v2_failure() {
+                        Some(f) => self.set_error_string(f.message),
+                        None => self.set_error_string(err),
+                    }
                 }
                 TerminationType::HitInvalid | TerminationType::TooManySteps => {} // error is expected
                 TerminationType::Success | TerminationType::Error => {
@@ -664,6 +758,8 @@ pub async fn run_binary(binary: &[u8], args: &[RunArg]) -> Result<()> {
         .fmt_err()?;
     let instance = Reflect::get(&js_value, &JsValue::from_str("instance")).fmt_err()?;
     let exports = Reflect::get(&instance, &JsValue::from_str("exports")).fmt_err()?;
+    let memory = Reflect::get(&exports, &JsValue::from_str(crate::utils::V2_MEMORY_EXPORT)).ok().filter(|m| !m.is_undefined());
+    RUN_LOG.with(|r| r.set_v2_memory(memory));
 
     let main = Reflect::get(&exports, &JsValue::from_str("main")).fmt_err()?;
     let Some(main) = wasm_bindgen::JsCast::dyn_ref::<Function>(&main) else {

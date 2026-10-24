@@ -961,16 +961,23 @@ pub fn parse_line(s: &str) -> LineKind {
     parse_line_spec(s).0
 }
 
-/// What a line carries for a proof kernel besides its WebAssembly (e.g. an annotation, or
-/// a refined header's erased text). No kinds yet: a line is plain WebAssembly.
+/// What a line carries for the v2 proof kernel besides its WebAssembly.
 #[derive(Debug, Clone, PartialEq)]
-pub enum LineAnnotation {}
+pub enum LineAnnotation {
+    /// the line's v2 text erases to this plain-WAT text (design 16 §1.8), which is what is
+    /// classified and assembled; the editor shows the original text
+    Erased(String),
+}
 
-/// Parse a line: its kind, and whatever proof-kernel annotation it carries. This is the
-/// hook where per-line erasure plugs in (annotation lines and refined headers would be
-/// classified by their erased text); for now it is plain WebAssembly line parsing.
+/// Parse a line: its kind, classified by its context-free v2 erasure, and the erased text when
+/// it differs from the line (`prove 1` → `nop`, a refined header → plain types, …).
 pub fn parse_line_spec(s: &str) -> (LineKind, Option<LineAnnotation>) {
-    (parse_wasm_line(s), None)
+    let e = crate::v2::erase::erase_line(s);
+    if e.trim() == s.trim() {
+        (parse_wasm_line(s), None)
+    } else {
+        (parse_wasm_line(&e), Some(LineAnnotation::Erased(e)))
+    }
 }
 
 fn parse_wasm_line(s: &str) -> LineKind {

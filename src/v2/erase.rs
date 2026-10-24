@@ -226,3 +226,11 @@ mod tests {
         assert_eq!(split_comment("(export \"a;;b\") ;; c").1, ";; c");
     }
 }
+
+/// Context-free erasure of one line, as if it stood in an ordinary function body (comment
+/// dropped). Lines whose erasure depends on context (lemma bodies, fact-handle get/set/tee) are
+/// corrected by a whole-document pass ([`erase_lines`]).
+pub fn erase_line(line: &str) -> String {
+    let e = erase_lines(&["(func", line]);
+    split_comment(&e[1]).0.trim_end().to_string()
+}

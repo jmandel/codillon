@@ -12,7 +12,7 @@ use crate::{
         set_selection_range,
     },
     symbolic::{LineSymbols, parse_line_symbols},
-    syntax::{FuncPart, InstrKind, LineKind, ModulePart, SyntheticWasm, parse_line_spec},
+    syntax::{FuncPart, InstrKind, LineAnnotation, LineKind, ModulePart, SyntheticWasm, parse_line_spec},
     utils::{AnimationRequest, Tween, find_comment},
 };
 use anyhow::{Result, bail};
@@ -53,6 +53,8 @@ pub struct LineInfo {
     pub invalid: Option<String>,
     pub runtime_error: Option<String>,
     pub symbols: LineSymbols,
+    /// the plain-WAT text this line erases to (v2), when it differs from the line's text
+    pub erased: Option<String>,
 }
 
 impl Default for LineInfo {
@@ -66,6 +68,7 @@ impl Default for LineInfo {
             invalid: None,
             runtime_error: None,
             symbols: Default::default(),
+            erased: None,
         };
         NEXT_LINE_ID.replace(ret.id + 1);
         ret
@@ -140,7 +143,7 @@ impl LineInfo {
         if idx < self.synthetic_before.num_strs() {
             self.synthetic_before.str(idx)
         } else if self.is_well_formed() && idx == self.synthetic_before.num_strs() {
-            instr_text
+            self.erased.as_deref().unwrap_or(instr_text)
         } else {
             panic!("index out of range");
         }
@@ -500,11 +503,26 @@ impl CodeLine {
         }
         // Update kind, symbols, commentary, and active status
         // (the annotation, if any, is for a proof kernel; none is wired in yet)
-        let (kind, _annotation) = parse_line_spec(self.instr().get());
+        let (kind, annotation) = parse_line_spec(self.instr().get());
         self.info.kind = kind;
-        self.info.symbols = parse_line_symbols(self.instr().get(), &self.info.kind);
+        self.info.erased = annotation.map(|LineAnnotation::Erased(e)| e);
+        let text = self.info.erased.clone().unwrap_or_else(|| self.instr().get().to_string());
+        self.info.symbols = parse_line_symbols(&text, &self.info.kind);
         self.conform();
         Ok(ws_bytes)
+    }
+
+    /// Set the line's erased text from the whole-document v2 erasure (lemma bodies and fact
+    /// handles erase by context), re-classifying the line if it changed.
+    pub fn set_erasure(&mut self, erased: Option<String>) {
+        if self.info.erased == erased {
+            return;
+        }
+        let text = erased.clone().unwrap_or_else(|| self.instr().get().to_string());
+        self.info.erased = erased;
+        self.info.kind = crate::syntax::parse_line_spec(&text).0;
+        self.info.symbols = parse_line_symbols(&text, &self.info.kind);
+        self.conform();
     }
 
     // Activate or deactivate the line.

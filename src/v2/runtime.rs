@@ -20,8 +20,17 @@ pub struct ShadowAct {
     pub how: Capture,
 }
 
+impl FuncPlan {
+    /// (shadow, type) of each value check `id` sends, in order.
+    pub fn sends_of(&self, id: u32) -> Vec<(u32, ValTy)> {
+        self.sends.get(&id).cloned().unwrap_or_default()
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct FuncPlan {
+    /// per check id of this function: (shadow, type) sent, in order
+    pub sends: BTreeMap<u32, Vec<(u32, ValTy)>>,
     /// module function index
     pub func: u32,
     /// number of value locals (params + locals) in the erased function: shadows come after them
@@ -63,6 +72,8 @@ pub struct RuntimePlan {
     pub checks: Vec<CheckSpec>,
     /// each function's value numbering, by module function index
     pub terms: Vec<Terms>,
+    /// does function f read memory (directly or through callees)?
+    pub reads_mem: Vec<bool>,
 }
 
 fn walk(terms: &Terms, t: TermId, born: &HashSet<TermId>, out: &mut Vec<TermId>, seen: &mut HashSet<TermId>) {
@@ -101,7 +112,8 @@ fn atom_terms(a: &Atom, v: &mut Vec<TermId>) {
 impl RuntimePlan {
     /// The plan for a checked module: one check per runtime-checked cup on an executable line.
     pub fn new(m: &Module, out: &ModuleOut) -> RuntimePlan {
-        let mut plan = RuntimePlan { module: m.clone(), funcs: vec![], checks: vec![], terms: vec![Terms::default(); m.funcs.len()] };
+        let reads_mem = super::info::analyze(m).iter().map(|i| i.reads_mem).collect();
+        let mut plan = RuntimePlan { module: m.clone(), funcs: vec![], checks: vec![], terms: vec![Terms::default(); m.funcs.len()], reads_mem };
         for fo in &out.funcs {
             let f = fo.func as usize;
             let born: HashSet<TermId> = fo.births.iter().map(|b| b.term).collect();
@@ -162,6 +174,7 @@ impl RuntimePlan {
                     sends: sends.iter().map(|t| (*t, shadow_of[t], fo.terms.ty(*t))).collect(),
                 });
                 fp.before.entry(c.line).or_default().push(id);
+                fp.sends.insert(id, sends.iter().map(|t| (shadow_of[t], fo.terms.ty(*t))).collect());
             }
             plan.terms[f] = fo.terms.clone();
             plan.funcs.push(fp);
@@ -171,6 +184,12 @@ impl RuntimePlan {
 
     pub fn func_plan(&self, f: u32) -> Option<&FuncPlan> {
         self.funcs.iter().find(|p| p.func == f)
+    }
+
+    /// The plan of the `k`-th defined (non-imported) function, as the binary numbers them.
+    pub fn for_defined(&self, k: usize) -> Option<&FuncPlan> {
+        let f = self.module.funcs.iter().enumerate().filter(|(_, f)| !f.imported).nth(k)?.0;
+        self.func_plan(f as u32)
     }
 
     /// Evaluate check `id` on the values sent for it (parallel to `sends`), with the memory as it
@@ -230,6 +249,9 @@ impl Evaluator<'_> {
             }
             Key::Call(f, a, _) => {
                 let args: Vec<u64> = a.iter().map(|x| self.term(*x)).collect::<Result<_, _>>()?;
+                if self.mem.is_none() && self.plan.reads_mem.get(f as usize).copied().unwrap_or(true) {
+                    return Err("memory is not available to the checker".into());
+                }
                 let mut it = Interp::new(&self.plan.module);
                 if let Some(m) = self.mem {
                     it.mem = m.to_vec();
