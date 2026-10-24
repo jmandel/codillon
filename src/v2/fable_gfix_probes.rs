@@ -427,7 +427,6 @@ fn fable_f5_functions_the_termination_rule_never_runs() {
 /// The locked block sits in an `if` the LLM controls. A constant-false condition makes it
 /// unreachable without making it dead in the kernel's sense (the arm is entered under `0 ≠ 0`).
 #[test]
-#[ignore = "HOLE (research/22 B3): constant if skips the locked line without making it dead"]
 fn fable_f7_constant_if_around_a_locked_line() {
     let start = lines(
         r#"(func $main
@@ -454,10 +453,11 @@ fn fable_f7_constant_if_around_a_locked_line() {
     let j = s.judge(&sub);
     println!("const if: {} boundary={:?} strict={:?}", j.summary(), j.boundary, j.strict);
     assert!(!j.accepted, "locked line made unreachable by a constant condition");
+    // fixed (B3): a constant-false arm is dead code, so the locked line is reported unreachable
+    assert!(j.boundary.iter().any(|r| r.line == 9 && r.msg.contains("unreachable")), "{:?}", j.boundary);
 }
 
 #[test]
-#[ignore = "HOLE (research/22 B3): constant br_if skips the locked line without making it dead"]
 fn fable_f7_constant_br_if_before_a_locked_line() {
     let start = lines(
         r#"(func $main
@@ -484,6 +484,8 @@ fn fable_f7_constant_br_if_before_a_locked_line() {
     let j = s.judge(&sub);
     println!("const br_if: {} boundary={:?} strict={:?}", j.summary(), j.boundary, j.strict);
     assert!(!j.accepted, "locked line skipped by a constant br_if");
+    // fixed (B3): the fall-through of an always-taken br_if is dead code
+    assert!(j.boundary.iter().any(|r| r.line == 10 && r.msg.contains("unreachable")), "{:?}", j.boundary);
 }
 
 // ---------------- A14b: moves within a block ----------------
@@ -532,4 +534,125 @@ fn fable_a14b_then_to_else_keeps_context() {
     let v2 = s2.zone_violation(&t2);
     println!("swap violation: {v2:?}");
     assert!(v2.is_some(), "swapping two locked lines in one block passed");
+}
+
+/// B3 beyond constants: a branch decided only by reasoning (a tautology, an unfolded LLM helper,
+/// two contradictory facts) still leaves the locked line live in the kernel's dead-code sense,
+/// but the kernel proves False there, which the judge rejects.
+#[test]
+fn b3_locked_line_reached_only_ex_falso_is_rejected() {
+    let start = lines(
+        r#"(func $main
+  i32.const 5
+  call $f
+  drop
+)
+(func $g (export "g") (param $x i32) (result i32)
+  local.get $x
+)
+(func $f (export "f") (param $x i32) (result i32)
+  local.get $x
+  i32.const 0
+  i32.eq
+  br_if 0
+  block $b (fact (i32.lt_u $x 100)) ;; @own
+    nop
+  end
+  local.get $x
+)"#,
+    );
+    let s = SessionStart::new(&start);
+    assert!(!s.judge(&start).accepted);
+    let variants: Vec<(&str, Vec<&str>)> = vec![
+        ("tautology x >=u 0", vec!["  local.get $x", "  i32.const 0", "  i32.ge_u"]),
+        (
+            "unfolded helper g(x) = x",
+            vec!["  local.get $x", "  call $g", "  local.get $x", "  i32.eq"],
+        ),
+        (
+            "x < 5 then x > 10",
+            vec![
+                "  local.get $x",
+                "  i32.const 5",
+                "  i32.ge_u",
+                "  br_if 0",
+                "  local.get $x",
+                "  i32.const 10",
+                "  i32.le_u",
+            ],
+        ),
+    ];
+    for (what, cond) in variants {
+        let sub = replace(&start, 10, 12, &cond);
+        let at = 10 + cond.len() + 2; // the `nop` inside the locked block
+        let sub = replace(&sub, at, at, &["    prove 1"]);
+        let j = s.judge(&sub);
+        println!("{what}: {} boundary={:?} strict={:?}", j.summary(), j.boundary, j.strict);
+        assert!(!j.accepted, "{what}: accepted\n{}", sub.join("\n"));
+        assert!(
+            j.boundary.iter().any(|r| r.msg.contains("ex falso")),
+            "{what}: {:?}",
+            j.boundary
+        );
+    }
+    // the locked block is entered live, but its only exit is under a contradictory fact
+    let sub = replace(
+        &start,
+        15,
+        15,
+        &[
+            "    local.get $x",
+            "    i32.const 0",
+            "    i32.lt_u",
+            "    if",
+            "      prove 1",
+            "      br $b",
+            "    end",
+            "    local.get $x",
+            "    return",
+        ],
+    );
+    let j = s.judge(&sub);
+    println!("exit ex falso: {} boundary={:?} strict={:?}", j.summary(), j.boundary, j.strict);
+    assert!(!j.accepted, "{}", sub.join("\n"));
+    assert!(j.boundary.iter().any(|r| r.line == 14), "{:?}", j.boundary);
+}
+
+/// ... while a legitimate proof of the locked block fact is still accepted.
+#[test]
+fn b3_honest_guard_is_accepted() {
+    let start = lines(
+        r#"(func $main
+  i32.const 5
+  call $f
+  drop
+)
+(func $f (export "f") (param $x i32) (result i32)
+  local.get $x
+  i32.const 0
+  i32.eq
+  br_if 0
+  block $b (fact (i32.lt_u $x 100)) ;; @own
+    nop
+  end
+  local.get $x
+)"#,
+    );
+    let s = SessionStart::new(&start);
+    let sub = replace(
+        &start,
+        7,
+        12,
+        &[
+            "  local.get $x",
+            "  i32.const 100",
+            "  i32.ge_u",
+            "  br_if 0",
+            "  block $b (fact (i32.lt_u $x 100)) ;; @own",
+            "    nop",
+        ],
+    );
+    let j = s.judge(&sub);
+    println!("{} boundary={:?} strict={:?}", j.summary(), j.boundary, j.strict);
+    assert!(j.accepted, "{}", sub.join("\n"));
 }

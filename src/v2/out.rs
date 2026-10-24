@@ -207,6 +207,9 @@ pub struct FuncOut {
     pub func: u32,
     /// body lines control never reaches (R22)
     pub dead_lines: Vec<u32>,
+    /// probed lines (`check_module_probing`) reached only with a contradictory context: the
+    /// kernel proves False there, so every cup on them is discharged ex falso
+    pub false_ctx_lines: Vec<u32>,
 }
 
 #[derive(Clone, Debug, Default)]

@@ -4,7 +4,7 @@
 
 use super::ast::{Ins, LineKind, Module, parse_line};
 use super::info::analyze;
-use super::kernel::check_module;
+use super::kernel::check_module_probing;
 use super::out::{CupKind, ModuleOut, Verdict};
 use std::collections::BTreeSet;
 
@@ -227,13 +227,52 @@ pub struct SessionStart {
     imports: usize,
     /// indices into `zone` of the student lines that are dead code at session start
     dead0: BTreeSet<usize>,
+    /// ... and of those reached only ex falso at session start
+    false0: BTreeSet<usize>,
 }
 
-/// Indices into the zone of its lines that control never reaches.
-fn dead_zone(zone: &[(u32, String, String)], out: &ModuleOut) -> BTreeSet<usize> {
+/// Zone lines inside functions whose body is the LLM's: where the LLM controls the context.
+fn probe_lines(m: &Module, zone: &[(u32, String, String)], bodies: &BTreeSet<String>) -> BTreeSet<u32> {
+    zone.iter()
+        .map(|z| z.0)
+        .filter(|&l| {
+            m.funcs.iter().any(|f| {
+                !f.imported
+                    && f.header_line < l
+                    && l <= f.end_line
+                    && !bodies.contains(&f.name())
+            })
+        })
+        .collect()
+}
+
+/// Indices into the zone of its lines the kernel reaches only with False in context.
+fn false_zone(zone: &[(u32, String, String)], out: &ModuleOut) -> BTreeSet<usize> {
+    let f: BTreeSet<u32> = out
+        .funcs
+        .iter()
+        .flat_map(|f| f.false_ctx_lines.iter().copied())
+        .collect();
+    zone.iter()
+        .enumerate()
+        .filter(|(_, z)| f.contains(&z.0))
+        .map(|(i, _)| i)
+        .collect()
+}
+
+/// Indices into the zone of its lines that control never reaches, in functions whose body is the
+/// LLM's (the `;; @own` lines and headers there). Student bodies are left out: a harness's
+/// `unreachable` arm is *meant* to become dead once the implementation is correct (the kernel
+/// unfolds pure loop-free callees), and the LLM cannot edit those bodies.
+fn dead_zone(
+    zone: &[(u32, String, String)],
+    out: &ModuleOut,
+    bodies: &BTreeSet<String>,
+) -> BTreeSet<usize> {
     let dead: BTreeSet<u32> = out
         .funcs
         .iter()
+        .filter(|f| !bodies.contains(&f.name))
         .flat_map(|f| f.dead_lines.iter().copied())
         .collect();
     zone.iter()
@@ -276,9 +315,12 @@ impl SessionStart {
         let bodies = student_bodies(&m);
         let owners = classify(lines, &bodies);
         let z = zone(lines, &owners);
-        let dead0 = dead_zone(&z, &check_module(&m, false));
+        let out0 = check_module_probing(&m, false, probe_lines(&m, &z, &bodies));
+        let dead0 = dead_zone(&z, &out0, &bodies);
+        let false0 = false_zone(&z, &out0);
         SessionStart {
             dead0,
+            false0,
             lines: lines.to_vec(),
             zone: z,
             funcs: m.funcs.iter().map(|f| f.name()).collect(),
@@ -494,16 +536,31 @@ impl SessionStart {
                 msg: format!("does not parse: {e}"),
             })
             .collect();
-        let out = check_module(&m, false);
+        let now = zone(lines, &self.owners(lines));
+        let out = check_module_probing(&m, false, probe_lines(&m, &now, &self.bodies));
         if boundary.is_empty() {
             // a locked line the round makes unreachable is as good as deleted: its cups would be
-            // fed by dead code (R22) and say nothing (review 20 F7)
-            let now = zone(lines, &self.owners(lines));
-            for i in dead_zone(&now, &out).difference(&self.dead0) {
+            // fed by dead code (R22) and say nothing (review 20 F7). So is one reached only with
+            // False in context (a constant or provably decided branch, a contradictory edge
+            // fact): its cups are discharged ex falso and it never runs (research/22 B3). The
+            // zones match here (no boundary reason yet), so indices compare.
+            for i in dead_zone(&now, &out, &self.bodies).difference(&self.dead0) {
                 boundary.push(Reason {
                     line: now[*i].0,
                     msg: format!(
                         "makes locked line {} (`{}`) unreachable",
+                        now[*i].0, now[*i].1
+                    ),
+                });
+            }
+            for i in false_zone(&now, &out).difference(&self.false0) {
+                if boundary.iter().any(|r| r.line == now[*i].0) {
+                    continue;
+                }
+                boundary.push(Reason {
+                    line: now[*i].0,
+                    msg: format!(
+                        "makes locked line {} (`{}`) reachable only ex falso: the kernel proves False there (or on every exit of its block), so its obligations are vacuous",
                         now[*i].0, now[*i].1
                     ),
                 });

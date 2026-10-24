@@ -104,6 +104,9 @@ pub struct ModCtx<'m> {
     /// initializer (R14) and every other function's unproven `global.set` cups (R9); `None` when
     /// the global has no usable refinement
     pub global_deps: Vec<Option<Vec<Dep>>>,
+    /// lines at which to ask whether the context is contradictory (the judge's locked lines in
+    /// LLM-owned bodies, research/22 B3); empty in the editor
+    pub probe: BTreeSet<u32>,
 }
 
 /// The solver's view of the module: unfolding and evaluation.
@@ -166,6 +169,7 @@ impl Env for PassEnv<'_, '_> {
 pub struct Pass<'a, 'm> {
     /// body lines control never reaches (R22)
     dead_lines: Vec<u32>,
+    false_ctx_lines: Vec<u32>,
     pub cx: &'a ModCtx<'m>,
     pub f: usize,
     pub terms: Terms,
@@ -753,6 +757,40 @@ impl<'a, 'm> Pass<'a, 'm> {
         }
     }
 
+    /// An arm or branch edge whose condition is false on its own (it folds to the constant
+    /// False). Control never takes it, so it is dead code, not code entered under a False fact
+    /// (research/22 B3). Deciding it needs no fact, so nothing a dead-code verdict rests on is lost.
+    /// Conditions false only by reasoning are left to the probe of [`Pass::lane_is_false`].
+    fn impossible(&mut self, a: &Atom) -> bool {
+        *a == Atom::False
+    }
+
+    /// Does the current lane (plus `extra`) prove False? Asked with the whole lane, and if that
+    /// does not decide it, with its 8 most recent entries (what a `prove 8` here could use).
+    fn lane_is_false(&mut self, extra: &[Entry]) -> bool {
+        let atoms: Vec<Atom> = self
+            .lane
+            .iter()
+            .chain(extra)
+            .map(|e| self.facts[e.fact as usize].atom.clone())
+            .collect();
+        if atoms.contains(&Atom::False) {
+            return true;
+        }
+        let mut tries = vec![atoms.clone()];
+        if atoms.len() > 8 {
+            tries.push(atoms[atoms.len() - 8..].to_vec());
+        }
+        for hyps in tries {
+            let (terms, mut env) = self.solver_env();
+            let mut s = Solver::new(terms, &mut env);
+            if let Outcome::Valid { .. } = s.prove(&hyps, &Atom::False) {
+                return true;
+            }
+        }
+        false
+    }
+
     fn go_dead(&mut self, line: u32) {
         if self.dead.is_none() {
             self.dead = Some(line);
@@ -838,6 +876,7 @@ impl<'a, 'm> Pass<'a, 'm> {
         let nh = handle_names.len();
         Pass {
             dead_lines: vec![],
+            false_ctx_lines: vec![],
             cx,
             f,
             terms: Terms::new(fnames),
@@ -1887,6 +1926,10 @@ impl<'a, 'm> Pass<'a, 'm> {
         self.frames[fi].in_else = true;
         if let Some(c) = self.frames[fi].cond {
             let a = self.terms.atom_of(c, false);
+            if self.impossible(&a) {
+                self.go_dead(line);
+                return;
+            }
             // born where the else-arm starts (the `else` line), so its chip's ribbon never runs
             // through the then-arm, where the fact is false
             self.enter(a, line, "if else-arm", vec![]);
@@ -1902,6 +1945,17 @@ impl<'a, 'm> Pass<'a, 'm> {
         self.restore_to(fi);
         let fr = self.frames.pop().unwrap();
         let nres = fr.bt.results.len();
+        // a probed (locked) block or `end` must be left on some edge that is not contradictory:
+        // otherwise its block facts are discharged ex falso, or never checked (research/22 B3)
+        let probed = [fr.line, line]
+            .into_iter()
+            .find(|l| self.cx.probe.contains(l));
+        if let Some(pl) = probed
+            && fr.entered_dead.is_none()
+            && edges.iter().all(|e| self.lane_is_false(&e.lane))
+        {
+            self.false_ctx_lines.push(pl);
+        }
         if edges.is_empty() {
             self.go_dead(line);
             for r in &fr.bt.results {
@@ -2053,7 +2107,11 @@ impl<'a, 'm> Pass<'a, 'm> {
                         self.frames.push(fr);
                         self.stack.extend(params);
                         let a = self.terms.atom_of(c, true);
-                        self.enter(a, line, "if then-arm", vec![]);
+                        if self.impossible(&a) {
+                            self.go_dead(line);
+                        } else {
+                            self.enter(a, line, "if then-arm", vec![]);
+                        }
                     }
                     BlockKind::Loop => self.loop_head(pc, line, bt, tab),
                 }
@@ -2112,10 +2170,18 @@ impl<'a, 'm> Pass<'a, 'm> {
                 } else {
                     let c = self.pop();
                     let a = self.terms.atom_of(c, true);
-                    let f = self.new_fact(a, line, "br_if taken edge", vec![]);
-                    self.branch(line, fi, Some(Entry { fact: f, line }));
                     let na = self.terms.atom_of(c, false);
-                    self.enter(na, line, "br_if fall-through", vec![]);
+                    // an edge that is never taken is not an edge; a fall-through that never
+                    // happens is dead code (as after `br`)
+                    if !self.impossible(&a) {
+                        let f = self.new_fact(a, line, "br_if taken edge", vec![]);
+                        self.branch(line, fi, Some(Entry { fact: f, line }));
+                    }
+                    if self.impossible(&na) {
+                        self.go_dead(line);
+                    } else {
+                        self.enter(na, line, "br_if fall-through", vec![]);
+                    }
                 }
             }
             Ins::BrTable(ls) => {
@@ -2139,6 +2205,9 @@ impl<'a, 'm> Pass<'a, 'm> {
                         let k = self.terms.konst(ValTy::I32, n as u64);
                         Atom::cmp(super::term::Rel::Le, false, k, i)
                     };
+                    if self.impossible(&a) {
+                        continue;
+                    }
                     let f = self.new_fact(a, line, "br_table edge", vec![]);
                     self.branch(line, fi, Some(Entry { fact: f, line }));
                 }
@@ -2304,6 +2373,14 @@ impl<'a, 'm> Pass<'a, 'm> {
         let tab = super::eval::block_table(&func.body);
         for (pc, (line, ins)) in func.body.iter().enumerate() {
             let before = self.dead.is_some();
+            // `end`/`else` are judged by their incoming edges (in `join`), not the fall-through
+            if !before
+                && self.cx.probe.contains(line)
+                && !matches!(ins, Ins::End | Ins::Else)
+                && self.lane_is_false(&[])
+            {
+                self.false_ctx_lines.push(*line);
+            }
             self.step(pc, *line, ins, &tab);
             // `end`/`else` are reached when some edge reaches them; any other line when control
             // falls into it
@@ -2550,6 +2627,7 @@ impl<'a, 'm> Pass<'a, 'm> {
             births: self.births,
             func: self.f as u32,
             dead_lines: self.dead_lines,
+            false_ctx_lines: self.false_ctx_lines,
         };
         (out, deps)
     }
@@ -2558,6 +2636,16 @@ impl<'a, 'm> Pass<'a, 'm> {
 /// Check a whole module (design 16 §5): one pass per function, lemmas first so their callers know
 /// which assumptions their results rest on.
 pub fn check_module(m: &Module, gradual: bool) -> super::out::ModuleOut {
+    check_module_probing(m, gradual, BTreeSet::new())
+}
+
+/// [`check_module`], also reporting which `probe` lines are reached only ex falso
+/// ([`FuncOut::false_ctx_lines`]).
+pub fn check_module_probing(
+    m: &Module,
+    gradual: bool,
+    probe: BTreeSet<u32>,
+) -> super::out::ModuleOut {
     let info = super::info::analyze(m);
     let mem = m.memory_min.map(|p| p.saturating_mul(65536).min(1 << 32));
     let mut cx = ModCtx {
@@ -2567,6 +2655,7 @@ pub fn check_module(m: &Module, gradual: bool) -> super::out::ModuleOut {
         lemma_assumes: HashMap::new(),
         gradual,
         global_deps: vec![None; m.globals.len()],
+        probe,
     };
     let mut errors = m.errors.clone();
     global_preflight(&mut cx, &mut errors);
