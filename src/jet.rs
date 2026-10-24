@@ -398,6 +398,12 @@ impl<T: AnyElement> ElementHandle<T> {
         self.attributes.get(name).map(|x| x.as_str())
     }
 
+    /// Replace the element's children with parsed markup (for layers drawn whole, never
+    /// reconciled child by child).
+    pub fn set_inner_html(&mut self, html: &str) {
+        self.elem.element().set_inner_html(html);
+    }
+
     pub fn get_child_node_list(&self) -> NodeListHandle {
         NodeListHandle(self.elem.element().child_nodes())
     }

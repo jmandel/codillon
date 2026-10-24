@@ -27,6 +27,9 @@ type EmptySpan = DomStruct<(), HtmlSpanElement>;
 type LinePara = DomStruct<(TextSpan, (TextSpan, (EmptySpan, (DomBr, ())))), HtmlDivElement>;
 
 pub const INDENT_PX: usize = 25;
+/// the fact lane (design 16 §8): extra room between each line's fraction and its code, where
+/// proof cups and fact chips are drawn
+pub const LANE_PX: usize = 28;
 
 #[derive(Default, Copy, Clone, PartialEq, Debug)]
 pub enum Activity {
@@ -57,6 +60,8 @@ pub struct LineInfo {
     pub symbols: LineSymbols,
     /// the plain-WAT text this line erases to (v2), when it differs from the line's text
     pub erased: Option<String>,
+    /// what the proof kernel says about this line (drawn by proof_view)
+    pub proof: crate::proof_view::LineProof,
 }
 
 impl Default for LineInfo {
@@ -71,6 +76,7 @@ impl Default for LineInfo {
             runtime_error: None,
             symbols: Default::default(),
             erased: None,
+            proof: Default::default(),
         };
         NEXT_LINE_ID.replace(ret.id + 1);
         ret
@@ -365,8 +371,13 @@ impl CodeLine {
         } else {
             match self.info.kind {
                 LineKind::Malformed(_) => "line malformed-line",
+                // a proof declaration erases to a comment but keeps its number
+                LineKind::Empty if self.info.erased.is_some() => {
+                    "line spec-line numbered-line"
+                }
                 LineKind::Empty => "line",
                 LineKind::Other(_) => "line meta-line numbered-line",
+                LineKind::Instr(_) if self.is_proof_line() => "line instr-line spec-line numbered-line",
                 LineKind::Instr(_) => "line instr-line numbered-line",
             }
         }
@@ -384,6 +395,29 @@ impl CodeLine {
                 FlyEnd(x) => String::from(" flyend-") + ab(x),
                 Normal => String::new(),
             }
+    }
+
+    /// a line that is all proof (`prove`, `lemma`, `unfold`, `assume`): erased to `nop` or a comment
+    pub fn is_proof_line(&self) -> bool {
+        let t = self.instr().get().trim_start();
+        self.info.erased.is_some()
+            && ["prove", "lemma", "unfold", "assume"]
+                .iter()
+                .any(|k| t.strip_prefix(k).is_some_and(|r| r.is_empty() || r.starts_with(char::is_whitespace)))
+    }
+
+    /// Install what the proof kernel says about this line.
+    pub fn set_proof(&mut self, proof: crate::proof_view::LineProof) {
+        if self.info.proof != proof {
+            self.info.proof = proof;
+            self.conform();
+        }
+    }
+
+    /// Is this line counted in the gutter's line numbers?
+    pub fn is_numbered(&self) -> bool {
+        let c = self.class();
+        c.contains("numbered-line") || c.contains("invalid-line") || c.contains("runtime-error-line")
     }
 
     pub fn shake(&mut self) {
@@ -459,17 +493,43 @@ impl CodeLine {
         {
             Some(reason.to_string())
         } else {
+            self.info.proof.note.clone()
+        };
+        // a quiet note (a runtime-checked cup) when there is nothing darkred to say
+        let quiet = if commentary.is_none() {
+            self.info.proof.quiet.clone()
+        } else {
             None
         };
         let comment = &mut self.contents.get_mut().1.0;
-        match commentary {
+        match commentary.as_ref().or(quiet.as_ref()) {
             Some(msg) => {
-                comment.set_attribute("data-commentary", &msg);
-                comment.set_attribute("title", &msg);
+                comment.set_attribute("data-commentary", msg);
+                comment.set_attribute("title", msg);
             }
             None => {
                 comment.remove_attribute("data-commentary");
                 comment.remove_attribute("title");
+            }
+        }
+        if quiet.is_some() {
+            comment.set_attribute("data-tone", "quiet");
+        } else {
+            comment.remove_attribute("data-tone");
+        }
+        let instr = &mut self.contents.get_mut().0;
+        match &self.info.proof.title {
+            Some(t) => instr.set_attribute("title", t),
+            None => instr.remove_attribute("title"),
+        }
+        match &self.info.proof.badge {
+            Some((text, kind)) => {
+                instr.set_attribute("data-badge", text);
+                instr.set_attribute("data-badge-kind", kind);
+            }
+            None => {
+                instr.remove_attribute("data-badge");
+                instr.remove_attribute("data-badge-kind");
             }
         }
 
@@ -669,14 +729,14 @@ impl CodeLine {
             // animate change
             self.animation_state
                 .indent
-                .approach(indent_px(4 + val) as f64);
+                .approach((indent_px(4 + val) + LANE_PX) as f64);
             self.info.indent = Some(val);
             return AnimationRequest(true);
         }
 
         // otherwise, snap change
         self.info.indent = Some(val);
-        self.animation_state.indent.snap(indent_px(4 + val) as f64);
+        self.animation_state.indent.snap((indent_px(4 + val) + LANE_PX) as f64);
         self.contents.get_mut().0.set_attribute(
             "style",
             &format!(

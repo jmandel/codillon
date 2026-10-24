@@ -894,3 +894,25 @@ fn stale_hint_and_fraying() {
             .any(|ch| ch.line == 202 && ch.text.contains("rep_ok") && ch.frayed_at == Some(245))
     );
 }
+
+#[test]
+#[ignore]
+fn dump_example_out() {
+    let ex = std::env::var("EX").unwrap_or("parity-bug-gate".into());
+    let p = format!("{}/public/examples/v2/{ex}.wat", env!("CARGO_MANIFEST_DIR"));
+    let src = std::fs::read_to_string(&p).unwrap();
+    let out = check_module(&Module::parse(&src), true);
+    for f in &out.funcs {
+        println!("FUNC {} {}..{} verified={} strict={}", f.name, f.header_line, f.end_line, f.verified, f.strict_clean);
+        for (i, ch) in f.chips.iter().enumerate() {
+            println!("  chip#{i} L{} [{}] {} fray={:?}", ch.line, ch.origin, ch.text, ch.frayed_at);
+        }
+        for c in &f.cups {
+            println!("  cup L{} op={:?} {} ⟨{}⟩ {} feed={:?} deps={:?} assm={:?} wit={:?} diag={:?}", c.line, c.operand, c.kind.name(), c.goal, c.verdict.name(), c.feed, c.depends_on_checks, c.assumptions, c.witness, c.diag);
+        }
+        for e in &f.line_errors {
+            println!("  ERR {:?}", e);
+        }
+    }
+    println!("MODERR {:?}", out.errors);
+}

@@ -11,6 +11,7 @@ pub mod autocomplete;
 pub mod debug;
 pub mod editor;
 pub mod graphics;
+pub mod proof_view;
 pub mod line;
 pub mod link;
 pub mod save_status;

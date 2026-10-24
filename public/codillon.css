@@ -444,3 +444,117 @@ span.comment[data-commentary]::after {
     white-space: nowrap;
     box-sizing: border-box;
 }
+
+/* ---- v2 proofs (design 16 §8) ---- */
+
+/* proof lines (prove, lemma, unfold, assume): quiet, like v1's spec lines; still numbered */
+.spec-line {
+    color: #5b5296;
+    font-style: italic;
+}
+
+.line.spec-line:not(.instr-line) {
+    counter-increment: codelines;
+}
+
+.spec-line::before {
+    font-style: normal;
+}
+
+/* function header badge: VERIFIED (a purple seal, never green) or a quiet gradual marker */
+span.instr[data-badge]::after {
+    font-family: 'MLMSansDemiCond10-Regular';
+    font-style: normal;
+    font-size: 9pt;
+    letter-spacing: 0.04em;
+    margin-left: 14px;
+    padding: 1px 7px 2px 7px;
+    border-radius: 9px;
+    vertical-align: 4px;
+    content: attr(data-badge);
+}
+
+span.instr[data-badge-kind="verified"]::after {
+    color: white;
+    background-color: #483D8B;
+    content: "\25C6\00a0" attr(data-badge);
+}
+
+span.instr[data-badge-kind="gradual"]::after {
+    color: #6c6880;
+    border: 1px dashed #b9b4d4;
+}
+
+/* a quiet note (runtime-checked cup): not a violation, so never darkred */
+span.comment[data-commentary][data-tone="quiet"]::after {
+    color: #5f5a7a;
+    border: 1px dashed #c3bddf;
+}
+
+.pv-wire {
+    fill: none;
+    stroke: #a99fe0;
+    stroke-width: 2.2;
+    stroke-linecap: round;
+}
+
+.pv-dash {
+    stroke-dasharray: 4 3;
+}
+
+.pv-long {
+    opacity: 0.55;
+}
+
+.pv-ghost {
+    fill: none;
+    stroke: #a99fe0;
+    stroke-width: 1.3;
+    stroke-dasharray: 1 3;
+    stroke-linecap: round;
+}
+
+.pv-bad {
+    fill: none;
+    stroke: darkred;
+    stroke-width: 1.4;
+    stroke-dasharray: 1.5 2.5;
+    stroke-linecap: round;
+}
+
+.pv-fray {
+    fill: none;
+    stroke: #a99fe0;
+    stroke-width: 1.1;
+    stroke-linecap: round;
+}
+
+.pv-fray.pv-fray-bad {
+    stroke: darkred;
+    stroke-width: 1.3;
+}
+
+.pv-chip {
+    fill: #6A5ACD;
+    stroke: #fffff0;
+    stroke-width: 0.8;
+}
+
+.pv-in {
+    font-family: 'MLMSansDemiCond10-Regular';
+    font-size: 7pt;
+    text-anchor: middle;
+    dominant-baseline: central;
+}
+
+.pv-star {
+    font-family: 'MLMSansDemiCond10-Regular';
+    font-size: 12pt;
+    fill: indigo;
+    text-anchor: middle;
+}
+
+.pv-bomb {
+    font-size: 10px;
+    text-anchor: middle;
+}

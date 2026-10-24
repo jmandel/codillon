@@ -286,13 +286,36 @@ impl RuntimePlan {
                 Err(e) => return CheckOutcome::Unknown(e),
             }
         }
+        // the run's values of the named values the check reads ("with $x = 3, $y = 0")
+        let with = {
+            let mut named: Vec<String> = vec![];
+            for ((t, _, ty), v) in c.sends.iter().zip(vals) {
+                let name = terms.render(*t);
+                if !name.starts_with('$') || name.contains('(') || named.iter().any(|n| n.starts_with(&format!("{name} ="))) {
+                    continue;
+                }
+                let shown = match ty {
+                    super::ast::ValTy::I32 => (*v as u32 as i32).to_string(),
+                    super::ast::ValTy::I64 => (*v as i64).to_string(),
+                    super::ast::ValTy::F32 => f32::from_bits(*v as u32).to_string(),
+                    super::ast::ValTy::F64 => f64::from_bits(*v).to_string(),
+                };
+                named.push(format!("{name} = {shown}"));
+            }
+            if named.is_empty() {
+                String::new()
+            } else {
+                format!(" with {}", named.join(", "))
+            }
+        };
         match ev.atom(&c.atom) {
             Ok(true) => CheckOutcome::Holds,
-            Ok(false) => CheckOutcome::Fails(format!("check failed: ⟨{}⟩", c.goal)),
+            Ok(false) => CheckOutcome::Fails(format!("check failed: ⟨{}⟩{with}", c.goal)),
             // a fact whose evaluation traps is false (it holds iff it evaluates, without trapping, to nonzero)
-            Err(e) if e == TRAPS => {
-                CheckOutcome::Fails(format!("check failed: ⟨{}⟩ (its evaluation traps)", c.goal))
-            }
+            Err(e) if e == TRAPS => CheckOutcome::Fails(format!(
+                "check failed: ⟨{}⟩ (its evaluation traps){with}",
+                c.goal
+            )),
             Err(e) => CheckOutcome::Unknown(e),
         }
     }

@@ -363,13 +363,19 @@ impl Editor {
         self.animations.live_info = AnimationRequest(false);
         assert!(step_count > 0);
         let current_step = current_step.unwrap_or(self.current_step());
+        // a failed v2 runtime check stops the run: its step is the last one
+        let failures: Vec<usize> = if RUN_LOG.with(|r| r.v2_failure()).is_some() {
+            vec![step_count - 1]
+        } else {
+            vec![]
+        };
         if step_count > 1 {
             self.slider_mut().inner_mut().show();
             self.slider_mut().inner_mut().build_ticks(
                 step_count - 1,
                 current_step,
                 &RUN_LOG.with(|r| r.termination_type()),
-                &[], // steps where a check failed: none until a proof kernel reports them
+                &failures,
             )
         } else {
             self.slider_mut().inner_mut().hide();
@@ -550,7 +556,54 @@ impl Editor {
     // Re-evaluate what the proof kernel says against the current run (called after each run,
     // and when an edit leaves the binary unchanged). The kernel itself runs in `run_v2_kernel`;
     // a failed runtime check is already the run's error (RUN_LOG). Drawing is phase D.
-    fn recheck_proofs(&mut self) {}
+    fn recheck_proofs(&mut self) {
+        self.draw_proofs();
+    }
+
+    /// Draw the v2 kernel's results (design 16 §8): proof cups, fact chips and wires in the
+    /// image; hover text, commentary and header badges on the lines.
+    fn draw_proofs(&mut self) {
+        let Some(v2) = self.v2.clone() else {
+            return;
+        };
+        let edges = self.image().input_right_edges();
+        let geom: Vec<crate::proof_view::LineGeom> = self
+            .text()
+            .iter()
+            .enumerate()
+            .map(|(i, l)| crate::proof_view::LineGeom {
+                indent: l.info().indent,
+                frac_right: edges.get(&i).copied(),
+            })
+            .collect();
+        // kernel lines are 1-based editor lines; the gutter numbers only some of them
+        let mut numbers = Vec::with_capacity(geom.len());
+        let mut n = 0;
+        for l in self.text().iter() {
+            if l.is_numbered() {
+                n += 1;
+            }
+            numbers.push(n.max(1));
+        }
+        let disp = |k: u32| {
+            numbers
+                .get(k.saturating_sub(1) as usize)
+                .copied()
+                .unwrap_or(k)
+        };
+        let failure = RUN_LOG.with(|r| r.v2_failure()).map(|f| crate::proof_view::RunFailure {
+            line: f.line,
+            message: f.message,
+        });
+        let scene = {
+            let out = v2.out.borrow();
+            crate::proof_view::build(&out, &geom, failure.as_ref(), &disp)
+        };
+        self.image_mut().set_proof_layers(&scene.under, &scene.over);
+        for (i, lp) in scene.lines.into_iter().enumerate() {
+            self.line_mut(i).set_proof(lp);
+        }
+    }
 
     /// The v2 kernel's output for the current text, if it has been checked (for phase D).
     #[allow(dead_code)]
@@ -999,6 +1052,7 @@ impl Editor {
         self.scroll_on_next_input = false; // edit to text buffer -> don't scroll to arrow
         self.slot_connections = find_connections(&validized, &types);
         self.update_displayed_types(&validized, &types)?;
+        self.draw_proofs();
         self.main_params = validized
             .functions
             .first()

@@ -10,7 +10,7 @@ use crate::{
     dom_vec::DomVec,
     editor::LINE_SPACING,
     jet::{AccessToken, Component, ElementFactory, ElementHandle, WithElement},
-    line::INDENT_PX,
+    line::{INDENT_PX, LANE_PX},
     syntax::{FrameInfo, InstrKind},
     utils::{
         AnimationRequest, AnnotatedOperatorType, BLOCK_BOUNDARY_INDENT, Coordinate, SlotConnection,
@@ -284,7 +284,8 @@ impl FrameLine {
             X_OFFSET_PX - indent_px(BLOCK_BOUNDARY_INDENT)
         } as f64;
 
-        let x_max = x_offset + (indent_px(info.indent + BLOCK_BOUNDARY_INDENT) - MARGIN) as f64;
+        let x_max = x_offset
+            + (indent_px(info.indent + BLOCK_BOUNDARY_INDENT) + LANE_PX - MARGIN) as f64;
         let total_dist = (x_max - x_left).max(0.0);
 
         let x_right = if let Some(actual_indent) = animated_indent
@@ -437,7 +438,7 @@ impl Arrow {
         self.arrow_elem().set_attribute("href", "#arrow");
         self.line_idx = Some(line_idx);
 
-        let target_x = X_OFFSET_PX + indent * INDENT_PX - 4;
+        let target_x = X_OFFSET_PX + indent * INDENT_PX + LANE_PX - 4;
         let target_y = line_idx * LINE_SPACING
             + LINE_SPACING / 2
             + LINE_OFFSET_PX
@@ -503,10 +504,19 @@ type SVGDefs = DomStruct<
 type CodillonBlocks = DomSet<FrameLine, SvggElement, u32>; // the lines themselves
 type Fractions = DomSet<OperatorFraction, SvggElement, u32>;
 type Connections = DomSet<RenderedConnection, SvggElement, Coordinate>;
+// the proof layers (design 16 §8): wires between the value ribbons and the fractions, cups and
+// chips over the fractions; each is rendered whole from proof_view's markup
+type ProofLayer = ElementHandle<SvggElement>;
 type CodillonSVG = DomStruct<
     (
         SVGDefs,
-        (Connections, (Fractions, (CodillonBlocks, (Arrow, ())))),
+        (
+            Connections,
+            (
+                ProofLayer,
+                (Fractions, (ProofLayer, (CodillonBlocks, (Arrow, ())))),
+            ),
+        ),
     ),
     SvgElement,
 >;
@@ -548,6 +558,7 @@ pub struct DomImage {
     animations: PendingAnimations,
     last_line_count_for_frames: usize,
     last_line_count_for_connections: usize,
+    proof_cache: (String, String),
 }
 
 impl WithElement for DomImage {
@@ -633,14 +644,20 @@ macro_rules! field {
     (connections $comp:expr) => {
         $comp.1.0
     };
-    (fractions $comp:expr) => {
+    (proof_under $comp:expr) => {
         $comp.1.1.0
     };
-    (blocks $comp:expr) => {
+    (fractions $comp:expr) => {
         $comp.1.1.1.0
     };
-    (arrow $comp:expr) => {
+    (proof_over $comp:expr) => {
         $comp.1.1.1.1.0
+    };
+    (blocks $comp:expr) => {
+        $comp.1.1.1.1.1.0
+    };
+    (arrow $comp:expr) => {
+        $comp.1.1.1.1.1.1.0
     };
 }
 
@@ -728,10 +745,16 @@ impl DomImage {
                     (
                         Connections::new(factory.svg_g()),
                         (
-                            DomSet::new(factory.svg_g()),
+                            factory.svg_g(),
                             (
-                                CodillonBlocks::new(factory.svg_g()),
-                                (Arrow::new(&factory), ()),
+                                DomSet::new(factory.svg_g()),
+                                (
+                                    factory.svg_g(),
+                                    (
+                                        CodillonBlocks::new(factory.svg_g()),
+                                        (Arrow::new(&factory), ()),
+                                    ),
+                                ),
                             ),
                         ),
                     ),
@@ -746,6 +769,7 @@ impl DomImage {
             animations: Default::default(),
             last_line_count_for_frames: Default::default(),
             last_line_count_for_connections: Default::default(),
+            proof_cache: Default::default(),
         };
 
         // The "unclosed" symbol looks like a ⊘ (Circled Division Slash)
@@ -1013,7 +1037,7 @@ A 15,10 0 0 1 14.827,-8.484 15,10 0 0 1 0.003,-0 15,10 0 0 1 -14.826,-8.481 15,1
                 "width",
                 &format!(
                     "{}px",
-                    X_OFFSET_PX + indent_px(width + BLOCK_BOUNDARY_INDENT)
+                    X_OFFSET_PX + LANE_PX + indent_px(width + BLOCK_BOUNDARY_INDENT)
                 ),
             );
         }
@@ -1207,7 +1231,7 @@ A 15,10 0 0 1 14.827,-8.484 15,10 0 0 1 0.003,-0 15,10 0 0 1 -14.826,-8.481 15,1
         }
 
         /* vanish connections that no longer exist */
-        let (_, (conns, (fracs, _))) = self.contents.get_mut();
+        let (_, (conns, (_, (fracs, _)))) = self.contents.get_mut();
         conns.for_each_mut(|src, cx| {
             if !cx_sources.contains(src) && cx.hide(smooth, fracs).0 {
                 self.animations.connections.insert(src.clone());
@@ -1221,7 +1245,7 @@ A 15,10 0 0 1 14.827,-8.484 15,10 0 0 1 0.003,-0 15,10 0 0 1 -14.826,-8.481 15,1
             };
 
             /* retarget current connections when possible (rehoming/re-sourcing happened above)*/
-            let (_, (conns, (fracs, _))) = self.contents.get_mut();
+            let (_, (conns, (_, (fracs, _)))) = self.contents.get_mut();
 
             if let Some(cur_conn) = conns.get_mut(src) {
                 if cur_conn.update(new_conn.clone(), smooth, fracs).0 {
@@ -1311,6 +1335,41 @@ A 15,10 0 0 1 14.827,-8.484 15,10 0 0 1 0.003,-0 15,10 0 0 1 -14.826,-8.481 15,1
     pub fn remove_attribute(&mut self, name: &str);
     pub fn get_attribute(&self, name: &str) -> Option<&str>;
     }
+    }
+
+    /// Draw the proof layers (markup from proof_view), skipping unchanged ones.
+    pub fn set_proof_layers(&mut self, under: &str, over: &str) {
+        let (_, (_, (u, (_, (o, _))))) = self.contents.get_mut();
+        if self.proof_cache.0 != under {
+            u.set_inner_html(under);
+            self.proof_cache.0 = under.to_string();
+        }
+        if self.proof_cache.1 != over {
+            o.set_inner_html(over);
+            self.proof_cache.1 = over.to_string();
+        }
+    }
+
+    /// The right edge of each line's value input cups (by 0-based line), for placing proof cups.
+    pub fn input_right_edges(&self) -> HashMap<usize, f32> {
+        let mut ret: HashMap<usize, f32> = HashMap::new();
+        for id in self.fractions().ids() {
+            let frac = &self.fractions()[id];
+            let (Some(info), Some((x, _))) = (&frac.info, frac.targets.final_target) else {
+                continue;
+            };
+            let right = frac
+                .targets
+                .input_locations_scales_and_types
+                .iter()
+                .map(|(dx, scale, _)| x + dx + SYM_HW * scale)
+                .fold(f32::MIN, f32::max);
+            if right > f32::MIN {
+                let e = ret.entry(info.line_no).or_insert(right);
+                *e = e.max(right);
+            }
+        }
+        ret
     }
 
     #[cfg(all(test, target_arch = "wasm32"))]
