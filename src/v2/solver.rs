@@ -551,17 +551,21 @@ impl<'a> Solver<'a> {
                     }
                     None if matches!(op, DivU | RemU) => {
                         let (a, b) = (self.tr(args[0])?, self.tr(args[1])?);
+                        // is the divisor nonzero? A real slot's is (its R24 cup guards it); a
+                        // virtual term's is split: B = 0 (the operation traps: its value is an
+                        // unconstrained leaf) or B ≥ 1 (B5: bounds only in this branch)
+                        let defined = self.env.is_real(t) || b.lo > 0 || !self.choose()?;
+                        if !defined {
+                            self.eq0(b.lin.clone())?;
+                            let w = pow2(width(self.terms.ty(t)));
+                            return self.var_tr(VarDesc::Res(t), 0, w - 1);
+                        }
+                        self.le(&Lin::konst(1), &b.lin)?;
                         let hi = if op == RemU { a.hi.min(b.hi - 1).max(0) } else { a.hi };
                         let r = self.var_tr(VarDesc::Res(t), 0, hi)?;
                         self.le(&r.lin, &a.lin)?;
                         if op == RemU {
-                            if self.env.is_real(t) || b.lo > 0 {
-                                self.le(&r.lin.add_c(1)?, &b.lin)?;
-                            } else if self.choose()? {
-                                self.eq0(b.lin.clone())?;
-                            } else {
-                                self.le(&r.lin.add_c(1)?, &b.lin)?;
-                            }
+                            self.le(&r.lin.add_c(1)?, &b.lin)?;
                         }
                         Ok(r)
                     }
@@ -766,9 +770,80 @@ impl<'a> Solver<'a> {
     fn run(&mut self, hyps: &[Atom], goal: &Atom) -> R<()> {
         self.reset_run();
         for h in hyps {
+            self.defined(h, true)?;
             self.assert(h, true)?;
         }
+        // a goal that traps is false: the negated goal holds in the trapping branch
+        if !self.defined(goal, false)? {
+            return Ok(());
+        }
         self.assert(goal, false)
+    }
+
+    /// A fact holds iff it evaluates *without trapping* to a nonzero value. For a hypothesis
+    /// (`hyp`), assert that every divisor in its eager terms is nonzero (and no signed
+    /// INT_MIN / −1); for the goal, split on each such trap: returns false in a branch where the
+    /// goal traps (and so is false). Unfolded bodies (`ite`) and call bodies are not eager: their
+    /// own guards decide. Real slots are already known not to trap.
+    fn defined(&mut self, a: &Atom, hyp: bool) -> R<bool> {
+        let mut roots = vec![];
+        atom_roots(a, &mut roots);
+        let mut divs = vec![];
+        let mut seen = std::collections::HashSet::new();
+        while let Some(t) = roots.pop() {
+            if !seen.insert(t) || self.env.is_real(t) {
+                continue;
+            }
+            match self.terms.key(t).clone() {
+                Key::Op(op, w, args) => {
+                    if matches!(op, IOp::DivU | IOp::DivS | IOp::RemU | IOp::RemS) {
+                        divs.push((t, op, w, args[0], args[1]));
+                    }
+                    roots.extend(args.iter().copied());
+                }
+                Key::Call(_, args, _) => roots.extend(args.iter().copied()),
+                Key::Float(_, args) => roots.extend(args.iter().copied()),
+                Key::Load(.., addr, _) => roots.push(addr),
+                _ => {}
+            }
+        }
+        divs.sort_by_key(|d| d.0);
+        for (_, op, w, x, y) in divs {
+            let b = self.tr(y)?;
+            let wv = pow2(width(w));
+            if hyp {
+                self.le(&Lin::konst(1), &b.lin)?;
+                continue;
+            }
+            if b.lo == 0 {
+                if self.choose()? {
+                    self.eq0(b.lin.clone())?;
+                    return Ok(false);
+                }
+                self.le(&Lin::konst(1), &b.lin)?;
+            }
+            if op == IOp::DivS && b.hi == wv - 1 {
+                let a = self.tr(x)?;
+                if a.lo <= wv / 2 && wv / 2 <= a.hi {
+                    if self.choose()? {
+                        self.eq0(a.lin.add_c(-(wv / 2))?)?;
+                        self.eq0(b.lin.add_c(-(wv - 1))?)?;
+                        return Ok(false);
+                    }
+                    // not both: A ≠ MIN ∨ B ≠ −1
+                    if self.choose()? {
+                        let m1 = self.terms.konst(w, (wv - 1) as u64);
+                        let ne = self.terms.mk_eq(y, m1, false);
+                        self.assert(&ne, true)?;
+                    } else {
+                        let min = self.terms.konst(w, (wv / 2) as u64);
+                        let ne = self.terms.mk_eq(x, min, false);
+                        self.assert(&ne, true)?;
+                    }
+                }
+            }
+        }
+        Ok(true)
     }
 
     /// Interval pre-pass (§3.3): two rounds over the top-level single-variable constraints.
@@ -1044,6 +1119,18 @@ impl<'a> Solver<'a> {
         let mut model: Vec<(VarId, i128)> = val.into_iter().collect();
         model.sort();
         Ok(Fm::Sat(model))
+    }
+}
+
+fn atom_roots(a: &Atom, v: &mut Vec<TermId>) {
+    match a {
+        Atom::Cmp { a, b, .. } => v.extend([*a, *b]),
+        Atom::Bool { t, .. } => v.push(*t),
+        Atom::Or(x, y) => {
+            atom_roots(x, v);
+            atom_roots(y, v);
+        }
+        _ => {}
     }
 }
 

@@ -13,6 +13,8 @@ use std::collections::{BTreeSet, HashMap};
 pub type FactId = u32;
 pub type CupId = u32;
 
+const TRAPPED: &str = "evaluation traps";
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Dep {
     Cup(CupId),
@@ -321,7 +323,11 @@ impl<'a, 'm> Pass<'a, 'm> {
         }
         let mut it = Interp::new(self.cx.m);
         let r = self.eval_atom_with(&mut it, a);
-        Some(r.map(|b| (b, it.steps)))
+        // a fact whose evaluation traps is false
+        Some(match r {
+            Err(e) if e == TRAPPED => Ok((false, it.steps)),
+            r => r.map(|b| (b, it.steps)),
+        })
     }
 
     fn eval_term(&self, it: &mut Interp, t: TermId) -> Result<u64, String> {
@@ -332,7 +338,7 @@ impl<'a, 'm> Pass<'a, 'm> {
                 match it.call(*f as usize, &vals) {
                     Ok(r) => r.first().copied().ok_or_else(|| "no result".into()),
                     Err(EvalErr::Budget) => Err(format!("evaluation exceeded {} steps", super::eval::EVAL_BUDGET)),
-                    Err(EvalErr::Trap(m)) => Err(format!("evaluation trapped: {m}")),
+                    Err(EvalErr::Trap(_)) => Err(TRAPPED.into()),
                     Err(EvalErr::Unsupported(m)) => Err(format!("cannot evaluate: {m}")),
                     Err(EvalErr::CheckFailed { msg, .. }) => Err(msg),
                 }

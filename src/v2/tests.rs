@@ -505,8 +505,9 @@ fn fable_a4_virtual_rem_u_is_guarded() {
 
 #[test]
 fn constant_zero_divisor_in_a_proposition_is_opaque() {
-    // (div_u x 0) in a fact must not make every case unsatisfiable (review A4 residue)
-    none_proven(
+    // (div_u x 0) in a fact: the fact can never hold (its evaluation traps), so assuming it is
+    // assuming False — the cup below is at best *assumed*, never proven
+    let (cups, _) = marked(
         r#"(func $z (param $x i32) (param $y i32) (result i32)
   local.get $x
   local.get $y
@@ -515,6 +516,48 @@ fn constant_zero_divisor_in_a_proposition_is_opaque() {
   i32.div_u ;; @cup
 )"#,
     );
+    assert!(cups.iter().all(|c| c.1 != Verdict::Proven), "{cups:?}");
+    // …and without the assumption nothing proves it
+    none_proven(
+        r#"(func $z (param $x i32) (param $y i32) (result i32)
+  local.get $x
+  local.get $y
+  prove 0
+  i32.div_u ;; @cup
+)"#,
+    );
+}
+
+#[test]
+fn b5_virtual_rem_u_bounds_only_when_the_divisor_is_nonzero() {
+    // fuzz case 0218: x < 16 must NOT prove rem_u(x, div_u(x, 16)) <s 84 (div_u(x,16) = 0 traps)
+    let src = r#"(func $f (export "harness:f") (param $x i32) (param $y i32) (result i32)
+  block $b (fact (i32.lt_s (i32.rem_u $x (i32.div_u $x 16)) (i32.shl (i32.mul 7 3) 2)))
+    local.get $x
+    i32.const 16
+    i32.ge_u
+    br_if $b
+    local.get $y
+    i32.const 16
+    i32.ge_u
+    br_if $b
+    prove 2
+    br $b ;; @cup
+  end
+  i32.const 0
+)"#;
+    none_proven(src);
+    // a hypothesis fact carries its divisors' nonzeroness: rem_u(x, y) < 5 ⇒ y ≠ 0
+    let (cups, errs) = marked(
+        r#"(func $g (param $x i32) (param $y i32) (result i32)
+  assume (fact (i32.lt_u (i32.rem_u $x $y) (i32.const 5)))
+  local.get $x
+  local.get $y
+  prove 1
+  i32.div_u ;; @cup
+)"#,
+    );
+    assert!(cups.iter().all(|c| c.1 == Verdict::Assumed), "{cups:?} {errs:?}");
 }
 
 // ---------------- gradual mode: runtime checks on recorded inputs (R35) ----------------

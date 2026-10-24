@@ -186,6 +186,7 @@ impl RuntimePlan {
         if let Some(g) = &c.guard {
             match ev.atom(g) {
                 Ok(false) => return CheckOutcome::Holds,
+                Err(e) if e == TRAPS => return CheckOutcome::Holds,
                 Ok(true) => {}
                 Err(e) => return CheckOutcome::Unknown(e),
             }
@@ -193,10 +194,14 @@ impl RuntimePlan {
         match ev.atom(&c.atom) {
             Ok(true) => CheckOutcome::Holds,
             Ok(false) => CheckOutcome::Fails(format!("check failed: ⟨{}⟩", c.goal)),
+            // a fact whose evaluation traps is false (it holds iff it evaluates, without trapping, to nonzero)
+            Err(e) if e == TRAPS => CheckOutcome::Fails(format!("check failed: ⟨{}⟩ (its evaluation traps)", c.goal)),
             Err(e) => CheckOutcome::Unknown(e),
         }
     }
 }
+
+const TRAPS: &str = "evaluation traps";
 
 struct Evaluator<'a> {
     plan: &'a RuntimePlan,
@@ -214,7 +219,7 @@ impl Evaluator<'_> {
             Key::Const(_, b) => b,
             Key::Op(op, w, a) => {
                 let args: Vec<u64> = a.iter().map(|x| self.term(*x)).collect::<Result<_, _>>()?;
-                eval_iop(op, w, &args).map_err(|e| format!("{e:?}"))?
+                eval_iop(op, w, &args).map_err(|_| TRAPS.to_string())?
             }
             Key::Ite(c, a, b) => {
                 if self.term(c)? as u32 != 0 {
@@ -233,6 +238,7 @@ impl Evaluator<'_> {
                 match it.call(f as usize, &args) {
                     Ok(r) => r.first().copied().ok_or("no result")?,
                     Err(EvalErr::Budget) => return Err("predicate evaluation exceeded its budget".into()),
+                    Err(EvalErr::Trap(_)) => return Err(TRAPS.to_string()),
                     Err(e) => return Err(format!("predicate evaluation failed: {e:?}")),
                 }
             }
