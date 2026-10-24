@@ -2776,6 +2776,21 @@ fn global_preflight(cx: &mut ModCtx, errors: &mut Vec<(u32, String)>) {
             ));
             continue;
         }
+        // a predicate that fails R29 (impure, a loop) is reported on its own header; the
+        // refinement is ignored here rather than "evaluated" into a misleading initializer error
+        let mut called = vec![];
+        super::info::expr_calls(r, &mut called);
+        if let Some(p) = called.iter().find(|p| {
+            cx.m
+                .func_index(p)
+                .is_some_and(|f| cx.info[f].impure.is_some() || cx.info[f].has_loop.is_some())
+        }) {
+            errors.push((
+                g.line,
+                format!("{name}'s refinement calls {p}, which is not a valid predicate (R29: see its header)"),
+            ));
+            continue;
+        }
         deps[i] = Some(vec![]);
     }
     cx.global_deps = deps.clone();

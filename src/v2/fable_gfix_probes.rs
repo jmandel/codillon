@@ -271,7 +271,7 @@ fn fable_f2_local_refinement_naming_a_global() {
 // ---------------- F3: refined globals ----------------
 
 #[test]
-#[ignore = "HOLE (research/22 S2): a function named only by a global refinement is not a predicate"]
+/// Fixed (S2): a function named by a global refinement is a predicate and gets R29.
 fn fable_f3_global_refinement_via_predicate_reading_another_global() {
     let src = r#"(global $h (mut i32) (i32.const 1))
 (func $p (param $a i32) (result i32)
@@ -318,6 +318,18 @@ fn fable_f3_global_refinement_via_predicate_reading_another_global() {
     assert!(
         errors(&out2).iter().any(|(_, e)| e.contains("predicate") || e.contains("loop")),
         "a looping function serves as a global's refinement predicate: {:?}",
+        errors(&out2)
+    );
+    assert!(
+        errors(&out)
+            .iter()
+            .any(|(l, e)| *l == 2 && e.contains("reads a mutable global")),
+        "{:?}",
+        errors(&out)
+    );
+    assert!(
+        !errors(&out2).iter().any(|(_, e)| e.contains("initializer")),
+        "misleading initializer error: {:?}",
         errors(&out2)
     );
 }

@@ -26,7 +26,7 @@ pub struct FnInfo {
     pub is_measure: bool,
 }
 
-fn expr_calls(e: &Expr, out: &mut Vec<String>) {
+pub fn expr_calls(e: &Expr, out: &mut Vec<String>) {
     match e {
         Expr::Call(f, a) => {
             out.push(f.clone());
@@ -189,6 +189,10 @@ pub fn analyze(m: &Module) -> Vec<FnInfo> {
                 break;
             }
         }
+    }
+    // a global's refinement names predicates too (R9, R29; research/22 S2)
+    for g in &m.globals {
+        g.ty.refine.iter().for_each(|e| expr_calls(e, &mut named));
     }
     for name in named {
         if let Some(g) = m.func_index(&name) {
