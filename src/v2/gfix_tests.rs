@@ -356,3 +356,62 @@ fn f4_a_check_never_reads_a_capture_from_later_or_a_sibling_arm() {
     let (r, _) = super::tests::instrumented_run(&neg, "f", &[5]);
     assert!(matches!(r, Err(EvalErr::CheckFailed { line: 11, .. })), "{r:?}");
 }
+
+// ---------------- vericoding helpers ----------------
+
+fn session_start(name: &str) -> Vec<String> {
+    let p = format!(
+        "{}/public/examples/v2/sessions/{name}.json",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let s = super::llm::parse_script(&std::fs::read_to_string(p).unwrap()).unwrap();
+    s.start
+}
+
+fn replace(lines: &[String], a: usize, b: usize, with: &[&str]) -> Vec<String> {
+    let mut out = lines[..a - 1].to_vec();
+    out.extend(with.iter().map(|s| s.to_string()));
+    out.extend(lines[b..].iter().cloned());
+    out
+}
+
+// ---------------- F6: every LLM-owned function must be strict-clean, touched or not ----------------
+
+#[test]
+fn f6_an_untouched_unproven_target_blocks_acceptance() {
+    use super::vericode::SessionStart;
+    let start = session_start("parity");
+    let s = SessionStart::new(&start);
+    assert!(start[38].contains("i32.const -1"), "{}", start[38]);
+    // the gate computes x >> 1 inline and never calls (or fixes) $half, which stays `i32.const 0`
+    let sub = replace(
+        &start,
+        39,
+        39,
+        &[
+            "  local.get $x",
+            "  call $is_even",
+            "  i32.eqz",
+            "  if (result (i32 | $hon_ok $x))",
+            "    i32.const -1",
+            "    prove 1",
+            "  else",
+            "    local.get $x",
+            "    i32.const 1",
+            "    i32.shr_s",
+            "    prove 1",
+            "  end",
+        ],
+    );
+    let j = s.judge(&sub);
+    assert!(!j.crossed(), "{:?}", j.boundary);
+    assert_eq!(j.touched, vec!["$half_or_neg1".to_string()]);
+    assert!(
+        !j.out.funcs.iter().find(|f| f.name == "$half").unwrap().verified,
+        "$half is still a stub"
+    );
+    assert!(!j.accepted, "{}", j.summary());
+    assert!(j.strict.iter().any(|r| r.line == 37), "{:?}", j.strict);
+    // and an empty round on the start state is not "all verified"
+    assert!(!s.judge(&start).accepted);
+}

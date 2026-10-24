@@ -435,7 +435,16 @@ impl SessionStart {
             .collect();
         let out = check_module(&m, false);
         let touched = self.touched(lines);
-        let strict = strict_reasons(&m, &out, &touched);
+        // every function whose body is the LLM's must be strict-clean, touched or not: leaving an
+        // unproven target alone is not an implementation of it (review 20 F6)
+        let mut judged = touched.clone();
+        judged.extend(
+            m.funcs
+                .iter()
+                .filter(|f| !f.imported && !f.is_axiom() && !self.bodies.contains(&f.name()))
+                .map(|f| f.name()),
+        );
+        let strict = strict_reasons(&m, &out, &judged);
         Judgement {
             accepted: boundary.is_empty() && malformed.is_empty() && strict.is_empty(),
             boundary,
@@ -496,8 +505,8 @@ fn strict_ok(c: &super::out::CupOut) -> bool {
         && c.assumptions.iter().all(|o| o.kind == "axiom")
 }
 
-/// §7.1 (3)–(4): every cup of a touched function strict-clean, the function VERIFIED, and every
-/// harness `False` cup proven.
+/// §7.1 (3)–(4): every cup of a judged function (touched, or LLM-owned) strict-clean, the function
+/// VERIFIED, and every harness `False` cup proven.
 pub fn strict_reasons(m: &Module, out: &ModuleOut, touched: &[String]) -> Vec<Reason> {
     let mut r = vec![];
     for f in &out.funcs {
