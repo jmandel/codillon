@@ -479,39 +479,63 @@ impl SessionStart {
 
     /// §7.1 (5): the program must run. The kernel's theorem is partial correctness (§6), which a
     /// body that never returns satisfies vacuously; so `$main`, every harness and every LLM-owned
-    /// function with only value parameters must finish on small inputs satisfying their
-    /// preconditions (review 20 F5).
+    /// function must finish on inputs satisfying their preconditions (review 20 F5). An LLM-owned
+    /// function no input of its list satisfies (fact parameters included) counts as run if some
+    /// `$main` or harness run entered it; otherwise its termination is unchecked, which is an
+    /// error rather than a silent pass (research/22 S1).
     fn termination(&self, m: &Module) -> Vec<Reason> {
         let mut r = vec![];
+        let blame = |g: usize| !self.bodies.contains(&m.funcs[g].name());
+        let runnable = |func: &super::ast::Func| {
+            !(func.imported || func.end_line == 0 || func.is_lemma() || func.is_axiom())
+        };
+        let entry = |func: &super::ast::Func| {
+            func.is_harness() || func.header.name.as_deref() == Some("$main")
+        };
+        let away = |func: &super::ast::Func, args: &[u64], g: usize| {
+            let shown: Vec<String> = args
+                .iter()
+                .map(|a| (*a as u32 as i32).to_string())
+                .collect();
+            Reason {
+                line: func.header_line,
+                msg: format!(
+                    "{}({}) does not finish: {} runs past {} steps or calls: a proof of partial correctness is not an implementation",
+                    func.name(),
+                    shown.join(", "),
+                    m.funcs[g].name(),
+                    super::adequacy::FINISH_BUDGET
+                ),
+            }
+        };
+        // $main and harnesses first: what they reach counts as run
+        let mut reached = vec![false; m.funcs.len()];
         for (f, func) in m.funcs.iter().enumerate() {
-            if func.imported || func.end_line == 0 || func.is_lemma() || func.is_axiom() {
+            if !runnable(func) || !entry(func) {
                 continue;
             }
-            let runs = func.is_harness()
-                || func.header.name.as_deref() == Some("$main")
-                || (!self.bodies.contains(&func.name())
-                    && func
-                        .header
-                        .params
-                        .iter()
-                        .all(|p| matches!(p.decl, super::ast::Decl::Val(_))));
-            if !runs {
+            let fin = super::adequacy::runs_away(m, f, 16, &blame);
+            if let Some((args, g)) = &fin.away {
+                r.push(away(func, args, *g));
+            } else {
+                for (g, x) in fin.reached.iter().enumerate() {
+                    reached[g] |= *x;
+                }
+            }
+        }
+        for (f, func) in m.funcs.iter().enumerate() {
+            if !runnable(func) || entry(func) || self.bodies.contains(&func.name()) {
                 continue;
             }
-            let blame = |g: usize| !self.bodies.contains(&m.funcs[g].name());
-            if let Some((args, g)) = super::adequacy::runs_away(m, f, 16, &blame) {
-                let shown: Vec<String> = args
-                    .iter()
-                    .map(|a| (*a as u32 as i32).to_string())
-                    .collect();
+            let fin = super::adequacy::runs_away(m, f, 16, &blame);
+            if let Some((args, g)) = &fin.away {
+                r.push(away(func, args, *g));
+            } else if fin.ran == 0 && !reached[f] {
                 r.push(Reason {
                     line: func.header_line,
                     msg: format!(
-                        "{}({}) does not finish: {} runs past {} steps or calls: a proof of partial correctness is not an implementation",
-                        func.name(),
-                        shown.join(", "),
-                        m.funcs[g].name(),
-                        super::adequacy::FINISH_BUDGET
+                        "termination of {} is unchecked: no input in its input list satisfies its precondition and no run of $main or a harness reaches it (§7.1 rule 5); a harness that calls it would let the judge run it",
+                        func.name()
                     ),
                 });
             }
@@ -577,7 +601,9 @@ impl SessionStart {
                 .map(|f| f.name()),
         );
         let mut strict = strict_reasons(&m, &out, &judged);
-        if boundary.is_empty() && malformed.is_empty() && strict.is_empty() {
+        // rule (5) runs whenever the text is in bounds and parses, so the LLM hears about a
+        // runaway in the same round as the rest (listed last; research/22 N3)
+        if boundary.is_empty() && malformed.is_empty() {
             strict.extend(self.termination(&m));
         }
         Judgement {

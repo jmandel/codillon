@@ -245,8 +245,8 @@ fn small(m: &Module, f: usize, args: &[u64]) -> bool {
 }
 
 /// The partial-correctness theorem (§6) says nothing about a body that never returns, so in
-/// vericoding a submission must also *run*: `f` is run on up to `per` small inputs that satisfy
-/// its precondition, each within [`FINISH_BUDGET`] steps and [`FINISH_DEPTH`] calls. The first
+/// vericoding a submission must also *run*: `f` is run on up to `per` inputs that satisfy its
+/// precondition ([`finish_inputs`]), each within [`FINISH_BUDGET`] steps and [`FINISH_DEPTH`] calls. The first
 /// input on which it runs out *while a function `blame` accepts is on the call stack*, with the
 /// innermost such frame. Traps and other errors are not this check's business.
 ///
@@ -266,24 +266,77 @@ pub fn runs_away(
     f: usize,
     per: usize,
     blame: &dyn Fn(usize) -> bool,
-) -> Option<(Vec<u64>, usize)> {
+) -> Finish {
     super::eval::with_depth_limit(FINISH_DEPTH, || {
-        let inputs: Vec<Vec<u64>> = input_list(m, f, 64)
-            .into_iter()
-            .filter(|a| small(m, f, a) && pre_holds(m, f, a))
-            .take(per)
-            .collect();
-        for args in inputs {
+        let mut fin = Finish {
+            away: None,
+            ran: 0,
+            reached: vec![false; m.funcs.len()],
+        };
+        for args in finish_inputs(m, f, per) {
             let mut it = Interp::for_run(m, None);
             it.budget = FINISH_BUDGET;
-            if let Err(EvalErr::Budget) = it.call(f, &args)
+            let r = it.call(f, &args);
+            fin.ran += 1;
+            for (g, x) in it.reached.iter().enumerate() {
+                fin.reached[g] |= *x;
+            }
+            if let Err(EvalErr::Budget) = r
                 && let Some(g) = it.ran_out_blaming(blame)
             {
-                return Some((args, g));
+                fin.away = Some((args, g));
+                break;
             }
         }
-        None
+        fin
     })
+}
+
+/// What [`runs_away`] found.
+pub struct Finish {
+    /// the first input it ran away on, with the implementation frame blamed
+    pub away: Option<(Vec<u64>, usize)>,
+    /// inputs run (0: no input satisfies the precondition)
+    pub ran: usize,
+    /// functions entered by those runs
+    pub reached: Vec<bool>,
+}
+
+/// The inputs rule (5) runs `f` on (research/22 S1): its precondition witnesses (fact parameters
+/// included, evaluated) from the input list, the small ones (0..=[`SMALL`]) if there are any;
+/// otherwise the `per` witnesses closest to zero of a wider list, so a precondition like
+/// `v > 1000` is still run.
+fn finish_inputs(m: &Module, f: usize, per: usize) -> Vec<Vec<u64>> {
+    let small_w: Vec<Vec<u64>> = input_list(m, f, 64)
+        .into_iter()
+        .filter(|a| small(m, f, a) && pre_holds(m, f, a))
+        .take(per)
+        .collect();
+    if !small_w.is_empty() {
+        return small_w;
+    }
+    let tys: Vec<ValTy> = m.funcs[f].value_params().map(|(_, _, r)| r.ty).collect();
+    let size = |a: &Vec<u64>| -> u64 {
+        a.iter()
+            .zip(&tys)
+            .map(|(x, t)| {
+                let s = if *t == ValTy::I32 {
+                    *x as u32 as i32 as i64
+                } else {
+                    *x as i64
+                };
+                s.unsigned_abs()
+            })
+            .max()
+            .unwrap_or(0)
+    };
+    let mut wide: Vec<Vec<u64>> = input_list(m, f, 256)
+        .into_iter()
+        .filter(|a| pre_holds(m, f, a))
+        .collect();
+    wide.sort_by_key(size);
+    wide.truncate(per);
+    wide
 }
 
 // ---------------- vacuity ----------------

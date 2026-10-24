@@ -391,7 +391,7 @@ fn fable_f5_bare_unreachable_body() {
 /// Functions that are never run by rule (5): a fact parameter, or a precondition with no witness
 /// in 0..100. Neither is reachable from $main here, so nothing runs them.
 #[test]
-#[ignore = "HOLE (research/22 S1): fact-param and >100-precondition functions are never run"]
+/// Fixed (S1): both are run, on witnesses of their fact parameter / a wider input list.
 fn fable_f5_functions_the_termination_rule_never_runs() {
     let start = lines(
         r#"(func $main
@@ -420,6 +420,38 @@ fn fable_f5_functions_the_termination_rule_never_runs() {
     println!("$g spins: {} {:?}", j.summary(), j.strict);
     let g_ok = !j.accepted;
     assert!(big_ok && g_ok, "big_ok={big_ok} g_ok={g_ok}");
+    assert!(j.strict.iter().any(|r| r.line == 4 && r.msg.starts_with("$g(")), "{:?}", j.strict);
+}
+
+/// S1: an LLM-owned function no listed input satisfies is unchecked (an error) unless a `$main`
+/// or harness run reaches it.
+#[test]
+fn s1_no_witness_is_unchecked_unless_main_reaches_it() {
+    let src = |main_calls: bool| {
+        let call = if main_calls {
+            "  i32.const 16850989\n  call $odd\n  drop"
+        } else {
+            "  nop"
+        };
+        lines(&format!(
+            r#"(func $main
+{call}
+)
+(func $odd (export "odd") (param $x (i32 | (i32.eq v (i32.mul 4099 4111)))) (result (i32 | (i32.eq v $x)))
+  local.get $x
+  prove 0
+)"#
+        ))
+    };
+    for main_calls in [false, true] {
+        let start = src(main_calls);
+        let s = SessionStart::new(&start);
+        let j = s.judge(&start);
+        println!("main_calls={main_calls}: {} {:?}", j.summary(), j.strict);
+        let unchecked = j.strict.iter().any(|r| r.msg.contains("unchecked"));
+        assert_eq!(unchecked, !main_calls, "{:?}", j.strict);
+        assert_eq!(j.accepted, main_calls);
+    }
 }
 
 // ---------------- F7: locked lines made unreachable ----------------

@@ -222,6 +222,8 @@ pub struct Interp<'m> {
     /// the whole call stack (outermost first) at that moment
     pub ran_out_stack: Vec<usize>,
     stack: Vec<usize>,
+    /// functions entered during this interpreter's runs
+    pub reached: Vec<bool>,
 }
 
 impl<'m> Interp<'m> {
@@ -241,6 +243,7 @@ impl<'m> Interp<'m> {
             ran_out_in: None,
             ran_out_stack: vec![],
             stack: vec![],
+            reached: vec![false; m.funcs.len()],
         }
     }
 
@@ -276,6 +279,7 @@ impl<'m> Interp<'m> {
         let nres = func.value_results().len();
         self.depth += 1;
         self.stack.push(f);
+        self.reached[f] = true;
         let r = self.run(f, &tab, &locs, &mut locals, nres);
         self.stack.pop();
         self.depth -= 1;
