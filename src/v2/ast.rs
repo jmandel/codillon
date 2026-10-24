@@ -334,7 +334,7 @@ fn parse_float_op(name: &str) -> Option<Ins> {
             _ => {}
         }
         if let Some(src) = op.strip_prefix("convert_") {
-            return mk(vec![fl(&src[..3])?], ty, false);
+            return mk(vec![fl(src.get(..3)?)?], ty, false);
         }
         if let Some(src) = op.strip_prefix("reinterpret_") {
             return mk(vec![fl(src)?], ty, false);
@@ -342,10 +342,10 @@ fn parse_float_op(name: &str) -> Option<Ins> {
         return None;
     }
     if let Some(src) = op.strip_prefix("trunc_sat_") {
-        return mk(vec![fl(&src[..3])?], ty, false);
+        return mk(vec![fl(src.get(..3)?)?], ty, false);
     }
     if let Some(src) = op.strip_prefix("trunc_") {
-        return mk(vec![fl(&src[..3])?], ty, true);
+        return mk(vec![fl(src.get(..3)?)?], ty, true);
     }
     if let Some(src) = op.strip_prefix("reinterpret_") {
         return mk(vec![fl(src)?], ty, false);

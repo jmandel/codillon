@@ -39,11 +39,72 @@ impl S {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum Tok {
+pub enum Tok {
     Open,
     Close,
     Atom(String),
     Str(String),
+}
+
+/// Tokens with their byte spans in `code`. The one tokenizer shared by the parser and the eraser:
+/// strings are single tokens (so `(`, `)` and `;;` inside them are inert) and `|` is always its own
+/// token (so `(i32| $p)` and `(i32 | $p)` read alike).
+pub fn tokenize_spans(code: &str) -> Result<Vec<(Tok, std::ops::Range<usize>)>, String> {
+    let mut out = Vec::new();
+    let cs: Vec<(usize, char)> = code.char_indices().collect();
+    let at = |k: usize| if k < cs.len() { cs[k].0 } else { code.len() };
+    let mut i = 0;
+    while i < cs.len() {
+        let c = cs[i].1;
+        if c.is_whitespace() {
+            i += 1;
+        } else if c == '(' {
+            if i + 1 < cs.len() && cs[i + 1].1 == ';' {
+                let mut j = i + 2;
+                while j + 1 < cs.len() && !(cs[j].1 == ';' && cs[j + 1].1 == ')') {
+                    j += 1;
+                }
+                i = j + 2;
+                continue;
+            }
+            out.push((Tok::Open, at(i)..at(i + 1)));
+            i += 1;
+        } else if c == ')' {
+            out.push((Tok::Close, at(i)..at(i + 1)));
+            i += 1;
+        } else if c == '|' {
+            out.push((Tok::Atom("|".into()), at(i)..at(i + 1)));
+            i += 1;
+        } else if c == '"' {
+            let mut s = String::new();
+            let mut j = i + 1;
+            while j < cs.len() && cs[j].1 != '"' {
+                if cs[j].1 == '\\' && j + 1 < cs.len() {
+                    s.push(cs[j].1);
+                    j += 1;
+                }
+                s.push(cs[j].1);
+                j += 1;
+            }
+            if j >= cs.len() {
+                return Err("unterminated string".into());
+            }
+            out.push((Tok::Str(s), at(i)..at(j + 1)));
+            i = j + 1;
+        } else {
+            let mut j = i;
+            while j < cs.len() && !cs[j].1.is_whitespace() && !matches!(cs[j].1, '(' | ')' | '"' | '|') {
+                j += 1;
+            }
+            out.push((Tok::Atom(cs[i..j].iter().map(|x| x.1).collect()), at(i)..at(j)));
+            i = j;
+        }
+    }
+    Ok(out)
+}
+
+fn tokenize(code: &str) -> Result<Vec<Tok>, String> {
+    Ok(tokenize_spans(code)?.into_iter().map(|(t, _)| t).collect())
 }
 
 /// Split off a trailing `;;` comment (not inside a string).
@@ -61,60 +122,6 @@ pub fn split_comment(line: &str) -> (&str, &str) {
         i += 1;
     }
     (line, "")
-}
-
-fn tokenize(code: &str) -> Result<Vec<Tok>, String> {
-    let mut out = Vec::new();
-    let cs: Vec<char> = code.chars().collect();
-    let mut i = 0;
-    while i < cs.len() {
-        let c = cs[i];
-        if c.is_whitespace() {
-            i += 1;
-        } else if c == '(' {
-            // block comment `(; … ;)`
-            if i + 1 < cs.len() && cs[i + 1] == ';' {
-                let mut j = i + 2;
-                while j + 1 < cs.len() && !(cs[j] == ';' && cs[j + 1] == ')') {
-                    j += 1;
-                }
-                i = j + 2;
-                continue;
-            }
-            out.push(Tok::Open);
-            i += 1;
-        } else if c == ')' {
-            out.push(Tok::Close);
-            i += 1;
-        } else if c == '|' {
-            out.push(Tok::Atom("|".into()));
-            i += 1;
-        } else if c == '"' {
-            let mut s = String::new();
-            let mut j = i + 1;
-            while j < cs.len() && cs[j] != '"' {
-                if cs[j] == '\\' && j + 1 < cs.len() {
-                    s.push(cs[j]);
-                    j += 1;
-                }
-                s.push(cs[j]);
-                j += 1;
-            }
-            if j >= cs.len() {
-                return Err("unterminated string".into());
-            }
-            out.push(Tok::Str(s));
-            i = j + 1;
-        } else {
-            let mut j = i;
-            while j < cs.len() && !cs[j].is_whitespace() && !matches!(cs[j], '(' | ')' | '"' | '|') {
-                j += 1;
-            }
-            out.push(Tok::Atom(cs[i..j].iter().collect()));
-            i = j;
-        }
-    }
-    Ok(out)
 }
 
 /// Read a line into top-level items. `open` is the number of lists left unclosed at the end
