@@ -1058,3 +1058,56 @@ span.comment[data-commentary][data-tone="mutant"]::after {
     font-size: 10pt;
     color: #4b4566;
 }
+
+/* the panel pushes the listing: wide lines (refined headers, fact clauses) scroll out from
+   under it instead of ending beneath it (review 19) */
+body.vc-on .line.wide-line > span.instr {
+    padding-right: 410px;
+}
+
+body.vc-on.vc-collapsed {
+    margin-right: 40px;
+}
+
+body.vc-collapsed .vc-panel {
+    width: 26px;
+    padding: 8px 2px;
+    overflow: hidden;
+}
+
+body.vc-on.vc-collapsed .line.wide-line > span.instr {
+    padding-right: 46px;
+}
+
+.vc-tab {
+    writing-mode: vertical-rl;
+    font-family: 'MLMSansDemiCond10-Regular';
+    font-size: 10pt;
+    letter-spacing: 0.08em;
+    color: #483D8B;
+    background: #fffff0;
+    border: 1px solid #b9b4d4;
+    border-radius: 9px;
+    padding: 8px 2px;
+    cursor: pointer;
+}
+
+/* fit / embed mode: the panel is stacked below the code, in the flow */
+.embed body.vc-on {
+    margin-right: 0;
+    margin-bottom: 0;
+}
+
+.embed .vc-panel {
+    position: static;
+    width: auto;
+    height: auto;
+    max-width: 760px;
+    border-left: none;
+    border-top: 1px solid #d8d4ea;
+    margin-top: 24px;
+}
+
+.embed body.vc-on .line.wide-line > span.instr {
+    padding-right: 0;
+}

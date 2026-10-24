@@ -997,7 +997,12 @@ impl Editor {
             )),
         }?;
 
-        self.show_autocomplete()?;
+        if self.vc.as_ref().is_some_and(|v| v.refused.is_some()) {
+            // a refused edit on a locked line: no completion popup under the refusal
+            self.autocomplete_mut().update("");
+        } else {
+            self.show_autocomplete()?;
+        }
 
         Ok(())
     }

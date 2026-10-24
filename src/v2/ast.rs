@@ -1043,6 +1043,27 @@ impl Module {
                 ));
             }
         }
+        // one role per function: a lemma that is also a harness or a measure would be trusted
+        // as one and counted as the other (review 19, probes A20/A21)
+        for f in &m.funcs {
+            let roles: Vec<&str> = f
+                .header
+                .exports
+                .iter()
+                .filter_map(|e| e.split_once(':').map(|r| r.0))
+                .collect();
+            if roles.len() > 1 {
+                m.errors.push((
+                    f.header_line,
+                    format!(
+                        "{} has {} roles ({}); a function may be one of lemma, axiom, harness, measure",
+                        f.name(),
+                        roles.len(),
+                        roles.join(", ")
+                    ),
+                ));
+            }
+        }
         m.errors.sort_by_key(|e| e.0);
         m
     }

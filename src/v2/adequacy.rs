@@ -88,6 +88,7 @@ pub fn input_list(m: &Module, f: usize, cap: usize) -> Vec<Vec<u64>> {
         }
     }
     let mut s: u64 = 0x9e37_79b9_7f4a_7c15 ^ (f as u64);
+    let mut sample: Vec<Vec<u64>> = vec![];
     for _ in 0..cap {
         let v: Vec<u64> = tys
             .iter()
@@ -98,11 +99,25 @@ pub fn input_list(m: &Module, f: usize, cap: usize) -> Vec<Vec<u64>> {
                 x & super::term::mask(*t)
             })
             .collect();
-        out.push(v);
+        sample.push(v);
     }
-    out.dedup();
-    out.truncate(cap);
-    out
+    // edges and sample interleaved, so a cap keeps both (review 19: the grid alone filled it)
+    let mut mixed: Vec<Vec<u64>> = vec![];
+    let (mut e, mut r) = (out.into_iter(), sample.into_iter());
+    loop {
+        match (e.next(), r.next()) {
+            (None, None) => break,
+            (a, b) => {
+                for v in [a, b].into_iter().flatten() {
+                    if !mixed.contains(&v) {
+                        mixed.push(v);
+                    }
+                }
+            }
+        }
+    }
+    mixed.truncate(cap);
+    mixed
 }
 
 fn eval_expr(it: &mut Interp, e: &Expr, env: &[(String, u64)], v: u64) -> Result<u64, EvalErr> {

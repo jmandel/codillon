@@ -212,7 +212,7 @@ fn mutation_operators_rewrite_one_site() {
 fn run_mutation(ex: &str) -> Vec<(Mutant, Fate)> {
     let lines = example(ex);
     let o = st(&lines).owners(&lines);
-    let bench = Bench::new(&lines, 24);
+    let bench = Bench::new(&lines, 48);
     mutants(&lines, &o)
         .into_iter()
         .map(|m| {
@@ -618,4 +618,47 @@ fn default_model_is_the_chosen_one() {
     );
     assert_eq!(b["provider"]["sort"], "throughput");
     assert!(b["max_tokens"].as_u64().unwrap() <= 65_500);
+}
+
+/// Review 19 A14: a student line moved among LLM lines (here an instructor `assume` moved into
+/// another block) is a boundary violation: ownership holds by identity and position.
+#[test]
+fn a14_moving_a_student_line_is_a_violation() {
+    let g = example("gcd");
+    let mut base = g.clone();
+    assert!(base[122].trim() == "br_if $done");
+    base.insert(123, "      assume (fact (i32.ne $y 0))".into());
+    let s = st(&base);
+    assert!(s.judge(&base).boundary.is_empty());
+    // moved within the same block: still in place
+    let mut t = base.clone();
+    let a = t.remove(123);
+    t.insert(124, a);
+    assert!(s.zone_violation(&t).is_none(), "{:?}", s.zone_violation(&t));
+    // moved out of the loop, before it
+    let mut t = base.clone();
+    let a = t.remove(123);
+    t.insert(118, a);
+    let v = s.zone_violation(&t).expect("a violation");
+    assert!(v.msg.contains("out of its place"), "{v:?}");
+    assert!(s.judge(&t).crossed());
+}
+
+/// Review 19 A20/A21: one role per function (no lemma that is also a harness or a measure).
+#[test]
+fn a20_dual_role_functions_are_rejected() {
+    let g = example("gcd");
+    let s = st(&g);
+    let mut t = g.clone();
+    t.push("(func $h2 (export \"lemma:h2\") (export \"harness:h2\") (param $a i32)".into());
+    t.push("  unreachable".into());
+    t.push(")".into());
+    let m = super::ast::Module::parse_lines(&t);
+    assert!(
+        m.errors.iter().any(|(_, e)| e.contains("2 roles")),
+        "{:?}",
+        m.errors
+    );
+    let j = s.judge(&t);
+    assert!(j.crossed() && !j.accepted);
 }

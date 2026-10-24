@@ -69,6 +69,9 @@ pub struct VcState {
     pub busy: bool,
     pub llm_error: Option<String>,
     pub panel: Option<Panel>,
+    pub collapsed: bool,
+    /// a hand edit since the last verdict (the judge answers it once typing pauses)
+    pub hand_edit: bool,
 }
 
 impl VcState {
@@ -86,6 +89,8 @@ impl VcState {
             busy: false,
             llm_error: None,
             panel: None,
+            collapsed: false,
+            hand_edit: false,
         }
     }
 }
@@ -350,6 +355,7 @@ impl Editor {
         if let Some(vc) = self.vc.as_mut() {
             vc.refused = None;
             vc.rejected.clear();
+            vc.hand_edit = true;
         }
         Ok(())
     }
@@ -368,6 +374,12 @@ impl Editor {
                 p.root.remove();
             }
             body_class(false);
+            if let Some(b) = web_sys::window()
+                .and_then(|w| w.document())
+                .and_then(|d| d.body())
+            {
+                let _ = b.class_list().remove_1("vc-collapsed");
+            }
         }
         self.draw_proofs();
         self.vc_render();
@@ -433,6 +445,11 @@ impl Editor {
     pub(super) fn vc_act(&mut self, act: &str, arg: &str) {
         match act {
             "close" => self.vc_set_mode(false),
+            "collapse" => {
+                if let Some(vc) = self.vc.as_mut() {
+                    vc.collapsed = !vc.collapsed;
+                }
+            }
             "strict" => {
                 self.link.strict = arg == "1";
                 let _ = self.on_change();
@@ -738,7 +755,7 @@ impl Editor {
         }
         let t0 = now();
         if a.bench.is_none() {
-            a.bench = Some(Bench::new(&a.lines, 24));
+            a.bench = Some(Bench::new(&a.lines, 48));
             a.bench_ms = now() - t0;
             a.total_ms += a.bench_ms;
         } else {
@@ -869,6 +886,16 @@ impl Editor {
             let _ = b.append_child(&p.root);
         }
         body_class(true);
+        if let Some(b) = web_sys::window()
+            .and_then(|w| w.document())
+            .and_then(|d| d.body())
+        {
+            let _ = if vc.collapsed {
+                b.class_list().add_1("vc-collapsed")
+            } else {
+                b.class_list().remove_1("vc-collapsed")
+            };
+        }
         let lines = self.program_lines();
         let numbers = self.display_numbers();
         let disp = |k: u32| {
@@ -897,10 +924,39 @@ impl Editor {
                 let mut ed = holder.borrow_mut();
                 if ed.vc_touch == t {
                     ed.vc_restart_adequacy();
+                    ed.vc_judge_hand_edit();
                 }
             },
             400,
         );
+    }
+
+    /// A hand edit in the implementation zone gets the judge's verdict too (§7.1), as if the
+    /// student had submitted it.
+    fn vc_judge_hand_edit(&mut self) {
+        let lines = self.program_lines();
+        let Some(vc) = self.vc.as_mut() else { return };
+        if !std::mem::take(&mut vc.hand_edit) {
+            return;
+        }
+        let j = vc.start.judge(&lines);
+        let kind = if j.accepted {
+            "accepted"
+        } else if j.crossed() {
+            "rejected"
+        } else {
+            "not-accepted"
+        };
+        let first = j
+            .boundary
+            .iter()
+            .chain(&j.malformed)
+            .chain(&j.strict)
+            .next()
+            .map(|r| format!(" — line {}: {}", r.line, r.msg))
+            .unwrap_or_default();
+        vc.verdict = Some((kind, format!("your edit: {}{first}", j.summary())));
+        self.vc_render();
     }
 
     /// The small "vericode" switch at the top right (hidden in embeds by CSS).

@@ -25,6 +25,15 @@ fn kind_class(kind: &str) -> &'static str {
 pub fn panel(vc: &VcState, lines: &[String], strict: bool, disp: &dyn Fn(u32) -> u32) -> String {
     let rn = |t: &str| esc(&crate::proof_view::renumber(t, disp));
     let mut h = String::new();
+    if vc.collapsed {
+        return format!(
+            "<button type=\"button\" class=\"vc-tab\" data-act=\"collapse\" title=\"open the vericoding panel\">‹ vericoding{}</button>",
+            match &vc.verdict {
+                Some((k, _)) if *k == "accepted" => " ◆",
+                _ => "",
+            }
+        );
+    }
     // ---- header: the mode and the boundary ----
     let owners = vc.start.owners(lines);
     let locked = owners.iter().filter(|o| **o == Owner::Student).count();
@@ -35,6 +44,7 @@ pub fn panel(vc: &VcState, lines: &[String], strict: bool, disp: &dyn Fn(u32) ->
         act("strict", "0", "gradual", if strict { "" } else { "vc-on" }),
         act("strict", "1", "strict", if strict { "vc-on" } else { "" })
     ));
+    h.push_str(&act("collapse", "", "›", "vc-x"));
     h.push_str(&act("close", "", "×", "vc-x"));
     h.push_str("</div>");
     h.push_str(&format!(
@@ -45,29 +55,29 @@ The kernel alone judges a submission: accepted only if every function it touched
 
     // ---- sessions ----
     h.push_str("<h3>session</h3>");
+    if let Some(l) = &vc.live {
+        h.push_str(&format!(
+            "<p class=\"vc-dim\">live session · round {}/{}{}</p>",
+            l.round,
+            l.max_rounds,
+            if vc.busy {
+                " · waiting for the model…"
+            } else {
+                ""
+            }
+        ));
+        if vc.busy {
+            h.push_str(&act("stop", "", "stop after this round", "vc-link"));
+        }
+    }
     match &vc.player {
-        None if vc.live.is_none() => {
+        None => {
+            // the recorded sessions stay on offer (also after a live attempt)
             h.push_str("<p class=\"vc-dim\">Replay a recorded LLM session through the real kernel (offline):</p><div class=\"vc-row\">");
             for (n, label) in SESSIONS {
                 h.push_str(&act("load", n, label, "vc-link"));
             }
             h.push_str("</div>");
-        }
-        None => {
-            let l = vc.live.as_ref().unwrap();
-            h.push_str(&format!(
-                "<p class=\"vc-dim\">live session · round {}/{}{}</p>",
-                l.round,
-                l.max_rounds,
-                if vc.busy {
-                    " · waiting for the model…"
-                } else {
-                    ""
-                }
-            ));
-            if vc.busy {
-                h.push_str(&act("stop", "", "stop after this round", "vc-link"));
-            }
         }
         Some(p) => {
             h.push_str(&format!(
@@ -225,8 +235,12 @@ The kernel alone judges a submission: accepted only if every function it touched
         h.push_str("<p class=\"vc-dim\">no mutants: the implementation zone is empty</p>");
     } else {
         h.push_str(&format!(
-            "<p class=\"vc-mut\">mutants {done}/{} · killed by the spec {killed} · <b>{} survive</b>{}{} · {:.0} ms{}</p>",
+            "<p class=\"vc-mut\">mutants {done}/{}{} · killed by the spec {killed} · <b>{} survive</b>{}{} · {:.0} ms{}</p>",
             a.mutants.len(),
+            a.bench
+                .as_ref()
+                .map(|b| format!(" on {} harness inputs", b.runs.len()))
+                .unwrap_or_default(),
             surv.len(),
             if proven > 0 || own > 0 {
                 let mut v = vec![];

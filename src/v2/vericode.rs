@@ -126,13 +126,70 @@ pub fn classify<S: AsRef<str>>(lines: &[S], bodies: &BTreeSet<String>) -> Vec<Ow
     owners
 }
 
-/// The student zone: every student-owned line (1-based line, trimmed text), in order.
-pub fn zone<S: AsRef<str>>(lines: &[S], owners: &[Owner]) -> Vec<(u32, String)> {
+/// Where each line sits: its function and the labels of the blocks around it ("" at top level).
+/// A student line is anchored by identity *and* position: moving it to another block, or to
+/// another function, changes its context (review 19, probe A14).
+pub fn contexts<S: AsRef<str>>(lines: &[S]) -> Vec<String> {
+    let mut out = Vec::with_capacity(lines.len());
+    let mut func: Option<String> = None;
+    let mut stack: Vec<String> = vec![];
+    for (i, t) in lines.iter().enumerate() {
+        let k = parse_line(t.as_ref(), i as u32 + 1);
+        let here = |func: &Option<String>, stack: &[String]| match func {
+            Some(f) => format!("{f}/{}", stack.join("/")),
+            None => String::new(),
+        };
+        match k {
+            LineKind::FuncHeader(h) => {
+                out.push(String::new());
+                stack.clear();
+                func = if h.import.is_some() {
+                    None
+                } else {
+                    Some(h.name.unwrap_or_else(|| "<anon>".into()))
+                };
+            }
+            LineKind::FuncEnd => {
+                out.push(String::new());
+                func = None;
+                stack.clear();
+            }
+            LineKind::Instr(Ins::Block(kind, bt)) => {
+                out.push(here(&func, &stack));
+                let kw = match kind {
+                    super::ast::BlockKind::Block => "block",
+                    super::ast::BlockKind::Loop => "loop",
+                    super::ast::BlockKind::If => "if",
+                };
+                stack.push(format!(
+                    "{kw}{}",
+                    bt.label.map(|l| format!(" {l}")).unwrap_or_default()
+                ));
+            }
+            LineKind::Instr(Ins::End) => {
+                stack.pop();
+                out.push(here(&func, &stack));
+            }
+            _ => out.push(here(&func, &stack)),
+        }
+    }
+    out
+}
+
+/// The student zone: every student-owned line (1-based line, trimmed text, context), in order.
+pub fn zone<S: AsRef<str>>(lines: &[S], owners: &[Owner]) -> Vec<(u32, String, String)> {
+    let ctx = contexts(lines);
     owners
         .iter()
         .enumerate()
         .filter(|(_, o)| **o == Owner::Student)
-        .map(|(i, _)| (i as u32 + 1, lines[i].as_ref().trim().to_string()))
+        .map(|(i, _)| {
+            (
+                i as u32 + 1,
+                lines[i].as_ref().trim().to_string(),
+                ctx[i].clone(),
+            )
+        })
         .collect()
 }
 
@@ -164,7 +221,7 @@ pub struct Reason {
 pub struct SessionStart {
     pub lines: Vec<String>,
     pub bodies: BTreeSet<String>,
-    pub zone: Vec<(u32, String)>,
+    pub zone: Vec<(u32, String, String)>,
     pub funcs: BTreeSet<String>,
     assumes: Vec<String>,
     imports: usize,
@@ -224,7 +281,19 @@ impl SessionStart {
         let now = zone(lines, &self.owners(lines));
         for i in 0..self.zone.len().max(now.len()) {
             match (self.zone.get(i), now.get(i)) {
-                (Some(a), Some(b)) if a.1 == b.1 => continue,
+                (Some(a), Some(b)) if a.1 == b.1 && a.2 == b.2 => continue,
+                (Some(a), Some(b)) if a.1 == b.1 => {
+                    return Some(Reason {
+                        line: b.0,
+                        msg: format!(
+                            "moved locked line {} (`{}`) out of its place ({} → {})",
+                            b.0,
+                            a.1,
+                            if a.2.is_empty() { "top level" } else { &a.2 },
+                            if b.2.is_empty() { "top level" } else { &b.2 }
+                        ),
+                    });
+                }
                 (Some(a), Some(b)) => {
                     // a deleted or inserted locked line shows as a shift: name the old one
                     let msg = if now.iter().any(|x| x.1 == a.1) {
