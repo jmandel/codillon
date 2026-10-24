@@ -184,6 +184,65 @@ pub fn witnesses(m: &Module, f: usize, cap: usize) -> (Vec<Vec<u64>>, usize) {
     (w, tried)
 }
 
+// ---------------- termination (vericoding acceptance, §7.1) ----------------
+
+/// Steps a run of a harness, `$main` or an implementation function may take in the judge's
+/// termination check.
+pub const FINISH_BUDGET: u32 = 1_000_000;
+/// Call depth of those runs (adequacy's: far from the host stack). A linear recursion on an
+/// input of at most [`SMALL`] fits.
+pub const FINISH_DEPTH: u32 = ADEQ_DEPTH;
+/// Inputs required to finish are in 0..=SMALL.
+pub const SMALL: i64 = 100;
+
+/// Is every argument small (0 ≤ x ≤ [`SMALL`]: small read signed *and* unsigned)? Only small inputs are required to
+/// finish: a correct algorithm may legitimately need longer than the budget on 2^31 or 2^63.
+fn small(m: &Module, f: usize, args: &[u64]) -> bool {
+    m.funcs[f]
+        .value_params()
+        .zip(args)
+        .all(|((_, _, r), a)| {
+            let x = if r.ty == ValTy::I32 {
+                *a as u32 as i32 as i64
+            } else {
+                *a as i64
+            };
+            (0..=SMALL).contains(&x)
+        })
+}
+
+/// The partial-correctness theorem (§6) says nothing about a body that never returns, so in
+/// vericoding a submission must also *run*: `f` is run on up to `per` small inputs that satisfy
+/// its precondition, each within [`FINISH_BUDGET`] steps and [`FINISH_DEPTH`] calls. The first
+/// input on which it runs out *inside a function `blame` accepts* (the implementation, not a
+/// costly spec predicate), with that function. Traps and other errors are not this check's
+/// business.
+pub fn runs_away(
+    m: &Module,
+    f: usize,
+    per: usize,
+    blame: &dyn Fn(usize) -> bool,
+) -> Option<(Vec<u64>, usize)> {
+    super::eval::with_depth_limit(FINISH_DEPTH, || {
+        let inputs: Vec<Vec<u64>> = input_list(m, f, 64)
+            .into_iter()
+            .filter(|a| small(m, f, a) && pre_holds(m, f, a))
+            .take(per)
+            .collect();
+        for args in inputs {
+            let mut it = Interp::for_run(m, None);
+            it.budget = FINISH_BUDGET;
+            if let Err(EvalErr::Budget) = it.call(f, &args)
+                && let Some(g) = it.ran_out_in
+                && blame(g)
+            {
+                return Some((args, g));
+            }
+        }
+        None
+    })
+}
+
 // ---------------- vacuity ----------------
 
 #[derive(Clone, Debug)]
@@ -493,8 +552,12 @@ pub fn spec_cup(m: &Module, c: &super::out::CupOut, func: usize) -> bool {
 
 /// The harnesses and their inputs (precondition witnesses), with each run's step count on the
 /// original program (the mutant gets ten times as many, at least 20 000).
+#[derive(Default)]
 pub struct Bench {
     pub runs: Vec<(String, Vec<u64>, u32)>,
+    /// harness inputs on which the original program itself does not finish: the spec cannot
+    /// judge an implementation that never returns (review 20 F5), so the panel says so
+    pub runs_away: Vec<String>,
 }
 
 impl Bench {
@@ -507,6 +570,7 @@ impl Bench {
         let out = check_module(&m, true);
         let plan = RuntimePlan::new(&m, &out);
         let mut runs = vec![];
+        let mut runs_away = vec![];
         for (f, func) in m.funcs.iter().enumerate() {
             if !func.is_harness() || func.end_line == 0 {
                 continue;
@@ -519,10 +583,14 @@ impl Bench {
                 // (and long runs are left out to keep mutation testing fast)
                 if r.is_ok() && it.steps <= 100_000 {
                     runs.push((func.name(), args, it.steps));
+                } else if matches!(r, Err(EvalErr::Budget)) {
+                    // one is enough to report, and each costs the whole budget
+                    runs_away.push(format!("{}{}", func.name(), show_args(&args)));
+                    break;
                 }
             }
         }
-        Bench { runs }
+        Bench { runs, runs_away }
     }
 }
 

@@ -217,6 +217,8 @@ pub struct Interp<'m> {
     depth: u32,
     /// call depth limit (a deeper run is a budget failure, never a host stack overflow)
     pub max_depth: u32,
+    /// the function that was running when the step budget or the depth limit ran out
+    pub ran_out_in: Option<usize>,
 }
 
 impl<'m> Interp<'m> {
@@ -233,6 +235,7 @@ impl<'m> Interp<'m> {
             tables: vec![None; m.funcs.len()],
             depth: 0,
             max_depth: DEPTH_LIMIT.with(|d| d.get()),
+            ran_out_in: None,
         }
     }
 
@@ -251,6 +254,7 @@ impl<'m> Interp<'m> {
             return Err(EvalErr::Unsupported(format!("{} is imported", func.name())));
         }
         if self.depth > self.max_depth {
+            self.ran_out_in.get_or_insert(f);
             return Err(EvalErr::Budget);
         }
         if self.tables[f].is_none() {
@@ -348,6 +352,7 @@ impl<'m> Interp<'m> {
             }
             self.steps += 1;
             if self.steps > self.budget {
+                self.ran_out_in.get_or_insert(f);
                 return Err(EvalErr::Budget);
             }
             let (line, ins) = (body[pc].0, &body[pc].1);

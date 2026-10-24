@@ -759,7 +759,7 @@ impl Editor {
             a.bench_ms = now() - t0;
             a.total_ms += a.bench_ms;
         } else {
-            let bench = a.bench.take().unwrap_or(Bench { runs: vec![] });
+            let bench = a.bench.take().unwrap_or_default();
             while a.next < a.mutants.len() && now() - t0 < SLICE_MS {
                 let t = now();
                 let f = fate(&a.lines, &a.mutants[a.next], &bench);

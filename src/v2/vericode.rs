@@ -416,6 +416,48 @@ impl SessionStart {
             .collect()
     }
 
+    /// §7.1 (5): the program must run. The kernel's theorem is partial correctness (§6), which a
+    /// body that never returns satisfies vacuously; so `$main`, every harness and every LLM-owned
+    /// function with only value parameters must finish on small inputs satisfying their
+    /// preconditions (review 20 F5).
+    fn termination(&self, m: &Module) -> Vec<Reason> {
+        let mut r = vec![];
+        for (f, func) in m.funcs.iter().enumerate() {
+            if func.imported || func.end_line == 0 || func.is_lemma() || func.is_axiom() {
+                continue;
+            }
+            let runs = func.is_harness()
+                || func.header.name.as_deref() == Some("$main")
+                || (!self.bodies.contains(&func.name())
+                    && func
+                        .header
+                        .params
+                        .iter()
+                        .all(|p| matches!(p.decl, super::ast::Decl::Val(_))));
+            if !runs {
+                continue;
+            }
+            let blame = |g: usize| !self.bodies.contains(&m.funcs[g].name());
+            if let Some((args, g)) = super::adequacy::runs_away(m, f, 16, &blame) {
+                let shown: Vec<String> = args
+                    .iter()
+                    .map(|a| (*a as u32 as i32).to_string())
+                    .collect();
+                r.push(Reason {
+                    line: func.header_line,
+                    msg: format!(
+                        "{}({}) does not finish: {} runs past {} steps or calls: a proof of partial correctness is not an implementation",
+                        func.name(),
+                        shown.join(", "),
+                        m.funcs[g].name(),
+                        super::adequacy::FINISH_BUDGET
+                    ),
+                });
+            }
+        }
+        r
+    }
+
     /// Judge one submission (§7.1): the boundary first, then strict-cleanness of what it touched.
     pub fn judge(&self, lines: &[String]) -> Judgement {
         let m = Module::parse_lines(lines);
@@ -444,7 +486,10 @@ impl SessionStart {
                 .filter(|f| !f.imported && !f.is_axiom() && !self.bodies.contains(&f.name()))
                 .map(|f| f.name()),
         );
-        let strict = strict_reasons(&m, &out, &judged);
+        let mut strict = strict_reasons(&m, &out, &judged);
+        if boundary.is_empty() && malformed.is_empty() && strict.is_empty() {
+            strict.extend(self.termination(&m));
+        }
         Judgement {
             accepted: boundary.is_empty() && malformed.is_empty() && strict.is_empty(),
             boundary,

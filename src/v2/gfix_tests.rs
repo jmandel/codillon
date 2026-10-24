@@ -415,3 +415,46 @@ fn f6_an_untouched_unproven_target_blocks_acceptance() {
     // and an empty round on the start state is not "all verified"
     assert!(!s.judge(&start).accepted);
 }
+
+// ---------------- F5: in vericoding, an implementation must also run ----------------
+
+#[test]
+fn f5_a_spinning_or_self_calling_body_is_not_accepted() {
+    use super::vericode::SessionStart;
+    let start = session_start("isqrt");
+    let s = SessionStart::new(&start);
+    assert!(start[30].starts_with("(func $isqrt "));
+    for body in [
+        vec!["  loop $spin", "    br $spin", "  end", "  unreachable"],
+        vec!["  local.get $n", "  call $isqrt"],
+    ] {
+        let sub = replace(&start, 32, 32, &body);
+        let j = s.judge(&sub);
+        assert!(!j.crossed(), "{:?}", j.boundary);
+        // the kernel alone proves it (partial correctness) ...
+        assert!(
+            j.out.funcs.iter().all(|f| f.verified),
+            "{body:?}: {:?}",
+            j.strict
+        );
+        // ... but the judge runs it
+        assert!(!j.accepted, "{body:?}: {}", j.summary());
+        assert!(
+            j.strict.iter().any(|r| r.msg.contains("does not finish")),
+            "{:?}",
+            j.strict
+        );
+    }
+}
+
+#[test]
+fn f5_adequacy_reports_a_harness_that_never_finishes() {
+    use super::adequacy::Bench;
+    let start = session_start("isqrt");
+    let sub = replace(&start, 32, 32, &["  loop $spin", "    br $spin", "  end", "  unreachable"]);
+    let b = Bench::new(&sub, 8);
+    assert!(b.runs.is_empty());
+    assert_eq!(b.runs_away.len(), 1, "{:?}", b.runs_away);
+    assert!(b.runs_away[0].starts_with("$isqrt_harness("));
+}
+

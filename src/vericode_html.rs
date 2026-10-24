@@ -265,7 +265,17 @@ The kernel alone judges a submission: accepted only if every function it touched
                 ops.join(" · ")
             ));
         }
-        if a.bench.as_ref().is_some_and(|b| b.runs.is_empty()) {
+        if let Some(b) = a.bench.as_ref()
+            && !b.runs_away.is_empty()
+        {
+            h.push_str(&format!(
+                "<p class=\"vc-verdict vc-bad\">The implementation does not finish on {} harness{} (on {}): a body that never returns satisfies any spec vacuously, and no mutant can be told apart on those inputs.</p>",
+                if b.runs_away.len() == 1 { "a".to_string() } else { b.runs_away.len().to_string() },
+                if b.runs_away.len() == 1 { "" } else { "es" },
+                esc(&b.runs_away[0])
+            ));
+        }
+        if a.bench.as_ref().is_some_and(|b| b.runs.is_empty() && b.runs_away.is_empty()) {
             h.push_str("<p class=\"vc-verdict vc-bad\">No harness input satisfies a precondition, so no run can tell a mutant apart: every mutant survives.</p>");
         }
         if !surv.is_empty() {
