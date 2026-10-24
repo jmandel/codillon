@@ -3,8 +3,7 @@ use crate::{
     dom_struct::DomStruct,
     dom_text::DomText,
     dom_vec::DomVec,
-    jet::{AccessToken, Component, ElementFactory, ElementHandle, ReactiveComponent, WithElement},
-    witness_track::{StateCard, WitnessTrack},
+    jet::{AccessToken, Component, ElementFactory, ElementHandle, WithElement},
 };
 use thousands::Separable;
 use web_sys::{HtmlDivElement, HtmlInputElement, HtmlSpanElement};
@@ -13,8 +12,6 @@ type TickSpan = DomStruct<(DomText, ()), HtmlSpanElement>;
 
 pub struct Slider {
     container: ElementHandle<HtmlDivElement>,
-    track: ReactiveComponent<WitnessTrack>,
-    card: StateCard,
     tick_labels: DomVec<TickSpan, HtmlDivElement>,
     input: ElementHandle<HtmlInputElement>,
     factory: ElementFactory,
@@ -32,29 +29,15 @@ impl Slider {
         input.set_attribute("list", "slider-ticks");
         container.set_attribute("class", "slider-container");
         tick_labels.set_attribute("class", "slider-ticks");
-        let track = ReactiveComponent::new(WitnessTrack::new(&factory));
-        let card = StateCard::new(&factory);
-        container.append_node(&track);
-        container.append_node(&card);
         container.append_node(&tick_labels);
         container.append_node(&input);
         Self {
             container,
-            track,
-            card,
             tick_labels,
             input,
             factory,
             visible: true,
         }
-    }
-
-    pub fn track_mut(&mut self) -> &mut ReactiveComponent<WitnessTrack> {
-        &mut self.track
-    }
-
-    pub fn card_mut(&mut self) -> &mut StateCard {
-        &mut self.card
     }
 
     pub fn is_visible(&self) -> bool {
@@ -97,14 +80,15 @@ impl Slider {
         }
     }
 
-    // `spec_failures`: steps at which a specification check failed (sorted), each drawn
-    // as a darkred-outlined pill, distinct from the filled pill of a trap.
+    // `failures`: steps at which a check failed (sorted), each drawn as a darkred-outlined
+    // pill, distinct from the filled pill of a trap. (Nothing reports failures yet; a
+    // proof kernel's runtime checks will.)
     pub fn build_ticks(
         &mut self,
         last_step: usize,
         current_step: usize,
         termination: &TerminationType,
-        spec_failures: &[usize],
+        failures: &[usize],
     ) {
         const MAX_FAILURE_PILLS: usize = 200;
         assert!(last_step > 0); // logic error to use slider if there's only one step
@@ -122,7 +106,7 @@ impl Slider {
             self.tick_labels
                 .push(DomStruct::new((DomText::new(&label), ()), span));
         };
-        let pills: Vec<usize> = spec_failures
+        let pills: Vec<usize> = failures
             .iter()
             .copied()
             .filter(|s| *s <= last_step)
@@ -147,20 +131,20 @@ impl Slider {
         }
         for &p in &pills {
             if p != current_step && p != last_step {
-                add_tick(p, "slider-tick spec-fail-slider-tick", "");
+                add_tick(p, "slider-tick check-fail-slider-tick", "");
             }
         }
         let last_is_pill = pills.contains(&last_step);
         let (class, prefix) = match termination {
             TerminationType::Success if last_step == current_step => (
                 if last_is_pill {
-                    "slider-tick current-slider-tick spec-fail-current"
+                    "slider-tick current-slider-tick check-fail-current"
                 } else {
                     "slider-tick current-slider-tick"
                 },
                 "",
             ),
-            TerminationType::Success if last_is_pill => ("slider-tick spec-fail-slider-tick", ""),
+            TerminationType::Success if last_is_pill => ("slider-tick check-fail-slider-tick", ""),
             TerminationType::Success => ("slider-tick", ""),
             TerminationType::TooManySteps => ("slider-tick bad-slider-tick", ">\u{a0}"),
             _ => ("slider-tick bad-slider-tick", ""),
@@ -171,7 +155,7 @@ impl Slider {
             add_tick(
                 current_step,
                 if pills.contains(&current_step) {
-                    "slider-tick current-slider-tick spec-fail-current"
+                    "slider-tick current-slider-tick check-fail-current"
                 } else {
                     "slider-tick current-slider-tick"
                 },
@@ -185,7 +169,6 @@ impl Component for Slider {
     #[cfg(debug_assertions)]
     fn audit(&self) {
         self.container.audit();
-        self.track.audit();
         self.input.audit();
         self.tick_labels.audit();
     }

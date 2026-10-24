@@ -3,7 +3,7 @@
 use crate::{
     action_history::{ActionHistory, Edit},
     autocomplete::Autocomplete,
-    debug::{ExecutionState, ExecutionStatus, RUN_LOG, TerminationType, run_binary},
+    debug::{ExecutionState, ExecutionStatus, RUN_LOG, RunArg, TerminationType, run_binary},
     dom_canvas::DomCanvas,
     dom_struct::DomStruct,
     dom_vec::DomVec,
@@ -14,7 +14,7 @@ use crate::{
         compare_document_position, fetch_text, get_selection, now_ms, set_selection_range,
     },
     line::{Activity, CodeLine, LineInfo, Position, PositionRange},
-    link::{LinkParams, ProgramSource, StepRequest, decode_program, share_fragment},
+    link::{LinkParams, ProgramSource, StepRequest, args_fragment, decode_program, share_fragment},
     save_status::SaveStatus,
     share::ShareButton,
     slider::Slider,
@@ -122,7 +122,8 @@ struct Editor {
     factory: ElementFactory,
     action_history: ActionHistory,
     storage: Option<StorageHandle>,
-    pending_binary: Option<(Vec<u8>, usize)>,
+    pending_binary: Option<(Vec<u8>, usize, Vec<RunArg>)>,
+    main_params: Vec<wasmparser::ValType>, // the parameter types of $main
     previous_instrumented_binary_hash: u64,
     worker_running: bool,
     pending_save: Option<Closure<dyn Fn()>>,
@@ -149,6 +150,7 @@ struct LinkState {
     loaded_text: String,         // the program text as loaded from the link
     pending_step: Option<StepRequest>,
     load_generation: usize,
+    args: Option<Vec<i128>>, // #args=… for $main
 }
 
 pub struct EditorHolder(Rc<RefCell<Editor>>);
@@ -326,6 +328,7 @@ impl Editor {
                 step_count - 1,
                 current_step,
                 &RUN_LOG.with(|r| r.termination_type()),
+                &[], // steps where a check failed: none until a proof kernel reports them
             )
         } else {
             self.slider_mut().inner_mut().hide();
@@ -423,7 +426,7 @@ impl Editor {
     }
 
     fn execute(&mut self, binary: &[u8], version: usize) {
-        self.pending_binary = Some((binary.to_vec(), version));
+        self.pending_binary = Some((binary.to_vec(), version, self.run_args()));
         if self.worker_running {
             return;
         }
@@ -433,10 +436,11 @@ impl Editor {
 
         wasm_bindgen_futures::spawn_local(async move {
             loop {
-                let Some((binary, version)) = holder.borrow_mut().pending_binary.take() else {
+                let Some((binary, version, args)) = holder.borrow_mut().pending_binary.take()
+                else {
                     break;
                 };
-                run_binary(&binary)
+                run_binary(&binary, &args)
                     .await
                     .unwrap_or_else(|e| log_1(&format!("Codillon runtime error: {e}").into()));
 
@@ -447,6 +451,7 @@ impl Editor {
 
                 let mut slider_step = ed.current_step();
                 let step_count = RUN_LOG.with(|r| r.step_count());
+                ed.recheck_proofs();
                 // Move slider to the end if binary changed and it's in the middle
                 if step_count == 0 {
                     ed.slider_mut().inner_mut().hide();
@@ -481,6 +486,30 @@ impl Editor {
             holder.borrow_mut().worker_running = false;
         });
     }
+
+    // The arguments $main is called with: #args= from the link, else zeros.
+    fn run_args(&self) -> Vec<RunArg> {
+        let vals = self.link.args.as_deref().unwrap_or_default();
+        self.main_params
+            .iter()
+            .enumerate()
+            .map(|(i, ty)| {
+                let x = vals.get(i).copied().unwrap_or(0);
+                match ty {
+                    wasmparser::ValType::I64 => RunArg::I64(x as i64),
+                    wasmparser::ValType::F32 | wasmparser::ValType::F64 => {
+                        RunArg::F64((x as f64).to_bits())
+                    }
+                    _ => RunArg::I32(x as i32),
+                }
+            })
+            .collect()
+    }
+
+    // Placeholder for a proof kernel: re-evaluate whatever it checks against the program
+    // and the current run (called after each run, and when an edit leaves the binary
+    // unchanged). No kernel is wired in yet.
+    fn recheck_proofs(&mut self) {}
 
     fn reset_execution_state(&mut self) {
         self.execution_state.reset(&self.slot_connections);
@@ -879,16 +908,23 @@ impl Editor {
         self.scroll_on_next_input = false; // edit to text buffer -> don't scroll to arrow
         self.slot_connections = find_connections(&validized, &types);
         self.update_displayed_types(&validized, &types)?;
+        self.main_params = validized
+            .functions
+            .first()
+            .map(|f| f.params.iter().map(|p| p.inner).collect())
+            .unwrap_or_default();
 
         // instrumentation
         let instrumented_binary = &validized.build_instrumented_binary(&types)?;
-        let instrumented_binary_hash = Self::hash_binary(instrumented_binary);
+        let instrumented_binary_hash = self.run_hash(instrumented_binary);
         let step_count = RUN_LOG.with(|r| r.step_count());
         if self.previous_instrumented_binary_hash != instrumented_binary_hash {
             self.version += 1;
             self.execute(instrumented_binary, self.version);
             self.previous_instrumented_binary_hash = instrumented_binary_hash;
         } else if step_count > 0 {
+            // same binary and arguments: the run stands, but checks may have changed
+            self.recheck_proofs();
             self.update_live_info(step_count, None, false);
         } else {
             self.animations.arrow = self.image_mut().set_arrow_location(false, None);
@@ -1187,10 +1223,12 @@ impl Editor {
         self.pending_save = Some(closure);
     }
 
-    fn hash_binary(binary: &[u8]) -> u64 {
+    // A run is determined by the binary and $main's arguments.
+    fn run_hash(&self, binary: &[u8]) -> u64 {
         use std::hash::{DefaultHasher, Hash, Hasher};
         let mut hasher = DefaultHasher::new();
         binary.hash(&mut hasher);
+        self.run_args().hash(&mut hasher);
         hasher.finish()
     }
 
@@ -1331,6 +1369,7 @@ impl Editor {
             action_history: ActionHistory::default(),
             storage: StorageHandle::new(),
             pending_binary: None,
+            main_params: vec![],
             previous_instrumented_binary_hash: 0,
             worker_running: false,
             pending_save: None,
@@ -1439,6 +1478,7 @@ impl Editor {
         self.flush_save();
         self.link.load_generation += 1;
         self.link.embed = params.embed;
+        self.link.args = params.args.clone();
         self.link.storage_key = params.storage_key(STORAGE_ID);
         self.link.example = None;
         self.share_mut().inner_mut().set_embed(params.embed);
@@ -1519,7 +1559,8 @@ impl Editor {
         }
     }
 
-    // The step to show for `step=fail`: the first failed check, or else the final step.
+    // The step to show for `step=fail`: the first failed check (none are reported until a
+    // proof kernel is wired in), or else the final step (where a trap, if any, is shown).
     fn first_failure_step(&self) -> Option<usize> {
         let count = RUN_LOG.with(|r| r.step_count());
         (count > 0).then(|| count - 1)
@@ -1545,9 +1586,9 @@ impl Editor {
                     Some(StepRequest::Last) => f.push_str("&step=last"),
                     _ => {}
                 }
-                f
+                f + &args_fragment(&self.link.args)
             }
-            _ => share_fragment(&text, step, false),
+            _ => share_fragment(&text, step, false) + &args_fragment(&self.link.args),
         };
         let url = self.window.location_without_hash() + &fragment;
         if self.link.embed {
@@ -1555,7 +1596,7 @@ impl Editor {
         } else {
             self.window.copy_to_clipboard(&url);
             let share = self.share_mut().inner_mut();
-            share.flash("link copied \u{2713}");
+            share.flash("\u{2713}");
             share.set_link(&url);
         }
     }

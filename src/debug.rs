@@ -13,7 +13,7 @@ use crate::{
     dom_canvas::{Action, DomCanvas},
     utils::{FmtError, SlotConnections},
 };
-use anyhow::{Context, Result, bail};
+use anyhow::Result;
 use arrayvec::ArrayVec;
 use bitvec::vec::BitVec;
 use js_sys::{Object, Reflect, WebAssembly::RuntimeError};
@@ -631,7 +631,30 @@ fn create_closure_frame_operations(obj: &Object) {
     register_closure(obj, "enter_block", enter_block);
 }
 
-pub async fn run_binary(binary: &[u8]) -> Result<()> {
+/// An argument for $main (#args=…; zeros by default).
+#[derive(Debug, Clone, Copy, PartialEq, Hash)]
+pub enum RunArg {
+    I32(i32),
+    I64(i64),
+    F64(u64), // an f32/f64 argument, as the bits of an f64 (hashable)
+}
+
+fn js_args(args: &[RunArg]) -> js_sys::Array {
+    let a = js_sys::Array::new();
+    for arg in args {
+        match arg {
+            RunArg::I32(v) => a.push(&JsValue::from(*v)),
+            RunArg::I64(v) => a.push(&JsValue::from(js_sys::BigInt::from(*v))),
+            RunArg::F64(bits) => a.push(&JsValue::from(f64::from_bits(*bits))),
+        };
+    }
+    a
+}
+
+/// Run the instrumented module: call its "main" export with `args`, recording into the
+/// run log. A module with nothing to run (e.g. an empty buffer, or a program still
+/// loading) runs silently.
+pub async fn run_binary(binary: &[u8], args: &[RunArg]) -> Result<()> {
     use js_sys::{Function, Reflect};
     RUN_LOG.with(|r| r.reset());
     let imports = INSTRUMENTATION_IMPORTS.with(|imports| imports.clone());
@@ -642,20 +665,13 @@ pub async fn run_binary(binary: &[u8]) -> Result<()> {
     let instance = Reflect::get(&js_value, &JsValue::from_str("instance")).fmt_err()?;
     let exports = Reflect::get(&instance, &JsValue::from_str("exports")).fmt_err()?;
 
-    // Call main function with default values for its params
-    match Reflect::get(&exports, &JsValue::from_str("main")) {
-        Ok(main) => {
-            let main = wasm_bindgen::JsCast::dyn_ref::<Function>(&main)
-                .context("main is not an exported function")?;
-            let res = main.apply(&JsValue::null(), &js_sys::Array::new()); // run the function
-            RUN_LOG.with(|log| match res {
-                Ok(val) if val.is_undefined() => log.finish(Ok(())),
-                Ok(val) => bail!("unhandled return value from function: {:?}", val),
-                Err(e) => log.finish(Err(extract_error(&e))),
-            })
-        }
-        Err(e) => bail!("reflection failure: {:?}", e),
-    }
+    let main = Reflect::get(&exports, &JsValue::from_str("main")).fmt_err()?;
+    let Some(main) = wasm_bindgen::JsCast::dyn_ref::<Function>(&main) else {
+        return Ok(()); // nothing to run
+    };
+    let res = main.apply(&JsValue::null(), &js_args(args)); // run the function
+    // (whatever $main returns is accepted, and not shown)
+    RUN_LOG.with(|log| log.finish(res.map(|_| ()).map_err(|e| extract_error(&e))))
 }
 
 fn extract_error(jsv: &JsValue) -> String {

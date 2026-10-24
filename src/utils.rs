@@ -4672,6 +4672,31 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    // The example programs (public/examples, for #ex= links) parse cleanly and run.
+    const EXAMPLES: &[(&str, &str)] = &[("hello", include_str!("../public/examples/hello.wat"))];
+
+    #[test]
+    fn examples_parse_and_run() -> Result<()> {
+        for (name, src) in EXAMPLES {
+            let mut editor = FakeTextBuffer::default();
+            for line in src.lines() {
+                editor.push_line(line);
+            }
+            for (i, line) in editor.lines.iter().enumerate() {
+                assert!(
+                    !matches!(line.info.kind, LineKind::Malformed(_)),
+                    "{name}:{} malformed: {}",
+                    i + 1,
+                    line.instr_text
+                );
+            }
+            let EditorOutput { binary, .. } = test_editor_flow(&mut editor)?;
+            let log = test_execution(&binary, &[], &mut [])?;
+            assert_eq!(TerminationType::Success, log.termination_type(), "{name}");
+        }
+        Ok(())
+    }
+
     #[test]
     fn execution_tests() -> Result<()> {
         // Test case 1: check that the stepping in execution tests are working correctly

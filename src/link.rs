@@ -29,7 +29,7 @@ pub struct LinkParams {
     pub step: Option<StepRequest>,
     pub embed: bool,
     pub fit: Option<bool>,       // fit=1: scale the editor to the frame width
-    pub args: Option<Vec<i128>>, // arguments for $main (overrides its (@run …))
+    pub args: Option<Vec<i128>>, // arguments for $main (#args=1,2; default zeros)
 }
 
 impl LinkParams {

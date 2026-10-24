@@ -958,6 +958,22 @@ pub fn find_function_ranges(code: &impl LineInfos) -> Vec<(usize, usize, usize)>
 }
 
 pub fn parse_line(s: &str) -> LineKind {
+    parse_line_spec(s).0
+}
+
+/// What a line carries for a proof kernel besides its WebAssembly (e.g. an annotation, or
+/// a refined header's erased text). No kinds yet: a line is plain WebAssembly.
+#[derive(Debug, Clone, PartialEq)]
+pub enum LineAnnotation {}
+
+/// Parse a line: its kind, and whatever proof-kernel annotation it carries. This is the
+/// hook where per-line erasure plugs in (annotation lines and refined headers would be
+/// classified by their erased text); for now it is plain WebAssembly line parsing.
+pub fn parse_line_spec(s: &str) -> (LineKind, Option<LineAnnotation>) {
+    (parse_wasm_line(s), None)
+}
+
+fn parse_wasm_line(s: &str) -> LineKind {
     match ParseBuffer::new(s) {
         Ok(buf) => match parser::parse::<LineKind>(&buf) {
             Ok(kind) => kind,

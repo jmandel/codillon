@@ -60,13 +60,6 @@ div.textentry:focus {
     counter-increment: codelines;
 }
 
-/* specification lines, e.g. (@invariant …): erased before compilation */
-.spec-line {
-    color: indigo;
-    font-style: italic;
-    counter-increment: codelines;
-}
-
 .invalid-line {
     counter-increment: codelines;
 }
@@ -100,20 +93,6 @@ div.textentry:focus {
 .numbered-line::before {
     color: gray;
     content: counter(codelines) "        ";
-}
-
-/* a specification check failed on this run (on the spec line, and where it was checked) */
-.spec-failed-line::before {
-    font-style: normal;
-    content: "\2696        ";
-}
-
-/* the solver could not decide an obligation of this line (never darkred) */
-.spec-unknown-line::before {
-    font-style: normal;
-    font-weight: bold;
-    color: indigo;
-    content: "?        ";
 }
 
 .line:has(span.instr[data-synthetic-before])::before {
@@ -419,21 +398,7 @@ html.embed .share-button {
     font-size: 11pt;
 }
 
-.spec-line::before {
-    font-style: normal;
-}
-
-/* checks that held on this run: a count, never a check mark */
-span.instr[data-held]::after {
-    font-family: 'MLMSansDemiCond10-Regular';
-    font-style: normal;
-    font-size: 13pt;
-    color: slategray;
-    margin-left: 12px;
-    content: attr(data-held);
-}
-
-.bad-slider-tick.spec-fail-slider-tick, .spec-fail-slider-tick {
+.bad-slider-tick.check-fail-slider-tick, .check-fail-slider-tick {
     color: darkred;
     background-color: #fffff0;
     border: 1.5px solid darkred;
@@ -443,46 +408,8 @@ span.instr[data-held]::after {
     line-height: 1.15;
 }
 
-.current-slider-tick.spec-fail-current {
+.current-slider-tick.check-fail-current {
     box-shadow: 0 0 0 1.5px darkred;
-}
-
-/* the input search, above the slider: a dashed track for a witness not yet replayed,
-   a solid pill once it is the run, a quiet note otherwise */
-.witness-track {
-    font-family: 'MLMSansDemiCond10-Regular';
-    font-size: 11pt;
-    margin: 0 8px 4px 8px;
-    padding: 1px 8px;
-    cursor: default;
-    user-select: none;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
-.witness-track.hidden {
-    display: none;
-}
-
-.witness-track.note {
-    color: slategray;
-    border-top: 1.5px dotted #b0b8c4;
-}
-
-.witness-track.not-replayed {
-    color: darkred;
-    border-top: 1.5px dashed darkred;
-    cursor: pointer;
-}
-
-.witness-track.replayed {
-    color: white;
-    background-color: darkred;
-    border-radius: 10px;
-    cursor: pointer;
-    width: fit-content;
-    max-width: calc(100% - 32px);
 }
 
 /* A line is a row: gutter, code, then the rest. Commentary floats right in the rest
@@ -516,49 +443,4 @@ span.comment[data-commentary]::after {
     text-overflow: ellipsis;
     white-space: nowrap;
     box-sizing: border-box;
-}
-
-/* a counterexample's state, under the witness track: memory as a strip of slots, then
-   the ghost maps */
-.state-card {
-    display: grid;
-    gap: 2px 3px;
-    margin: 0 8px 6px 24px;
-    font-family: 'MLMSansDemiCond10-Regular';
-    font-size: 10.5pt;
-    color: darkred;
-    width: fit-content;
-}
-
-.state-card.hidden {
-    display: none;
-}
-
-.state-card span {
-    padding: 0 5px;
-    text-align: center;
-}
-
-.state-card .card-head {
-    color: slategray;
-}
-
-.state-card .card-field {
-    text-align: right;
-    font-style: italic;
-}
-
-.state-card .card-value, .state-card .card-named {
-    border: 1px solid #d8b4b4;
-    background-color: #fffdf6;
-}
-
-.state-card .card-named {
-    font-size: 9pt;
-}
-
-.state-card .card-map {
-    grid-column: 1 / -1;
-    text-align: left;
-    padding-left: 0;
 }

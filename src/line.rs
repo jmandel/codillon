@@ -12,7 +12,7 @@ use crate::{
         set_selection_range,
     },
     symbolic::{LineSymbols, parse_line_symbols},
-    syntax::{FuncPart, InstrKind, LineKind, ModulePart, SyntheticWasm, parse_line},
+    syntax::{FuncPart, InstrKind, LineKind, ModulePart, SyntheticWasm, parse_line_spec},
     utils::{AnimationRequest, Tween, find_comment},
 };
 use anyhow::{Result, bail};
@@ -211,7 +211,10 @@ pub struct PositionRange {
 impl Component for CodeLine {
     #[cfg(debug_assertions)]
     fn audit(&self) {
-        assert_eq!(self.info.kind, parse_line(self.instr().get()));
+        assert_eq!(
+            self.info.kind,
+            crate::syntax::parse_line(self.instr().get())
+        );
         assert_eq!(self.contents.get_attribute("class").unwrap(), &self.class());
         let comment = self.contents.get().1.0.get_attribute("data-commentary");
         if let Some(msg) = &self.info.runtime_error
@@ -435,42 +438,34 @@ impl CodeLine {
     // Make the element presentation (CSS class) match the status.
     // This needs to happen when the active status changes.
     fn conform(&mut self) {
-        if let Some(msg) = &self.info.runtime_error
+        // the commentary (cut short when long, so its full text is also the hover title)
+        let commentary = if let Some(msg) = &self.info.runtime_error
             && !msg.is_empty()
         {
-            self.contents
-                .get_mut()
-                .1
-                .0
-                .set_attribute("data-commentary", msg);
+            Some(msg.to_string())
         } else if let LineKind::Malformed(reason) = &self.info.kind {
-            self.contents
-                .get_mut()
-                .1
-                .0
-                .set_attribute("data-commentary", reason);
+            Some(reason.to_string())
         } else if let Activity::Inactive(reason) = &self.info.active
             && !reason.is_empty()
         {
-            self.contents
-                .get_mut()
-                .1
-                .0
-                .set_attribute("data-commentary", reason);
+            Some(reason.to_string())
         } else if let Some(reason) = &self.info.invalid
             && !reason.is_empty()
         {
-            self.contents
-                .get_mut()
-                .1
-                .0
-                .set_attribute("data-commentary", reason);
+            Some(reason.to_string())
         } else {
-            self.contents
-                .get_mut()
-                .1
-                .0
-                .remove_attribute("data-commentary");
+            None
+        };
+        let comment = &mut self.contents.get_mut().1.0;
+        match commentary {
+            Some(msg) => {
+                comment.set_attribute("data-commentary", &msg);
+                comment.set_attribute("title", &msg);
+            }
+            None => {
+                comment.remove_attribute("data-commentary");
+                comment.remove_attribute("title");
+            }
         }
 
         self.contents.set_attribute("class", &self.class());
@@ -504,7 +499,9 @@ impl CodeLine {
             self.instr_mut().replace_range(0, ws_bytes, "")?;
         }
         // Update kind, symbols, commentary, and active status
-        self.info.kind = parse_line(self.instr().get());
+        // (the annotation, if any, is for a proof kernel; none is wired in yet)
+        let (kind, _annotation) = parse_line_spec(self.instr().get());
+        self.info.kind = kind;
         self.info.symbols = parse_line_symbols(self.instr().get(), &self.info.kind);
         self.conform();
         Ok(ws_bytes)
