@@ -1071,7 +1071,12 @@ impl Editor {
                         .collect();
                     p.obligations = obs.clone();
                     p.started_at = now_ms();
-                    p.first_at = None;
+                    // (verdicts from the cache count as immediate)
+                    p.first_at = p
+                        .verdicts
+                        .iter()
+                        .any(|v| v.is_some())
+                        .then_some(p.started_at);
                     p.finished_at = None;
                     p.queries = 0;
                     p.generate_ms = gen_ms;
