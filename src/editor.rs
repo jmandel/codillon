@@ -174,6 +174,7 @@ struct Proofs {
     first_at: Option<f64>,
     finished_at: Option<f64>,
     queries: usize,
+    generate_ms: f64,
 }
 
 struct ProofInput {
@@ -1041,7 +1042,9 @@ impl Editor {
                     holder.borrow_mut().proofs.running = false;
                     return;
                 };
+                let t_gen = now_ms();
                 let obs = crate::prover::obligations(&input.lines, &input.wasm, &input.plan).unwrap_or_default();
+                let gen_ms = now_ms() - t_gen;
                 let obs = Rc::new(obs);
                 {
                     let mut ed = holder.borrow_mut();
@@ -1055,6 +1058,7 @@ impl Editor {
                     p.first_at = None;
                     p.finished_at = None;
                     p.queries = 0;
+                    p.generate_ms = gen_ms;
                     ed.refresh_proofs();
                 }
                 for (i, ob) in obs.iter().enumerate() {
@@ -1102,8 +1106,9 @@ impl Editor {
                     ed.proofs.finished_at = Some(now_ms());
                     let p = &ed.proofs;
                     log_1(&format!(
-                        "Codillon proofs: {} obligations, {} queries, first verdict after {:.0} ms, all after {:.0} ms",
+                        "Codillon proofs: {} obligations (generated in {:.0} ms), {} queries, first verdict after {:.0} ms, all after {:.0} ms",
                         p.obligations.len(),
+                        p.generate_ms,
                         p.queries,
                         p.first_at.unwrap_or(p.started_at) - p.started_at,
                         now_ms() - p.started_at

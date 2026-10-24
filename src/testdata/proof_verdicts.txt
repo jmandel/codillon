@@ -1,0 +1,436 @@
+== parity
+f1 line 14 postcondition (spec line 9): P
+f2 line 20 postcondition (spec line 16): P
+f3 line 33 postcondition (spec line 22): P
+f3 line 30 assertion (spec line 29): P
+f3 line 31 precondition at the call (spec line 15): P
+f3 line 33 postcondition (spec line 22): P
+== parity-p1
+f1 line 16 postcondition (spec line 11): P
+f2 line 22 postcondition (spec line 18): P
+f3 line 35 postcondition (spec line 24): R
+f3 line 32 assertion (spec line 31): R
+f3 line 33 precondition at the call (spec line 17): P
+f3 line 35 postcondition (spec line 24): P
+== parity-p2
+f1 line 16 postcondition (spec line 11): P
+f2 line 22 postcondition (spec line 18): R
+f3 line 35 postcondition (spec line 24): P
+f3 line 32 assertion (spec line 31): P
+f3 line 33 precondition at the call (spec line 17): P
+f3 line 35 postcondition (spec line 24): P
+== parity-p3
+f1 line 16 postcondition (spec line 11): P
+f2 line 22 postcondition (spec line 18): R
+f3 line 35 postcondition (spec line 24): P
+f3 line 32 assertion (spec line 31): P
+f3 line 33 precondition at the call (spec line 17): P
+f3 line 35 postcondition (spec line 24): P
+== isqrt
+f0 line 3 precondition at the call (spec line 6): P
+f1 line 12 invariant on entry (spec line 13): P
+f1 line 12 measure on entry (spec line 14): P
+f1 line 29 invariant preserved (spec line 13): P
+f1 line 29 measure decreases (spec line 14): P
+f1 line 33 postcondition (spec line 6): P
+f1 line 33 postcondition (spec line 7): P
+== isqrt-s1
+f0 line 6 precondition at the call (spec line 9): P
+f1 line 15 invariant on entry (spec line 16): P
+f1 line 15 measure on entry (spec line 17): P
+f1 line 32 invariant preserved (spec line 16): R
+f1 line 32 measure decreases (spec line 17): R
+f1 line 36 postcondition (spec line 9): P
+f1 line 36 postcondition (spec line 10): P
+== isqrt-s2
+f0 line 5 precondition at the call (spec line 8): P
+f1 line 14 invariant on entry (spec line 15): P
+f1 line 14 measure on entry (spec line 16): P
+f1 line 31 invariant preserved (spec line 15): P
+f1 line 31 measure decreases (spec line 16): P
+f1 line 35 postcondition (spec line 8): P
+f1 line 35 postcondition (spec line 9): R
+== isqrt-s3
+f0 line 5 precondition at the call (spec line 8): P
+f1 line 14 invariant on entry (spec line 15): R
+f1 line 14 measure on entry (spec line 16): R
+f1 line 31 invariant preserved (spec line 15): P
+f1 line 31 measure decreases (spec line 16): P
+f1 line 35 postcondition (spec line 8): P
+f1 line 35 postcondition (spec line 9): P
+== gcd
+f0 line 4 precondition at the call (spec line 8): P
+f0 line 4 precondition at the call (spec line 8): P
+f1 line 18 invariant on entry (spec line 19): P
+f1 line 18 measure on entry (spec line 20): P
+f1 line 26 no trap (division by zero) (spec line -): P
+f1 line 32 invariant preserved (spec line 19): P
+f1 line 32 measure decreases (spec line 20): P
+f1 line 36 postcondition (spec line 9): P
+== gcd-g1
+f0 line 7 precondition at the call (spec line 11): P
+f0 line 7 precondition at the call (spec line 11): P
+f1 line 21 invariant on entry (spec line 22): P
+f1 line 21 measure on entry (spec line 23): P
+f1 line 29 no trap (division by zero) (spec line -): R
+f1 line 35 invariant preserved (spec line 22): P
+f1 line 35 measure decreases (spec line 23): P
+f1 line 39 postcondition (spec line 12): R
+== gcd-g3
+f0 line 7 precondition at the call (spec line 11): P
+f0 line 7 precondition at the call (spec line 11): P
+f1 line 21 invariant on entry (spec line 22): R
+f1 line 21 measure on entry (spec line 23): P
+f1 line 29 no trap (division by zero) (spec line -): P
+f1 line 35 invariant preserved (spec line 22): P
+f1 line 35 measure decreases (spec line 23): P
+f1 line 39 postcondition (spec line 12): P
+== hashtable
+f0 line 31 precondition at the call (spec line 146): P
+f0 line 35 precondition at the call (spec line 146): P
+f0 line 38 precondition at the call (spec line 125): P
+f0 line 42 precondition at the call (spec line 107): P
+f0 line 46 precondition at the call (spec line 107): P
+f1 line 56 postcondition (spec line 50): P
+f2 line 67 invariant on entry (spec line 68): P
+f2 line 67 invariant on entry (spec line 69): P
+f2 line 67 measure on entry (spec line 70): P
+f2 line 72 precondition at the call (spec line 49): P
+f2 line 74 no trap (memory access in bounds) (spec line -): P
+f2 line 79 postcondition (spec line 58): P
+f2 line 82 no trap (memory access in bounds) (spec line -): P
+f2 line 86 no trap (memory access in bounds) (spec line -): P
+f2 line 92 postcondition (spec line 58): P
+f2 line 101 assertion (spec line 100): P
+f2 line 101 invariant preserved (spec line 68): P
+f2 line 101 invariant preserved (spec line 69): P
+f2 line 101 measure decreases (spec line 70): P
+f3 line 111 precondition at the call (spec line 59): P
+f3 line 117 postcondition (spec line 106): P
+f3 line 117 postcondition (spec line 108): P
+f3 line 120 precondition at the call (spec line 49): P
+f3 line 121 no trap (memory access in bounds) (spec line -): P
+f3 line 122 postcondition (spec line 106): P
+f3 line 122 postcondition (spec line 108): P
+f4 line 129 precondition at the call (spec line 59): P
+f4 line 135 postcondition (spec line 124): P
+f4 line 135 postcondition (spec line 126): P
+f4 line 138 precondition at the call (spec line 49): P
+f4 line 140 no trap (memory access in bounds) (spec line -): P
+f4 line 143 postcondition (spec line 124): P
+f4 line 143 postcondition (spec line 126): P
+f5 line 152 precondition at the call (spec line 59): P
+f5 line 158 precondition at the call (spec line 49): P
+f5 line 160 no trap (memory access in bounds) (spec line -): P
+f5 line 163 postcondition (spec line 145): P
+f5 line 163 postcondition (spec line 147): P
+f5 line 170 postcondition (spec line 145): P
+f5 line 170 postcondition (spec line 147): P
+f5 line 176 invariant on entry (spec line 177): P
+f5 line 176 invariant on entry (spec line 178): P
+f5 line 176 measure on entry (spec line 179): P
+f5 line 181 precondition at the call (spec line 49): P
+f5 line 183 no trap (memory access in bounds) (spec line -): P
+f5 line 192 assertion (spec line 191): P
+f5 line 192 invariant preserved (spec line 177): P
+f5 line 192 invariant preserved (spec line 178): P
+f5 line 192 measure decreases (spec line 179): P
+f5 line 197 no trap (memory access in bounds) (spec line -): P
+f5 line 200 no trap (memory access in bounds) (spec line -): P
+f5 line 203 no trap (memory access in bounds) (spec line -): P
+f5 line 210 postcondition (spec line 145): P
+f5 line 210 postcondition (spec line 147): P
+== hashtable-a
+f0 line 31 precondition at the call (spec line 135): P
+f0 line 35 precondition at the call (spec line 135): P
+f1 line 45 postcondition (spec line 39): P
+f2 line 56 invariant on entry (spec line 57): P
+f2 line 56 invariant on entry (spec line 58): P
+f2 line 56 measure on entry (spec line 59): P
+f2 line 61 precondition at the call (spec line 38): P
+f2 line 63 no trap (memory access in bounds) (spec line -): P
+f2 line 68 postcondition (spec line 47): P
+f2 line 71 no trap (memory access in bounds) (spec line -): P
+f2 line 75 no trap (memory access in bounds) (spec line -): P
+f2 line 81 postcondition (spec line 47): P
+f2 line 90 assertion (spec line 89): P
+f2 line 90 invariant preserved (spec line 57): P
+f2 line 90 invariant preserved (spec line 58): P
+f2 line 90 measure decreases (spec line 59): P
+f3 line 100 precondition at the call (spec line 48): P
+f3 line 106 postcondition (spec line 95): P
+f3 line 106 postcondition (spec line 97): P
+f3 line 109 precondition at the call (spec line 38): P
+f3 line 110 no trap (memory access in bounds) (spec line -): P
+f3 line 111 postcondition (spec line 95): P
+f3 line 111 postcondition (spec line 97): P
+f4 line 118 precondition at the call (spec line 48): P
+f4 line 124 postcondition (spec line 113): P
+f4 line 124 postcondition (spec line 115): P
+f4 line 127 precondition at the call (spec line 38): P
+f4 line 129 no trap (memory access in bounds) (spec line -): P
+f4 line 132 postcondition (spec line 113): P
+f4 line 132 postcondition (spec line 115): P
+f5 line 141 precondition at the call (spec line 48): P
+f5 line 147 precondition at the call (spec line 38): P
+f5 line 149 no trap (memory access in bounds) (spec line -): P
+f5 line 152 postcondition (spec line 134): P
+f5 line 152 postcondition (spec line 136): P
+f5 line 159 postcondition (spec line 134): P
+f5 line 159 postcondition (spec line 136): P
+f5 line 165 invariant on entry (spec line 166): P
+f5 line 165 invariant on entry (spec line 167): P
+f5 line 165 measure on entry (spec line 168): P
+f5 line 170 precondition at the call (spec line 38): P
+f5 line 172 no trap (memory access in bounds) (spec line -): P
+f5 line 181 assertion (spec line 180): P
+f5 line 181 invariant preserved (spec line 166): R
+f5 line 181 invariant preserved (spec line 167): P
+f5 line 181 measure decreases (spec line 168): P
+f5 line 186 no trap (memory access in bounds) (spec line -): P
+f5 line 189 no trap (memory access in bounds) (spec line -): P
+f5 line 192 no trap (memory access in bounds) (spec line -): P
+f5 line 199 postcondition (spec line 134): P
+f5 line 199 postcondition (spec line 136): P
+== hashtable-b
+f0 line 31 precondition at the call (spec line 142): P
+f0 line 35 precondition at the call (spec line 142): P
+f0 line 38 precondition at the call (spec line 121): P
+f0 line 42 precondition at the call (spec line 103): P
+f1 line 52 postcondition (spec line 46): P
+f2 line 63 invariant on entry (spec line 64): P
+f2 line 63 invariant on entry (spec line 65): P
+f2 line 63 measure on entry (spec line 66): P
+f2 line 68 precondition at the call (spec line 45): P
+f2 line 70 no trap (memory access in bounds) (spec line -): P
+f2 line 75 postcondition (spec line 54): R
+f2 line 78 no trap (memory access in bounds) (spec line -): P
+f2 line 82 no trap (memory access in bounds) (spec line -): P
+f2 line 88 postcondition (spec line 54): P
+f2 line 97 assertion (spec line 96): P
+f2 line 97 invariant preserved (spec line 64): P
+f2 line 97 invariant preserved (spec line 65): P
+f2 line 97 measure decreases (spec line 66): P
+f3 line 107 precondition at the call (spec line 55): P
+f3 line 113 postcondition (spec line 102): P
+f3 line 113 postcondition (spec line 104): P
+f3 line 116 precondition at the call (spec line 45): P
+f3 line 117 no trap (memory access in bounds) (spec line -): P
+f3 line 118 postcondition (spec line 102): P
+f3 line 118 postcondition (spec line 104): P
+f4 line 125 precondition at the call (spec line 55): P
+f4 line 131 postcondition (spec line 120): P
+f4 line 131 postcondition (spec line 122): P
+f4 line 134 precondition at the call (spec line 45): P
+f4 line 136 no trap (memory access in bounds) (spec line -): P
+f4 line 139 postcondition (spec line 120): P
+f4 line 139 postcondition (spec line 122): P
+f5 line 148 precondition at the call (spec line 55): P
+f5 line 154 precondition at the call (spec line 45): P
+f5 line 156 no trap (memory access in bounds) (spec line -): P
+f5 line 159 postcondition (spec line 141): P
+f5 line 159 postcondition (spec line 143): P
+f5 line 166 postcondition (spec line 141): P
+f5 line 166 postcondition (spec line 143): P
+f5 line 172 invariant on entry (spec line 173): P
+f5 line 172 invariant on entry (spec line 174): P
+f5 line 172 measure on entry (spec line 175): P
+f5 line 177 precondition at the call (spec line 45): P
+f5 line 179 no trap (memory access in bounds) (spec line -): P
+f5 line 188 assertion (spec line 187): P
+f5 line 188 invariant preserved (spec line 173): P
+f5 line 188 invariant preserved (spec line 174): P
+f5 line 188 measure decreases (spec line 175): P
+f5 line 193 no trap (memory access in bounds) (spec line -): P
+f5 line 196 no trap (memory access in bounds) (spec line -): P
+f5 line 199 no trap (memory access in bounds) (spec line -): P
+f5 line 206 postcondition (spec line 141): P
+f5 line 206 postcondition (spec line 143): P
+== hashtable-b2
+f0 line 30 precondition at the call (spec line 141): P
+f0 line 34 precondition at the call (spec line 141): P
+f0 line 37 precondition at the call (spec line 120): P
+f0 line 41 precondition at the call (spec line 102): P
+f1 line 51 postcondition (spec line 45): P
+f2 line 62 invariant on entry (spec line 63): P
+f2 line 62 invariant on entry (spec line 64): P
+f2 line 62 measure on entry (spec line 65): P
+f2 line 67 precondition at the call (spec line 44): P
+f2 line 69 no trap (memory access in bounds) (spec line -): P
+f2 line 74 postcondition (spec line 53): P
+f2 line 77 no trap (memory access in bounds) (spec line -): P
+f2 line 81 no trap (memory access in bounds) (spec line -): P
+f2 line 87 postcondition (spec line 53): P
+f2 line 96 assertion (spec line 95): P
+f2 line 96 invariant preserved (spec line 63): P
+f2 line 96 invariant preserved (spec line 64): P
+f2 line 96 measure decreases (spec line 65): P
+f3 line 106 precondition at the call (spec line 54): P
+f3 line 112 postcondition (spec line 101): P
+f3 line 112 postcondition (spec line 103): P
+f3 line 115 precondition at the call (spec line 44): P
+f3 line 116 no trap (memory access in bounds) (spec line -): P
+f3 line 117 postcondition (spec line 101): P
+f3 line 117 postcondition (spec line 103): P
+f4 line 124 precondition at the call (spec line 54): P
+f4 line 130 postcondition (spec line 119): P
+f4 line 130 postcondition (spec line 121): P
+f4 line 133 precondition at the call (spec line 44): P
+f4 line 135 no trap (memory access in bounds) (spec line -): P
+f4 line 138 postcondition (spec line 119): P
+f4 line 138 postcondition (spec line 121): R
+f5 line 147 precondition at the call (spec line 54): P
+f5 line 153 precondition at the call (spec line 44): P
+f5 line 155 no trap (memory access in bounds) (spec line -): P
+f5 line 158 postcondition (spec line 140): P
+f5 line 158 postcondition (spec line 142): P
+f5 line 165 postcondition (spec line 140): P
+f5 line 165 postcondition (spec line 142): P
+f5 line 171 invariant on entry (spec line 172): P
+f5 line 171 invariant on entry (spec line 173): P
+f5 line 171 measure on entry (spec line 174): P
+f5 line 176 precondition at the call (spec line 44): P
+f5 line 178 no trap (memory access in bounds) (spec line -): P
+f5 line 187 assertion (spec line 186): P
+f5 line 187 invariant preserved (spec line 172): P
+f5 line 187 invariant preserved (spec line 173): P
+f5 line 187 measure decreases (spec line 174): P
+f5 line 192 no trap (memory access in bounds) (spec line -): P
+f5 line 195 no trap (memory access in bounds) (spec line -): P
+f5 line 198 no trap (memory access in bounds) (spec line -): P
+f5 line 205 postcondition (spec line 140): P
+f5 line 205 postcondition (spec line 142): P
+== hashtable-c
+f0 line 31 precondition at the call (spec line 139): P
+f0 line 35 precondition at the call (spec line 139): P
+f0 line 39 precondition at the call (spec line 100): P
+f1 line 49 postcondition (spec line 43): P
+f2 line 60 invariant on entry (spec line 61): P
+f2 line 60 invariant on entry (spec line 62): P
+f2 line 60 measure on entry (spec line 63): P
+f2 line 65 precondition at the call (spec line 42): P
+f2 line 67 no trap (memory access in bounds) (spec line -): P
+f2 line 72 postcondition (spec line 51): P
+f2 line 75 no trap (memory access in bounds) (spec line -): P
+f2 line 79 no trap (memory access in bounds) (spec line -): P
+f2 line 85 postcondition (spec line 51): P
+f2 line 94 assertion (spec line 93): P
+f2 line 94 invariant preserved (spec line 61): P
+f2 line 94 invariant preserved (spec line 62): P
+f2 line 94 measure decreases (spec line 63): P
+f3 line 104 precondition at the call (spec line 52): P
+f3 line 110 postcondition (spec line 99): P
+f3 line 110 postcondition (spec line 101): P
+f3 line 113 precondition at the call (spec line 42): P
+f3 line 114 no trap (memory access in bounds) (spec line -): P
+f3 line 115 postcondition (spec line 99): P
+f3 line 115 postcondition (spec line 101): P
+f4 line 122 precondition at the call (spec line 52): P
+f4 line 128 postcondition (spec line 117): P
+f4 line 128 postcondition (spec line 119): P
+f4 line 131 precondition at the call (spec line 42): P
+f4 line 133 no trap (memory access in bounds) (spec line -): P
+f4 line 136 postcondition (spec line 117): P
+f4 line 136 postcondition (spec line 119): P
+f5 line 163 postcondition (spec line 138): R
+f5 line 163 postcondition (spec line 140): P
+f5 line 169 invariant on entry (spec line 170): R
+f5 line 169 invariant on entry (spec line 171): P
+f5 line 169 measure on entry (spec line 172): P
+f5 line 174 precondition at the call (spec line 42): P
+f5 line 176 no trap (memory access in bounds) (spec line -): P
+f5 line 185 assertion (spec line 184): P
+f5 line 185 invariant preserved (spec line 170): P
+f5 line 185 invariant preserved (spec line 171): P
+f5 line 185 measure decreases (spec line 172): P
+f5 line 190 no trap (memory access in bounds) (spec line -): P
+f5 line 193 no trap (memory access in bounds) (spec line -): P
+f5 line 196 no trap (memory access in bounds) (spec line -): P
+f5 line 203 postcondition (spec line 138): P
+f5 line 203 postcondition (spec line 140): P
+== hashtable-d
+f0 line 31 precondition at the call (spec line 163): P
+f0 line 35 precondition at the call (spec line 163): P
+f0 line 39 precondition at the call (spec line 163): P
+f0 line 43 precondition at the call (spec line 163): P
+f0 line 47 precondition at the call (spec line 163): P
+f0 line 51 precondition at the call (spec line 163): P
+f0 line 55 precondition at the call (spec line 163): P
+f0 line 59 precondition at the call (spec line 163): P
+f0 line 63 precondition at the call (spec line 124): P
+f1 line 73 postcondition (spec line 67): P
+f2 line 84 invariant on entry (spec line 85): P
+f2 line 84 invariant on entry (spec line 86): P
+f2 line 84 measure on entry (spec line 87): P
+f2 line 89 precondition at the call (spec line 66): P
+f2 line 91 no trap (memory access in bounds) (spec line -): P
+f2 line 96 postcondition (spec line 75): P
+f2 line 99 no trap (memory access in bounds) (spec line -): P
+f2 line 103 no trap (memory access in bounds) (spec line -): P
+f2 line 109 postcondition (spec line 75): P
+f2 line 118 assertion (spec line 117): P
+f2 line 118 invariant preserved (spec line 85): P
+f2 line 118 invariant preserved (spec line 86): P
+f2 line 118 measure decreases (spec line 87): P
+f3 line 128 precondition at the call (spec line 76): P
+f3 line 134 postcondition (spec line 123): P
+f3 line 134 postcondition (spec line 125): P
+f3 line 137 precondition at the call (spec line 66): P
+f3 line 138 no trap (memory access in bounds) (spec line -): P
+f3 line 139 postcondition (spec line 123): P
+f3 line 139 postcondition (spec line 125): P
+f4 line 146 precondition at the call (spec line 76): P
+f4 line 152 postcondition (spec line 141): P
+f4 line 152 postcondition (spec line 143): P
+f4 line 155 precondition at the call (spec line 66): P
+f4 line 157 no trap (memory access in bounds) (spec line -): P
+f4 line 160 postcondition (spec line 141): P
+f4 line 160 postcondition (spec line 143): P
+f5 line 169 precondition at the call (spec line 76): P
+f5 line 175 precondition at the call (spec line 66): P
+f5 line 177 no trap (memory access in bounds) (spec line -): P
+f5 line 180 postcondition (spec line 162): P
+f5 line 180 postcondition (spec line 164): P
+f5 line 187 postcondition (spec line 162): P
+f5 line 187 postcondition (spec line 164): P
+f5 line 193 invariant on entry (spec line 194): P
+f5 line 193 invariant on entry (spec line 195): P
+f5 line 193 measure on entry (spec line 196): P
+f5 line 198 precondition at the call (spec line 66): P
+f5 line 200 no trap (memory access in bounds) (spec line -): P
+f5 line 209 assertion (spec line 208): P
+f5 line 209 invariant preserved (spec line 194): P
+f5 line 209 invariant preserved (spec line 195): P
+f5 line 209 measure decreases (spec line 196): P
+f5 line 214 no trap (memory access in bounds) (spec line -): P
+f5 line 217 no trap (memory access in bounds) (spec line -): P
+f5 line 220 no trap (memory access in bounds) (spec line -): P
+f5 line 227 postcondition (spec line 162): P
+f5 line 227 postcondition (spec line 164): R
+== hello
+== isqrt-args
+f0 line 5 precondition at the call (spec line 8): R
+f1 line 14 invariant on entry (spec line 15): P
+f1 line 14 measure on entry (spec line 16): P
+f1 line 31 invariant preserved (spec line 15): P
+f1 line 31 measure decreases (spec line 16): P
+f1 line 35 postcondition (spec line 8): P
+f1 line 35 postcondition (spec line 9): P
+== triangle
+f0 line 4 precondition at the call (spec line 7): P
+f1 line 7 refinement of the local (spec line 9): P
+f1 line 12 invariant on entry (spec line 13): P
+f1 line 12 measure on entry (spec line 14): P
+f1 line 22 refinement of the local (spec line 9): P
+f1 line 27 invariant preserved (spec line 13): P
+f1 line 27 measure decreases (spec line 14): P
+f1 line 31 postcondition (spec line 8): P
+== triangle-bug
+f0 line 5 precondition at the call (spec line 8): P
+f1 line 8 refinement of the local (spec line 10): P
+f1 line 13 invariant on entry (spec line 14): P
+f1 line 13 measure on entry (spec line 15): P
+f1 line 23 refinement of the local (spec line 10): R
+f1 line 28 invariant preserved (spec line 14): P
+f1 line 28 measure decreases (spec line 15): P
+f1 line 32 postcondition (spec line 9): P

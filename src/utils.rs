@@ -5826,6 +5826,72 @@ local.get $r
             out
         }
 
+        // One line per obligation: where it is, what it is, and its verdict (P proven,
+        // R refuted, U undecided).
+        fn verdict_lines(r: &SpecRun, vs: &[(usize, crate::vc::Verdict)]) -> Vec<String> {
+            vs.iter()
+                .map(|(i, v)| {
+                    let ob = &r.obligations[*i];
+                    let v = match v {
+                        crate::vc::Verdict::Proven => "P",
+                        crate::vc::Verdict::Refuted(_) => "R",
+                        crate::vc::Verdict::Unknown(_) => "U",
+                    };
+                    format!(
+                        "f{} line {} {} (spec line {}): {v}",
+                        ob.func,
+                        ob.at_line + 1,
+                        ob.kind.describe(),
+                        ob.spec_line.map(|l| (l + 1).to_string()).unwrap_or("-".into())
+                    )
+                })
+                .collect()
+        }
+
+        // The solver's verdict on every obligation of every example, against
+        // src/testdata/proof_verdicts.txt (UPDATE_VERDICTS=1 rewrites it). Needs a native
+        // Z3 (Z3_BIN, ~/.local/bin/z3 or z3 on the PATH): without one the test says so and
+        // passes.
+        #[test]
+        fn proof_verdicts() -> Result<()> {
+            let available = std::process::Command::new(z3_binary())
+                .arg("-version")
+                .output()
+                .is_ok_and(|o| o.status.success());
+            if !available {
+                eprintln!("proof_verdicts: no z3 binary found; skipped");
+                return Ok(());
+            }
+            let results: Vec<(String, Vec<String>)> = std::thread::scope(|s| {
+                let handles: Vec<_> = EXAMPLES
+                    .iter()
+                    .map(|(name, src)| {
+                        s.spawn(move || {
+                            let r = run_spec(src).expect("example runs");
+                            let vs = prove(&r);
+                            (name.to_string(), verdict_lines(&r, &vs))
+                        })
+                    })
+                    .collect();
+                handles.into_iter().map(|h| h.join().unwrap()).collect()
+            });
+            let mut text = String::new();
+            for (name, lines) in &results {
+                text.push_str(&format!("== {name}\n"));
+                for l in lines {
+                    text.push_str(l);
+                    text.push('\n');
+                }
+            }
+            let path = concat!(env!("CARGO_MANIFEST_DIR"), "/src/testdata/proof_verdicts.txt");
+            if std::env::var("UPDATE_VERDICTS").is_ok() {
+                std::fs::write(path, &text)?;
+            }
+            let expected = std::fs::read_to_string(path)?;
+            pretty_assertions::assert_eq!(expected, text);
+            Ok(())
+        }
+
         #[test]
         #[ignore]
         fn bench_generate() -> Result<()> {
