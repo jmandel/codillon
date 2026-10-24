@@ -171,3 +171,72 @@ fn dump_src() {
         }
     }
 }
+
+// ---------------- F2: a refinement naming another local is that local's invariant too (R7/R8) ----------------
+
+const F2: &str = r#"(func $f (export "f") (param $c i32) (result i32)
+  (local $n i32)
+  (local $r (i32 | (i32.le_u v $n)))
+  local.get $c
+  if
+    i32.const 10
+    local.set $n
+    i32.const 10
+    local.set $r
+    i32.const 0
+    local.set $n
+  end
+  i32.const 1
+  i32.const 10
+  local.get $r
+  i32.sub
+  prove 1
+  i32.div_u
+)"#;
+
+#[test]
+fn f2_writing_a_local_named_in_a_refinement_owes_its_cup() {
+    let out = check(F2);
+    assert!(!verified(&out, "$f"));
+    let c = out
+        .cups()
+        .find(|c| c.line == 11)
+        .expect("a refinement cup for $r on `local.set $n`");
+    assert_eq!(c.verdict, Verdict::Refuted);
+    // the division rests on that cup: proven only relative to it
+    let d = out.cups().find(|c| c.line == 18).unwrap();
+    assert!(!d.depends_on_checks.is_empty());
+    // gradual run with a value the kernel cannot fold: the new cup is a runtime check on line 11
+    let src = F2.replacen(
+        "    i32.const 0\n    local.set $n",
+        "    local.get $c\n    local.set $n",
+        1,
+    )
+    .replacen("  local.get $c\n  if", "  local.get $c\n  i32.const 1\n  i32.sub\n  if", 1);
+    let (r, _) = super::tests::instrumented_run(&src, "f", &[2]);
+    assert!(
+        matches!(r, Err(super::eval::EvalErr::CheckFailed { line: 13, .. })),
+        "{r:?}"
+    );
+    let (r, _) = super::tests::instrumented_run(&src, "f", &[1]);
+    assert!(r.is_ok(), "{r:?}");
+}
+
+#[test]
+fn f2_a_local_refinement_may_not_read_memory() {
+    let src = r#"(memory 1)
+(func $p (param $a i32) (result i32)
+  local.get $a
+  i32.load
+)
+(func $f (export "f") (param $c i32) (result i32)
+  (local $r (i32 | (call $p v)))
+  i32.const 0
+)"#;
+    let out = check(src);
+    assert!(
+        errors(&out).iter().any(|(l, e)| *l == 7 && e.contains("memory")),
+        "{:?}",
+        errors(&out)
+    );
+}

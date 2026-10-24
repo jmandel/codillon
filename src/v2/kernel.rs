@@ -895,6 +895,13 @@ impl<'a, 'm> Pass<'a, 'm> {
                     .map(|l| l.line)
                     .unwrap_or(hl);
                 self.line = line;
+                if expr_reads_mem(cx, r.refine.as_ref().unwrap()) {
+                    self.line_errors.push((
+                        line,
+                        "a local's refinement may not read memory: a store would falsify it unseen (R7)"
+                            .into(),
+                    ));
+                }
                 let b = self.cur_bind();
                 let a = self.inst_atom(r.refine.as_ref().unwrap(), &b, Some(z));
                 let ids = self.feed_enter(
@@ -1111,22 +1118,44 @@ impl<'a, 'm> Pass<'a, 'm> {
     }
 
     fn set_local(&mut self, line: u32, i: usize, t: TermId) {
+        let mut reqs = vec![];
+        let mut groups = vec![];
         if let Some(r) = self.loc_ref[i].clone() {
             let b = self.cur_bind();
             let a = self.inst_atom(r.refine.as_ref().unwrap(), &b, Some(t));
-            let ids = self.feed_enter(
-                line,
-                &[CupReq {
-                    kind: CupKind::Refinement { param: i as u32 },
-                    operand: Some(0),
+            reqs.push(CupReq {
+                kind: CupKind::Refinement { param: i as u32 },
+                operand: Some(0),
+                atom: a,
+            });
+            groups.push(self.local_groups[i]);
+        }
+        // R7: a refined local's refinement is its invariant; writing another local it names
+        // must keep it true too, or R8 would re-enter it at a join against the new value
+        if let Some(n) = self.locs[i].0.clone() {
+            for j in 0..self.loc_ref.len() {
+                let Some(r) = self.loc_ref[j].clone() else {
+                    continue;
+                };
+                if j == i || !expr_names(r.refine.as_ref().unwrap(), &n) {
+                    continue;
+                }
+                let mut b = self.cur_bind();
+                b.push((n.clone(), t));
+                let a = self.inst_atom(r.refine.as_ref().unwrap(), &b, Some(self.locals[j]));
+                reqs.push(CupReq {
+                    kind: CupKind::Refinement { param: j as u32 },
+                    operand: None,
                     atom: a,
-                }],
-            );
-            if let Some(g) = self.local_groups[i] {
-                self.groups[g as usize].push(Dep::Cup(ids[0]));
+                });
+                groups.push(self.local_groups[j]);
             }
-        } else {
-            self.feed_enter(line, &[]);
+        }
+        let ids = self.feed_enter(line, &reqs);
+        for (id, g) in ids.iter().zip(groups) {
+            if let Some(g) = g {
+                self.groups[g as usize].push(Dep::Cup(*id));
+            }
         }
         let old = self.locals[i];
         if old != t && self.dead.is_none() {
@@ -2572,6 +2601,27 @@ pub fn check_module(m: &Module, gradual: bool) -> super::out::ModuleOut {
         }
     }
     res
+}
+
+/// Does the proposition call a function that reads memory (R12)?
+fn expr_reads_mem(cx: &ModCtx, e: &Expr) -> bool {
+    match e {
+        Expr::Call(f, a) => {
+            cx.m.func_index(f).is_none_or(|g| cx.info[g].reads_mem)
+                || a.iter().any(|x| expr_reads_mem(cx, x))
+        }
+        Expr::Op(_, a) => a.iter().any(|x| expr_reads_mem(cx, x)),
+        _ => false,
+    }
+}
+
+/// Does the proposition name `$n`?
+fn expr_names(e: &Expr, n: &str) -> bool {
+    match e {
+        Expr::Var(x) => x == n,
+        Expr::Op(_, a) | Expr::Call(_, a) => a.iter().any(|x| expr_names(x, n)),
+        _ => false,
+    }
 }
 
 /// R31: a measure has exactly the value parameters of its function and one i32/i64 result.
