@@ -135,8 +135,8 @@ The kernel alone judges a submission: accepted only if every function it touched
                             String::new()
                         } else {
                             format!(
-                                "<div class=\"vc-lane\">lane: {}</div>",
-                                esc(&lane.join(" · "))
+                                "<div class=\"vc-lane\">lane, top first: {}</div>",
+                                rn(&lane.join(" · "))
                             )
                         }
                     ));
@@ -251,12 +251,15 @@ The kernel alone judges a submission: accepted only if every function it touched
                 ops.join(" · ")
             ));
         }
+        if a.bench.as_ref().is_some_and(|b| b.runs.is_empty()) {
+            h.push_str("<p class=\"vc-verdict vc-bad\">No harness input satisfies a precondition, so no run can tell a mutant apart: every mutant survives.</p>");
+        }
         if !surv.is_empty() {
             h.push_str("<ul class=\"vc-surv\">");
             // the kernel still proves these: reported first (§7.2)
             let mut order = surv.clone();
             order.sort_by_key(|i| !matches!(a.fates[*i], Some(Fate::Survived { proven: true })));
-            for i in order.iter().take(40) {
+            for i in order.iter().take(12) {
                 let m = &a.mutants[*i];
                 let still = matches!(a.fates[*i], Some(Fate::Survived { proven: true }));
                 h.push_str(&format!(

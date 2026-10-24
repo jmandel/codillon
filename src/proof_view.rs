@@ -468,6 +468,14 @@ pub fn build(
                 )
             } else if f.verified {
                 ("VERIFIED".into(), "verified")
+            } else if f.line_errors.iter().any(|(_, e)| e.starts_with("strict: ")) {
+                // strict mode (§4.1): what gradual mode would check at run time is an error here
+                let n = f
+                    .line_errors
+                    .iter()
+                    .filter(|(_, e)| e.starts_with("strict: "))
+                    .count();
+                (format!("strict: {n} unproven"), "strict")
             } else if checks == 1 {
                 ("1 runtime check".into(), "gradual")
             } else if checks > 1 {

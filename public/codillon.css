@@ -467,6 +467,18 @@ span.comment[data-commentary]::after {
     max-width: 100%;
 }
 
+/* …and so is a header's badge (VERIFIED or gradual), which would sit past the code's end */
+.line.wide-line > span.instr[data-badge]::after {
+    position: absolute;
+    right: 6px;
+    top: 13px;
+    background-color: #fffff0;
+}
+
+.line.wide-line > span.instr[data-badge-kind="verified"]::after {
+    background-color: #483D8B;
+}
+
 /* ---- v2 proofs (design 16 §8) ---- */
 
 /* proof lines (prove, lemma, unfold, assume): quiet, like v1's spec lines; still numbered */
@@ -500,6 +512,11 @@ span.instr[data-badge-kind="verified"]::after {
     color: white;
     background-color: #483D8B;
     content: "\25C6\00a0" attr(data-badge);
+}
+
+span.instr[data-badge-kind="strict"]::after {
+    color: darkred;
+    border: 1px solid darkred;
 }
 
 span.instr[data-badge-kind="gradual"]::after {
@@ -613,9 +630,9 @@ span.comment[data-commentary][data-tone="quiet"]::after {
 
 .vc-toggle {
     position: fixed;
-    top: 3px;
-    left: 40px;
-    z-index: 20;
+    bottom: 10px;
+    right: 14px;
+    z-index: 1000;
     font-family: 'MLMSansDemiCond10-Regular';
     font-size: 9pt;
     letter-spacing: 0.04em;
@@ -627,10 +644,9 @@ span.comment[data-commentary][data-tone="quiet"]::after {
     cursor: pointer;
 }
 
+/* in vericoding mode the panel has its own × */
 body.vc-on .vc-toggle {
-    color: white;
-    background: #483D8B;
-    border-color: #483D8B;
+    display: none;
 }
 
 .embed .vc-toggle {
@@ -648,7 +664,7 @@ body.vc-on {
     bottom: 0;
     width: 372px;
     overflow-y: auto;
-    z-index: 15;
+    z-index: 999;
     padding: 8px 12px 40px 14px;
     background: #fffff0;
     border-left: 1px solid #d8d4ea;

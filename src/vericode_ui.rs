@@ -656,6 +656,7 @@ impl Editor {
         if vc.focus.is_some_and(|f| f >= vc.adequacy.mutants.len()) {
             vc.focus = None;
         }
+        self.draw_proofs();
         let holder = self.holder();
         set_timeout(
             move || holder.borrow_mut().vc_adequacy_step(generation),
@@ -730,6 +731,25 @@ impl Editor {
                 .over
                 .push_str(&crate::proof_view::lock_glyph(i as u32 + 1, indent, red));
         };
+        // a vacuous precondition, on the function's header (§7.2)
+        if vc.adequacy.lines == lines {
+            for r in vc
+                .adequacy
+                .vacuity
+                .iter()
+                .filter(|r| r.vacuous || r.witnesses == 0)
+            {
+                let i = r.header_line as usize - 1;
+                if i < scene.lines.len() {
+                    let text = if r.vacuous {
+                        "vacuous spec: the kernel proves this precondition false, so every claim holds trivially"
+                    } else {
+                        "probably vacuous: no tried input satisfies this precondition"
+                    };
+                    scene.lines[i].vnote = Some((text.to_string(), "reject"));
+                }
+            }
+        }
         if let Some((i, msg)) = &vc.refused
             && *i < scene.lines.len()
         {
