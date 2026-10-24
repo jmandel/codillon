@@ -17,6 +17,8 @@ pub mod term;
 pub mod vericode;
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
+mod fable_gfix_probes;
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod fable_probes;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod gfix_tests;
