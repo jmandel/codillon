@@ -104,6 +104,8 @@ pub struct ModCtx<'m> {
     /// initializer (R14) and every other function's unproven `global.set` cups (R9); `None` when
     /// the global has no usable refinement
     pub global_deps: Vec<Option<Vec<Dep>>>,
+    /// editor only: explain each successful `prove`
+    pub explain: bool,
 }
 
 /// The solver's view of the module: unfolding and evaluation.
@@ -509,6 +511,7 @@ impl<'a, 'm> Pass<'a, 'm> {
             ghost: self.ghost,
             guard: None,
             lane: vec![],
+            explain: None,
         });
         self.cup_deps.push(vec![]);
         (self.cups.len() - 1) as CupId
@@ -604,6 +607,9 @@ impl<'a, 'm> Pass<'a, 'm> {
             let out = s.prove(&atoms, &r.atom);
             match out {
                 Outcome::Valid { wraps } => {
+                    if self.cx.explain {
+                        self.cups[c].explain = Some(self.explain_prove(&atoms, &r.atom));
+                    }
                     self.cups[c].feed = Feed::Prove {
                         prove_line: p.line,
                         hyps: hyps.iter().map(|e| e.fact).collect(),
@@ -2555,9 +2561,38 @@ impl<'a, 'm> Pass<'a, 'm> {
     }
 }
 
+/// Editor-only explanations (informational: no verdict reads them).
+impl<'a, 'm> Pass<'a, 'm> {
+    /// Why a valid `prove` holds: the hypotheses it needs, ex falso or not, and the solver's
+    /// closed cases (solver::explain).
+    fn explain_prove(&mut self, hyps: &[Atom], goal: &Atom) -> super::out::ProveExplain {
+        const CIRCLED: [&str; 10] = ["①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨", "⑩"];
+        let labels: Vec<String> = (0..hyps.len())
+            .map(|j| {
+                CIRCLED
+                    .get(j)
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| format!("({})", j + 1))
+            })
+            .collect();
+        let (terms, mut env) = self.solver_env();
+        let e = super::solver::explain(terms, &mut env, hyps, goal, &labels);
+        super::out::ProveExplain {
+            used: e.used.iter().map(|j| *j as u8).collect(),
+            ex_falso: e.ex_falso,
+            lines: e.lines,
+        }
+    }
+}
+
 /// Check a whole module (design 16 §5): one pass per function, lemmas first so their callers know
 /// which assumptions their results rest on.
 pub fn check_module(m: &Module, gradual: bool) -> super::out::ModuleOut {
+    check_module_with(m, gradual, false)
+}
+
+/// `check_module`, and for the editor (`explain`): why each `prove` succeeded. The extra output is informational; verdicts are the same either way.
+pub fn check_module_with(m: &Module, gradual: bool, explain: bool) -> super::out::ModuleOut {
     let info = super::info::analyze(m);
     let mem = m.memory_min.map(|p| p.saturating_mul(65536).min(1 << 32));
     let mut cx = ModCtx {
@@ -2567,6 +2602,7 @@ pub fn check_module(m: &Module, gradual: bool) -> super::out::ModuleOut {
         lemma_assumes: HashMap::new(),
         gradual,
         global_deps: vec![None; m.globals.len()],
+        explain,
     };
     let mut errors = m.errors.clone();
     global_preflight(&mut cx, &mut errors);

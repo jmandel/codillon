@@ -152,6 +152,20 @@ pub struct CupOut {
     pub guard: Option<Atom>,
     /// for an unfed cup: the lane snapshot where it sits (in-scope facts, top first, with birth lines)
     pub lane: Vec<(u32, String)>,
+    /// for a cup fed by a `prove`: why the solver accepted it (editor only; see `check_module_with`)
+    pub explain: Option<ProveExplain>,
+}
+
+/// Why a `prove` succeeded, for the editor (design 16 §3.3: "shown on hover of the `prove`").
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ProveExplain {
+    /// positions in `Feed::Prove::hyps` that the proof needs (a minimal subset)
+    pub used: SmallVec<[u8; 8]>,
+    /// the used hypotheses contradict each other: the goal holds ex falso, and the prove line
+    /// can never run
+    pub ex_falso: bool,
+    /// at most three short lines: the case split, the bounds or parity argument, what is contradicted
+    pub lines: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
