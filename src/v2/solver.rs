@@ -6,6 +6,9 @@ use super::ast::{IOp, ValTy};
 use super::term::{Atom, Key, Rel, TermId, Terms};
 use std::collections::HashMap;
 
+mod explain;
+pub use explain::{Explanation, explain};
+
 pub const CAP_TERMS: usize = 64;
 pub const CAP_VARS: usize = 24;
 pub const CAP_CASES: u32 = 256;
@@ -213,6 +216,8 @@ pub struct Solver<'a> {
     depth: u32,
     pre: bool,
     pub wraps: Vec<String>,
+    /// explanation trace (only for `explain`; never changes an outcome)
+    trace: Option<Box<explain::Trace>>,
 }
 
 /// Abort of a pre-pass atom at its first split.
@@ -234,6 +239,7 @@ impl<'a> Solver<'a> {
             depth: 0,
             pre: false,
             wraps: vec![],
+            trace: None,
         }
     }
 
@@ -246,6 +252,7 @@ impl<'a> Solver<'a> {
         self.pos = 0;
         self.depth = 0;
         self.wraps.clear();
+        self.t_reset();
     }
 
     /// A case split: returns the branch taken in this run.
@@ -266,7 +273,7 @@ impl<'a> Solver<'a> {
             return Ok(v);
         }
         if lo > hi {
-            return Err(Stop::Infeasible);
+            return Err(self.t_fail(|s| s.t_empty(&desc)));
         }
         let id = self.vars.len() as VarId;
         self.vars.push(Var {
@@ -321,25 +328,26 @@ impl<'a> Solver<'a> {
             return if c <= 0 {
                 Ok(())
             } else {
-                Err(Stop::Infeasible)
+                Err(self.t_fail(|s| s.t_const_false()))
             };
         }
         // single-variable constraints tighten the interval at once
         if l.ts.len() == 1 {
             let (v, k) = l.ts[0];
             let var = &mut self.vars[v as usize];
+            let old = (var.lo, var.hi);
             if k > 0 {
                 var.hi = var.hi.min(fdiv(-l.c, k));
             } else {
                 var.lo = var.lo.max(-fdiv(-l.c, -k)); // x ≥ ⌈c/|k|⌉
             }
             if var.lo > var.hi {
-                return Err(Stop::Infeasible);
+                return Err(self.t_fail(|s| s.t_interval(v, old, &l, false)));
             }
         }
         let (lo, _) = self.range(&l)?;
         if lo > 0 {
-            return Err(Stop::Infeasible);
+            return Err(self.t_fail(|s| s.t_range(&l, lo, false)));
         }
         self.cons.push(Con::Le(l));
         Ok(())
@@ -350,25 +358,26 @@ impl<'a> Solver<'a> {
             return if c == 0 {
                 Ok(())
             } else {
-                Err(Stop::Infeasible)
+                Err(self.t_fail(|s| s.t_const_false()))
             };
         }
         if l.ts.len() == 1 {
             let (v, k) = l.ts[0];
             if l.c % k != 0 {
-                return Err(Stop::Infeasible);
+                return Err(self.t_fail_mod(k.abs(), |s| s.t_gcd(&l, k.abs())));
             }
             let x = -l.c / k;
             let var = &mut self.vars[v as usize];
+            let old = (var.lo, var.hi);
             if x < var.lo || x > var.hi {
-                return Err(Stop::Infeasible);
+                return Err(self.t_fail(|s| s.t_interval(v, old, &l, true)));
             }
             var.lo = x;
             var.hi = x;
         }
         let (lo, hi) = self.range(&l)?;
         if lo > 0 || hi < 0 {
-            return Err(Stop::Infeasible);
+            return Err(self.t_fail(|s| s.t_range(&l, if lo > 0 { lo } else { hi }, true)));
         }
         self.cons.push(Con::Eq(l));
         Ok(())
@@ -446,6 +455,10 @@ impl<'a> Solver<'a> {
         }
         if split01 && q1 - q0 == 1 {
             let q = if self.choose()? { q1 } else { q0 };
+            self.t_split(|s| {
+                let w = if q != 0 { "wraps" } else { "does not wrap" };
+                format!("{} {w}", s.terms.render(t))
+            });
             let lin = exact.add_c(mul(-q, wv)?)?;
             self.le0(lin.scale(-1)?)?;
             self.le0(lin.add_c(-(wv - 1))?)?;
@@ -541,6 +554,13 @@ impl<'a> Solver<'a> {
             Key::Op(op, w, args) => self.tr_op(t, op, w, &args),
             Key::Ite(c, a, b) => {
                 let br = self.choose()?;
+                self.t_split(|s| {
+                    format!(
+                        "{} is {}",
+                        s.terms.render(c),
+                        if br { "true" } else { "false" }
+                    )
+                });
                 self.truthy(c, br)?;
                 self.tr(if br { a } else { b })
             }
@@ -751,6 +771,7 @@ impl<'a> Solver<'a> {
             }
             o if o.is_cmp() => {
                 let b = self.choose()?;
+                self.t_split(|s| format!("{} = {}", s.terms.render(t), b as u8));
                 self.truthy(t, b)?;
                 let v = b as i128;
                 Ok(Tr {
@@ -780,11 +801,13 @@ impl<'a> Solver<'a> {
                 hi: a.hi - pow2(w),
             }
         } else if self.choose()? {
+            self.t_split(|s| format!("{} is negative", s.terms.render(t)));
             self.le(&Lin::konst(half), &a.lin)?;
             let lin = a.lin.add_c(-pow2(w))?;
             let (lo, hi) = self.range(&lin)?;
             Tr { lin, lo, hi }
         } else {
+            self.t_split(|s| format!("{} is non-negative", s.terms.render(t)));
             self.le(&a.lin, &Lin::konst(half - 1))?;
             let (lo, hi) = self.range(&a.lin)?;
             Tr { lin: a.lin, lo, hi }
@@ -800,7 +823,7 @@ impl<'a> Solver<'a> {
                 if (c != 0) == pol {
                     Ok(())
                 } else {
-                    Err(Stop::Infeasible)
+                    Err(self.t_fail(|s| s.t_const_false()))
                 }
             }
             Key::Op(o, ..) if o.is_cmp() => {
@@ -822,6 +845,13 @@ impl<'a> Solver<'a> {
             }
             Key::Ite(c, a, b) => {
                 let br = self.choose()?;
+                self.t_split(|s| {
+                    format!(
+                        "{} is {}",
+                        s.terms.render(c),
+                        if br { "true" } else { "false" }
+                    )
+                });
                 self.truthy(c, br)?;
                 self.truthy(if br { a } else { b }, pol)
             }
@@ -830,7 +860,7 @@ impl<'a> Solver<'a> {
                     return if (v != 0) == pol {
                         Ok(())
                     } else {
-                        Err(Stop::Infeasible)
+                        Err(self.t_fail(|s| format!("{} evaluates to {v}", s.terms.render(t))))
                     };
                 }
                 if self.depth < UNFOLD_DEPTH
@@ -863,12 +893,12 @@ impl<'a> Solver<'a> {
                 if pol {
                     Ok(())
                 } else {
-                    Err(Stop::Infeasible)
+                    Err(self.t_fail(|s| s.t_const_false()))
                 }
             }
             Atom::False => {
                 if pol {
-                    Err(Stop::Infeasible)
+                    Err(self.t_fail(|s| s.t_const_false()))
                 } else {
                     Ok(())
                 }
@@ -876,11 +906,10 @@ impl<'a> Solver<'a> {
             Atom::Bool { t, neg } => self.truthy(*t, pol != *neg),
             Atom::Or(x, y) => {
                 if pol {
-                    if self.choose()? {
-                        self.assert(y, true)
-                    } else {
-                        self.assert(x, true)
-                    }
+                    let b = self.choose()?;
+                    let d = if b { y } else { x };
+                    self.t_split(|s| s.terms.render_atom(d));
+                    self.assert(d, true)
                 } else {
                     self.assert(x, false)?;
                     self.assert(y, false)
@@ -908,7 +937,9 @@ impl<'a> Solver<'a> {
                         if x.hi < y.lo || y.hi < x.lo {
                             return Ok(());
                         }
-                        if self.choose()? {
+                        let gt = self.choose()?;
+                        self.t_ne_split(*a, *b, *signed, gt, (x.lo, x.hi), (y.lo, y.hi));
+                        if gt {
                             self.le(&y.lin.add_c(1)?, &x.lin)
                         } else {
                             self.le(&x.lin.add_c(1)?, &y.lin)
@@ -929,10 +960,12 @@ enum Fm {
 impl<'a> Solver<'a> {
     fn run(&mut self, hyps: &[Atom], goal: &Atom) -> R<()> {
         self.reset_run();
-        for h in hyps {
+        for (i, h) in hyps.iter().enumerate() {
+            self.t_atom(Some(i));
             self.defined(h, true)?;
             self.assert(h, true)?;
         }
+        self.t_atom(None);
         // a goal that traps is false: the negated goal holds in the trapping branch
         if !self.defined(goal, false)? {
             return Ok(());
@@ -1043,10 +1076,10 @@ impl<'a> Solver<'a> {
             }
             match self.run(hyps, goal) {
                 Err(Stop::Cap(c)) => return Outcome::Cap(c),
-                Err(Stop::Infeasible) => {}
+                Err(Stop::Infeasible) => self.t_end_case(),
                 Ok(()) => match self.omega() {
                     Err(Stop::Cap(c)) => return Outcome::Cap(c),
-                    Err(Stop::Infeasible) | Ok(Fm::Unsat) => {}
+                    Err(Stop::Infeasible) | Ok(Fm::Unsat) => self.t_end_case(),
                     Ok(Fm::Sat(model)) => return Outcome::NotImplied(self.render_model(&model)),
                     Ok(Fm::Inexact(v)) => {
                         if inexact.is_none() {
@@ -1162,6 +1195,7 @@ impl<'a> Solver<'a> {
             i += 1;
             if let Some(c) = e.as_const() {
                 if c != 0 {
+                    self.t_fail(|s| s.t_const_false());
                     return Ok(Fm::Unsat);
                 }
                 continue;
@@ -1186,12 +1220,14 @@ impl<'a> Solver<'a> {
             } else {
                 let g = e.ts.iter().fold(0i128, |g, (_, k)| gcd(g, *k));
                 if e.c % g != 0 {
+                    self.t_fail_mod(g, |s| s.t_gcd(&e, g));
                     return Ok(Fm::Unsat);
                 }
                 ineqs.push(e.clone());
                 ineqs.push(e.scale(-1)?);
             }
         }
+        self.t_omega(&ineqs);
         // 2–4. tighten and eliminate
         let mut exact = true;
         let mut inexact_var = 0;

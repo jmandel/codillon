@@ -107,6 +107,8 @@ pub struct ModCtx<'m> {
     /// lines at which to ask whether the context is contradictory (the judge's locked lines in
     /// LLM-owned bodies, research/22 B3); empty in the editor
     pub probe: BTreeSet<u32>,
+    /// editor only: explain each successful `prove` and find regions that never run
+    pub explain: bool,
 }
 
 /// The solver's view of the module: unfolding and evaluation.
@@ -170,6 +172,9 @@ pub struct Pass<'a, 'm> {
     /// body lines control never reaches (R22)
     dead_lines: Vec<u32>,
     false_ctx_lines: Vec<u32>,
+    /// arms and fall-throughs a constant condition rules out (line, kind as in reach.rs), so the
+    /// editor can say why they never run
+    decided: Vec<(u32, &'static str)>,
     pub cx: &'a ModCtx<'m>,
     pub f: usize,
     pub terms: Terms,
@@ -513,6 +518,7 @@ impl<'a, 'm> Pass<'a, 'm> {
             ghost: self.ghost,
             guard: None,
             lane: vec![],
+            explain: None,
         });
         self.cup_deps.push(vec![]);
         (self.cups.len() - 1) as CupId
@@ -608,6 +614,9 @@ impl<'a, 'm> Pass<'a, 'm> {
             let out = s.prove(&atoms, &r.atom);
             match out {
                 Outcome::Valid { wraps } => {
+                    if self.cx.explain {
+                        self.cups[c].explain = Some(self.explain_prove(&atoms, &r.atom));
+                    }
                     self.cups[c].feed = Feed::Prove {
                         prove_line: p.line,
                         hyps: hyps.iter().map(|e| e.fact).collect(),
@@ -877,6 +886,7 @@ impl<'a, 'm> Pass<'a, 'm> {
         Pass {
             dead_lines: vec![],
             false_ctx_lines: vec![],
+            decided: vec![],
             cx,
             f,
             terms: Terms::new(fnames),
@@ -1927,6 +1937,7 @@ impl<'a, 'm> Pass<'a, 'm> {
         if let Some(c) = self.frames[fi].cond {
             let a = self.terms.atom_of(c, false);
             if self.impossible(&a) {
+                self.decided.push((line, "if else-arm"));
                 self.go_dead(line);
                 return;
             }
@@ -2108,6 +2119,7 @@ impl<'a, 'm> Pass<'a, 'm> {
                         self.stack.extend(params);
                         let a = self.terms.atom_of(c, true);
                         if self.impossible(&a) {
+                            self.decided.push((line, "if then-arm"));
                             self.go_dead(line);
                         } else {
                             self.enter(a, line, "if then-arm", vec![]);
@@ -2178,6 +2190,7 @@ impl<'a, 'm> Pass<'a, 'm> {
                         self.branch(line, fi, Some(Entry { fact: f, line }));
                     }
                     if self.impossible(&na) {
+                        self.decided.push((line, "br_if fall-through"));
                         self.go_dead(line);
                     } else {
                         self.enter(na, line, "br_if fall-through", vec![]);
@@ -2602,6 +2615,11 @@ impl<'a, 'm> Pass<'a, 'm> {
         if unproven {
             deps.push(Dep::Assume(func.header_line, false));
         }
+        let never_runs = if self.cx.explain {
+            self.never_runs()
+        } else {
+            vec![]
+        };
         let chips = self
             .facts
             .iter()
@@ -2628,15 +2646,58 @@ impl<'a, 'm> Pass<'a, 'm> {
             func: self.f as u32,
             dead_lines: self.dead_lines,
             false_ctx_lines: self.false_ctx_lines,
+            never_runs,
         };
         (out, deps)
+    }
+}
+
+/// Editor-only explanations (informational: no verdict reads them).
+impl<'a, 'm> Pass<'a, 'm> {
+    /// Why a valid `prove` holds: the hypotheses it needs, ex falso or not, and the solver's
+    /// closed cases (solver::explain).
+    fn explain_prove(&mut self, hyps: &[Atom], goal: &Atom) -> super::out::ProveExplain {
+        const CIRCLED: [&str; 10] = ["①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨", "⑩"];
+        let labels: Vec<String> = (0..hyps.len())
+            .map(|j| {
+                CIRCLED
+                    .get(j)
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| format!("({})", j + 1))
+            })
+            .collect();
+        let (terms, mut env) = self.solver_env();
+        let e = super::solver::explain(terms, &mut env, hyps, goal, &labels);
+        super::out::ProveExplain {
+            used: e.used.iter().map(|j| *j as u8).collect(),
+            ex_falso: e.ex_falso,
+            lines: e.lines,
+        }
+    }
+
+    /// Regions a decided branch condition makes unreachable (reach.rs).
+    fn never_runs(&mut self) -> Vec<super::out::NeverRuns> {
+        let facts: Vec<(u32, &'static str, Atom)> = self
+            .decided
+            .iter()
+            .map(|(l, k)| (*l, *k, Atom::False))
+            .chain(self.facts.iter().map(|f| (f.line, f.kind, f.atom.clone())))
+            .collect();
+        let body = &self.cx.m.funcs[self.f].body;
+        super::reach::never_runs(body, facts.iter().map(|(l, k, a)| (*l, *k, a)), |a| {
+            let (terms, mut env) = self.solver_env();
+            matches!(
+                Solver::new(terms, &mut env).prove(std::slice::from_ref(a), &Atom::False),
+                Outcome::Valid { .. }
+            )
+        })
     }
 }
 
 /// Check a whole module (design 16 §5): one pass per function, lemmas first so their callers know
 /// which assumptions their results rest on.
 pub fn check_module(m: &Module, gradual: bool) -> super::out::ModuleOut {
-    check_module_probing(m, gradual, BTreeSet::new())
+    check_module_full(m, gradual, BTreeSet::new(), false)
 }
 
 /// [`check_module`], also reporting which `probe` lines are reached only ex falso
@@ -2645,6 +2706,21 @@ pub fn check_module_probing(
     m: &Module,
     gradual: bool,
     probe: BTreeSet<u32>,
+) -> super::out::ModuleOut {
+    check_module_full(m, gradual, probe, false)
+}
+
+/// `check_module`, and for the editor (`explain`): why each `prove` succeeded and which regions
+/// never run. The extra output is informational; verdicts are the same either way.
+pub fn check_module_with(m: &Module, gradual: bool, explain: bool) -> super::out::ModuleOut {
+    check_module_full(m, gradual, BTreeSet::new(), explain)
+}
+
+fn check_module_full(
+    m: &Module,
+    gradual: bool,
+    probe: BTreeSet<u32>,
+    explain: bool,
 ) -> super::out::ModuleOut {
     let info = super::info::analyze(m);
     let mem = m.memory_min.map(|p| p.saturating_mul(65536).min(1 << 32));
@@ -2656,6 +2732,7 @@ pub fn check_module_probing(
         gradual,
         global_deps: vec![None; m.globals.len()],
         probe,
+        explain,
     };
     let mut errors = m.errors.clone();
     global_preflight(&mut cx, &mut errors);

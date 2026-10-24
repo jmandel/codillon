@@ -9,6 +9,7 @@ pub mod info;
 pub mod kernel;
 pub mod llm;
 pub mod out;
+pub mod reach;
 pub mod runtime;
 pub mod sexpr;
 pub mod solver;
@@ -16,6 +17,8 @@ pub mod symex;
 pub mod term;
 pub mod vericode;
 
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod explain_tests;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod fable_gfix_probes;
 #[cfg(all(test, not(target_arch = "wasm32")))]

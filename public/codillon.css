@@ -542,6 +542,53 @@ span.comment[data-commentary][data-tone="quiet"]::after {
     border: 1px dashed #c3bddf;
 }
 
+/* a prove line's account (design 16 §3, §8): the goal it feeds, the hypotheses it uses, why it
+   holds. Quiet purple-gray, up to four short lines centred on the row, right of the code. It
+   shares the rest of the row with the commentary (both shrink and are cut short; the full text
+   is the line's hover title), so the two never overlap. */
+.line > span.comment[data-explain] {
+    display: flex;
+    align-items: center;
+    align-self: center;
+    contain: inline-size;
+    gap: 10px;
+}
+
+.line > span.comment[data-explain]::before {
+    content: attr(data-explain);
+    flex: 0 1 auto;
+    min-width: 0;
+    order: -1;
+    margin-left: 20px;
+    padding-left: 6px;
+    border-left: 2px solid #c9c2ea;
+    white-space: pre;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-family: 'MLMSansDemiCond10-Regular';
+    font-style: normal;
+    font-size: 8.5pt;
+    line-height: 10.6px;
+    color: #4d4680;
+}
+
+.line > span.comment[data-explain][data-commentary]::after {
+    float: none;
+    flex: 0 1 auto;
+    min-width: 60px;
+    margin-left: auto;
+    margin-top: 0;
+}
+
+/* lines the kernel shows never run (a decided branch condition): lightly greyed */
+.line.never-runs > span.instr {
+    color: #b3afc4;
+}
+
+.line.never-runs.spec-line > span.instr {
+    color: #c0bcd2;
+}
+
 .pv-wire {
     fill: none;
     stroke: #a99fe0;

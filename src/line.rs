@@ -392,6 +392,11 @@ impl CodeLine {
                 " locked-line"
             } else {
                 ""
+            }
+            + if self.info.proof.never {
+                " never-runs"
+            } else {
+                ""
             };
 
         use BrowserAnimation::*;
@@ -543,6 +548,12 @@ impl CodeLine {
                 comment.remove_attribute("title");
             }
         }
+        // a prove line's account (goal, hypotheses, reason): quiet, right of the code, left of
+        // any commentary (both share the row and shrink, so they never overlap)
+        match &self.info.proof.explain {
+            Some(t) => comment.set_attribute("data-explain", t),
+            None => comment.remove_attribute("data-explain"),
+        }
         match vtone {
             Some(t) => comment.set_attribute("data-tone", t),
             None if quiet.is_some() => comment.set_attribute("data-tone", "quiet"),
@@ -562,6 +573,11 @@ impl CodeLine {
                 instr.remove_attribute("data-badge");
                 instr.remove_attribute("data-badge-kind");
             }
+        }
+        // the fact lane left of the code: hovering the row's margin reads the chips there
+        match &self.info.proof.lane {
+            Some(t) => self.contents.set_attribute("title", t),
+            None => self.contents.remove_attribute("title"),
         }
 
         self.contents.set_attribute("class", &self.class());

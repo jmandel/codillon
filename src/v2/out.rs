@@ -152,6 +152,34 @@ pub struct CupOut {
     pub guard: Option<Atom>,
     /// for an unfed cup: the lane snapshot where it sits (in-scope facts, top first, with birth lines)
     pub lane: Vec<(u32, String)>,
+    /// for a cup fed by a `prove`: why the solver accepted it (editor only; see `check_module_with`)
+    pub explain: Option<ProveExplain>,
+}
+
+/// Why a `prove` succeeded, for the editor (design 16 §3.3: "shown on hover of the `prove`").
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ProveExplain {
+    /// positions in `Feed::Prove::hyps` that the proof needs (a minimal subset)
+    pub used: SmallVec<[u8; 8]>,
+    /// the used hypotheses contradict each other: the goal holds ex falso, and the prove line
+    /// can never run
+    pub ex_falso: bool,
+    /// at most three short lines: the case split, the bounds or parity argument, what is contradicted
+    pub lines: Vec<String>,
+}
+
+/// Body lines the kernel shows can never run, because a branch condition is decided by the
+/// solver (the fall-through of an always-taken `br_if`, an `if` arm whose entry fact is false).
+/// Informational only: no verdict depends on it (see `reach.rs`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct NeverRuns {
+    /// first and last line of the region (inclusive)
+    pub from: u32,
+    pub to: u32,
+    /// the branching line
+    pub cause: u32,
+    /// e.g. "br_if on line 13 always branches"
+    pub why: String,
 }
 
 #[derive(Clone, Debug)]
@@ -210,6 +238,8 @@ pub struct FuncOut {
     /// probed lines (`check_module_probing`) reached only with a contradictory context: the
     /// kernel proves False there, so every cup on them is discharged ex falso
     pub false_ctx_lines: Vec<u32>,
+    /// regions a decided branch condition makes unreachable (editor only, `check_module_with`)
+    pub never_runs: Vec<NeverRuns>,
 }
 
 #[derive(Clone, Debug, Default)]
