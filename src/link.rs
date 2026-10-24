@@ -96,7 +96,9 @@ fn is_example_name(s: &str) -> bool {
         && segs.iter().all(|seg| {
             !seg.is_empty()
                 && !seg.starts_with('.')
-                && seg.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+                && seg
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
         })
 }
 

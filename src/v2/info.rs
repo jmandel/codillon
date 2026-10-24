@@ -73,10 +73,14 @@ pub fn analyze(m: &Module) -> Vec<FnInfo> {
                         r.refine.iter().for_each(|e| expr_calls(e, &mut named));
                     }
                 }
-                Ins::Store(_) | Ins::MemoryFill | Ins::MemoryCopy | Ins::MemoryGrow if fi.impure.is_none() => {
+                Ins::Store(_) | Ins::MemoryFill | Ins::MemoryCopy | Ins::MemoryGrow
+                    if fi.impure.is_none() =>
+                {
                     fi.impure = Some((*ln, "stores".into()));
                 }
-                Ins::GlobalSet(_) if fi.impure.is_none() => fi.impure = Some((*ln, "sets a global".into())),
+                Ins::GlobalSet(_) if fi.impure.is_none() => {
+                    fi.impure = Some((*ln, "sets a global".into()))
+                }
                 Ins::GlobalGet(g) => {
                     let mutable = m
                         .globals
@@ -88,7 +92,9 @@ pub fn analyze(m: &Module) -> Vec<FnInfo> {
                         fi.impure = Some((*ln, "reads a mutable global".into()));
                     }
                 }
-                Ins::CallIndirect if fi.impure.is_none() => fi.impure = Some((*ln, "uses call_indirect".into())),
+                Ins::CallIndirect if fi.impure.is_none() => {
+                    fi.impure = Some((*ln, "uses call_indirect".into()))
+                }
                 Ins::Load(_) | Ins::MemorySize => fi.reads_mem = true,
                 Ins::Call(c) => {
                     if let Some(g) = m.func_index(c) {
@@ -111,7 +117,10 @@ pub fn analyze(m: &Module) -> Vec<FnInfo> {
                 _ => {}
             }
         }
-        let uses: Vec<usize> = named[before..].iter().filter_map(|n| m.func_index(n)).collect();
+        let uses: Vec<usize> = named[before..]
+            .iter()
+            .filter_map(|n| m.func_index(n))
+            .collect();
         info[i].uses = uses;
     }
     // propagate impurity and memory reads along calls
@@ -122,8 +131,16 @@ pub fn analyze(m: &Module) -> Vec<FnInfo> {
                 if info[i].impure.is_none()
                     && let Some(_) = info[g].impure
                 {
-                    let line = m.funcs[i].body.iter().find(|(_, ins)| matches!(ins, Ins::Call(c) if m.func_index(c) == Some(g))).map(|x| x.0).unwrap_or(0);
-                    info[i].impure = Some((line, format!("calls {}, which is impure", m.funcs[g].name())));
+                    let line = m.funcs[i]
+                        .body
+                        .iter()
+                        .find(|(_, ins)| matches!(ins, Ins::Call(c) if m.func_index(c) == Some(g)))
+                        .map(|x| x.0)
+                        .unwrap_or(0);
+                    info[i].impure = Some((
+                        line,
+                        format!("calls {}, which is impure", m.funcs[g].name()),
+                    ));
                     changed = true;
                 }
                 if !info[i].reads_mem && info[g].reads_mem {

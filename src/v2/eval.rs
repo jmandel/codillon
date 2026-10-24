@@ -14,11 +14,18 @@ pub enum EvalErr {
     Budget,
     Unsupported(String),
     /// a runtime check (R35) failed before the instruction of this line
-    CheckFailed { line: u32, msg: String },
+    CheckFailed {
+        line: u32,
+        msg: String,
+    },
 }
 
 fn sext(v: u64, ty: ValTy) -> i64 {
-    if ty == ValTy::I32 { v as u32 as i32 as i64 } else { v as i64 }
+    if ty == ValTy::I32 {
+        v as u32 as i32 as i64
+    } else {
+        v as i64
+    }
 }
 
 /// One integer operation on bit patterns (operands masked to the operand width).
@@ -34,18 +41,34 @@ pub fn eval_iop(op: IOp, w: ValTy, args: &[u64]) -> Result<u64, EvalErr> {
         Add => a.wrapping_add(b),
         Sub => a.wrapping_sub(b),
         Mul => a.wrapping_mul(b),
-        DivU | RemU | DivS | RemS if b == 0 => return Err(EvalErr::Trap("integer divide by zero".into())),
+        DivU | RemU | DivS | RemS if b == 0 => {
+            return Err(EvalErr::Trap("integer divide by zero".into()));
+        }
         DivU => a / b,
         RemU => a % b,
         DivS => {
-            let min = if w == ValTy::I32 { i32::MIN as i64 } else { i64::MIN };
+            let min = if w == ValTy::I32 {
+                i32::MIN as i64
+            } else {
+                i64::MIN
+            };
             if sa == min && sb == -1 {
                 return Err(EvalErr::Trap("integer overflow".into()));
             }
-            if w == ValTy::I32 { (sa / sb) as u64 } else { sa.wrapping_div(sb) as u64 }
+            if w == ValTy::I32 {
+                (sa / sb) as u64
+            } else {
+                sa.wrapping_div(sb) as u64
+            }
         }
         RemS => {
-            if sb == -1 { 0 } else if w == ValTy::I32 { (sa % sb) as u64 } else { sa.wrapping_rem(sb) as u64 }
+            if sb == -1 {
+                0
+            } else if w == ValTy::I32 {
+                (sa % sb) as u64
+            } else {
+                sa.wrapping_rem(sb) as u64
+            }
         }
         And => a & b,
         Or => a | b,
@@ -54,16 +77,32 @@ pub fn eval_iop(op: IOp, w: ValTy, args: &[u64]) -> Result<u64, EvalErr> {
         ShrU => a >> (b % bits),
         ShrS => (sa >> (b % bits)) as u64,
         Rotl => {
-            if w == ValTy::I32 { (a as u32).rotate_left(b as u32 % 32) as u64 } else { a.rotate_left((b % 64) as u32) }
+            if w == ValTy::I32 {
+                (a as u32).rotate_left(b as u32 % 32) as u64
+            } else {
+                a.rotate_left((b % 64) as u32)
+            }
         }
         Rotr => {
-            if w == ValTy::I32 { (a as u32).rotate_right(b as u32 % 32) as u64 } else { a.rotate_right((b % 64) as u32) }
+            if w == ValTy::I32 {
+                (a as u32).rotate_right(b as u32 % 32) as u64
+            } else {
+                a.rotate_right((b % 64) as u32)
+            }
         }
         Clz => {
-            if w == ValTy::I32 { (a as u32).leading_zeros() as u64 } else { a.leading_zeros() as u64 }
+            if w == ValTy::I32 {
+                (a as u32).leading_zeros() as u64
+            } else {
+                a.leading_zeros() as u64
+            }
         }
         Ctz => {
-            if w == ValTy::I32 { (a as u32).trailing_zeros() as u64 } else { a.trailing_zeros() as u64 }
+            if w == ValTy::I32 {
+                (a as u32).trailing_zeros() as u64
+            } else {
+                a.trailing_zeros() as u64
+            }
         }
         Popcnt => a.count_ones() as u64,
         Eqz => bool(a == 0),
@@ -167,7 +206,17 @@ pub struct Interp<'m> {
 impl<'m> Interp<'m> {
     pub fn new(m: &'m Module) -> Self {
         let globals = m.globals.iter().map(|g| g.init.unwrap_or(0)).collect();
-        Interp { m, steps: 0, budget: EVAL_BUDGET, mem: vec![], globals, plan: None, checks_run: 0, tables: vec![None; m.funcs.len()], depth: 0 }
+        Interp {
+            m,
+            steps: 0,
+            budget: EVAL_BUDGET,
+            mem: vec![],
+            globals,
+            plan: None,
+            checks_run: 0,
+            tables: vec![None; m.funcs.len()],
+            depth: 0,
+        }
     }
 
     /// An interpreter for a whole run: memory of the declared minimum size, checks from `plan`.
@@ -226,10 +275,16 @@ impl<'m> Interp<'m> {
 
     fn checks(&mut self, f: usize, line: u32, shadows: &[u64]) -> Result<(), EvalErr> {
         let Some(plan) = self.plan else { return Ok(()) };
-        let Some(ids) = plan.func_plan(f as u32).and_then(|fp| fp.before.get(&line)) else { return Ok(()) };
+        let Some(ids) = plan.func_plan(f as u32).and_then(|fp| fp.before.get(&line)) else {
+            return Ok(());
+        };
         for &id in ids {
             let c = &plan.checks[id as usize];
-            let vals: Vec<u64> = c.sends.iter().map(|(_, s, _)| shadows[*s as usize]).collect();
+            let vals: Vec<u64> = c
+                .sends
+                .iter()
+                .map(|(_, s, _)| shadows[*s as usize])
+                .collect();
             self.checks_run += 1;
             if let CheckOutcome::Fails(msg) = plan.eval_check(id, &vals, Some(&self.mem)) {
                 return Err(EvalErr::CheckFailed { line, msg });
@@ -254,9 +309,19 @@ impl<'m> Interp<'m> {
             self.capture(&fp.entry, locals, &[], &mut shadows);
         }
         let mut st: Vec<u64> = Vec::new();
-        let mut ctl: Vec<Ctl> = vec![Ctl { kind: BlockKind::Block, label: None, start: 0, end: body.len(), height: 0, arity: nres }];
+        let mut ctl: Vec<Ctl> = vec![Ctl {
+            kind: BlockKind::Block,
+            label: None,
+            start: 0,
+            end: body.len(),
+            height: 0,
+            arity: nres,
+        }];
         let mut pc = 0usize;
-        let pop = |st: &mut Vec<u64>| st.pop().ok_or_else(|| EvalErr::Unsupported("stack underflow".into()));
+        let pop = |st: &mut Vec<u64>| {
+            st.pop()
+                .ok_or_else(|| EvalErr::Unsupported("stack underflow".into()))
+        };
         let line_of = |i: usize| body.get(i).map(|x| x.0).unwrap_or(0);
         loop {
             if pc >= body.len() {
@@ -294,8 +359,19 @@ impl<'m> Interp<'m> {
                     if *kind == BlockKind::If {
                         taken = pop(&mut st)? as u32 != 0;
                     }
-                    let arity = if *kind == BlockKind::Loop { bt.params.len() } else { bt.results.len() };
-                    ctl.push(Ctl { kind: *kind, label: bt.label.clone(), start: pc, end, height: st.len() - bt.params.len(), arity });
+                    let arity = if *kind == BlockKind::Loop {
+                        bt.params.len()
+                    } else {
+                        bt.results.len()
+                    };
+                    ctl.push(Ctl {
+                        kind: *kind,
+                        label: bt.label.clone(),
+                        start: pc,
+                        end,
+                        height: st.len() - bt.params.len(),
+                        arity,
+                    });
                     if !taken {
                         if els == end {
                             ctl.pop();
@@ -329,7 +405,9 @@ impl<'m> Interp<'m> {
                     branch = Some(self.label(&ctl, l)?);
                 }
                 Ins::Call(name) => {
-                    let g = m.func_index(name).ok_or_else(|| EvalErr::Unsupported(format!("no function {name}")))?;
+                    let g = m
+                        .func_index(name)
+                        .ok_or_else(|| EvalErr::Unsupported(format!("no function {name}")))?;
                     let np = m.funcs[g].value_params().count();
                     if st.len() < np {
                         return Err(EvalErr::Unsupported("stack underflow".into()));
@@ -343,12 +421,19 @@ impl<'m> Interp<'m> {
                         match ins {
                             Ins::LocalGet(_) => st.push(locals[i]),
                             Ins::LocalSet(_) => locals[i] = pop(&mut st)?,
-                            _ => locals[i] = *st.last().ok_or_else(|| EvalErr::Unsupported("stack underflow".into()))?,
+                            _ => {
+                                locals[i] = *st
+                                    .last()
+                                    .ok_or_else(|| EvalErr::Unsupported("stack underflow".into()))?
+                            }
                         }
                     }
                 }
                 Ins::GlobalGet(n) | Ins::GlobalSet(n) => {
-                    let gi = m.globals.iter().position(|g| g.name.as_deref() == Some(n.as_str()))
+                    let gi = m
+                        .globals
+                        .iter()
+                        .position(|g| g.name.as_deref() == Some(n.as_str()))
                         .or_else(|| n.parse().ok())
                         .filter(|i| *i < m.globals.len())
                         .ok_or_else(|| EvalErr::Unsupported(format!("no global {n}")))?;
@@ -428,9 +513,13 @@ impl<'m> Interp<'m> {
 
     fn label(&self, ctl: &[Ctl], l: &str) -> Result<usize, EvalErr> {
         if l.starts_with('$') {
-            ctl.iter().rev().position(|c| c.label.as_deref() == Some(l)).ok_or_else(|| EvalErr::Unsupported(format!("no label {l}")))
+            ctl.iter()
+                .rev()
+                .position(|c| c.label.as_deref() == Some(l))
+                .ok_or_else(|| EvalErr::Unsupported(format!("no label {l}")))
         } else {
-            l.parse().map_err(|_| EvalErr::Unsupported(format!("bad label {l}")))
+            l.parse()
+                .map_err(|_| EvalErr::Unsupported(format!("bad label {l}")))
         }
     }
 }

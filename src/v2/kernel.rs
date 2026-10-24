@@ -117,10 +117,23 @@ impl Env for PassEnv<'_, '_> {
                 let f = f as usize;
                 let i = &self.cx.info[f];
                 let fun = &self.cx.m.funcs[f];
-                if i.self_rec || i.mutual_rec.is_some() || i.impure.is_some() || i.has_loop.is_some() || fun.is_lemma() || fun.is_axiom() {
+                if i.self_rec
+                    || i.mutual_rec.is_some()
+                    || i.impure.is_some()
+                    || i.has_loop.is_some()
+                    || fun.is_lemma()
+                    || fun.is_axiom()
+                {
                     None
                 } else {
-                    symex(self.cx.m, &self.cx.info, terms, f, &args, if ep == NO_EPOCH { 0 } else { ep })
+                    symex(
+                        self.cx.m,
+                        &self.cx.info,
+                        terms,
+                        f,
+                        &args,
+                        if ep == NO_EPOCH { 0 } else { ep },
+                    )
                 }
             }
             _ => None,
@@ -129,7 +142,9 @@ impl Env for PassEnv<'_, '_> {
         r
     }
     fn eval_call(&mut self, terms: &Terms, call: TermId) -> Option<u64> {
-        let Key::Call(f, args, ep) = terms.key(call) else { return None };
+        let Key::Call(f, args, ep) = terms.key(call) else {
+            return None;
+        };
         if *ep != NO_EPOCH {
             return None;
         }
@@ -211,7 +226,11 @@ impl<'a, 'm> Pass<'a, 'm> {
 
     /// Bindings of names at the current point: value locals (current values).
     fn cur_bind(&self) -> Bind {
-        self.locs.iter().zip(self.locals.iter()).filter_map(|((n, _), t)| n.clone().map(|n| (n, *t))).collect()
+        self.locs
+            .iter()
+            .zip(self.locals.iter())
+            .filter_map(|((n, _), t)| n.clone().map(|n| (n, *t)))
+            .collect()
     }
 
     /// Bindings with parameters at their entry values (R15, result refinements).
@@ -227,10 +246,21 @@ impl<'a, 'm> Pass<'a, 'm> {
         b
     }
 
-    pub fn inst(&mut self, e: &Expr, bind: &Bind, v: Option<TermId>, want: Option<ValTy>) -> Result<TermId, String> {
+    pub fn inst(
+        &mut self,
+        e: &Expr,
+        bind: &Bind,
+        v: Option<TermId>,
+        want: Option<ValTy>,
+    ) -> Result<TermId, String> {
         Ok(match e {
             Expr::V => v.ok_or("`v` outside a refinement")?,
-            Expr::Var(n) => bind.iter().rev().find(|(x, _)| x == n).map(|x| x.1).ok_or_else(|| format!("unknown name {n}"))?,
+            Expr::Var(n) => bind
+                .iter()
+                .rev()
+                .find(|(x, _)| x == n)
+                .map(|x| x.1)
+                .ok_or_else(|| format!("unknown name {n}"))?,
             Expr::Int(i) => {
                 let ty = want.unwrap_or(ValTy::I32);
                 self.terms.konst(ty, super::ast::to_bits(ty, *i))
@@ -238,12 +268,18 @@ impl<'a, 'm> Pass<'a, 'm> {
             Expr::Op(name, args) => {
                 if let Some(t) = name.strip_suffix(".const") {
                     let ty = ValTy::parse(t).ok_or("bad const")?;
-                    let Some(Expr::Int(i)) = args.first() else { return Err("bad const".into()) };
+                    let Some(Expr::Int(i)) = args.first() else {
+                        return Err("bad const".into());
+                    };
                     return Ok(self.terms.konst(ty, super::ast::to_bits(ty, *i)));
                 }
-                let (op, w) = IOp::parse(name).ok_or_else(|| format!("`{name}` is not a pure integer operator"))?;
+                let (op, w) = IOp::parse(name)
+                    .ok_or_else(|| format!("`{name}` is not a pure integer operator"))?;
                 if args.len() != if op.unary() { 1 } else { 2 } {
-                    return Err(format!("`{name}` takes {} operands", if op.unary() { 1 } else { 2 }));
+                    return Err(format!(
+                        "`{name}` takes {} operands",
+                        if op.unary() { 1 } else { 2 }
+                    ));
                 }
                 let mut a = Vec::new();
                 for x in args {
@@ -258,8 +294,15 @@ impl<'a, 'm> Pass<'a, 'm> {
                 self.terms.op(op, w, &a)
             }
             Expr::Call(fname, args) => {
-                let g = self.cx.m.func_index(fname).ok_or_else(|| format!("unknown function {fname}"))?;
-                let ptys: Vec<ValTy> = self.cx.m.funcs[g].value_params().map(|(_, _, r)| r.ty).collect();
+                let g = self
+                    .cx
+                    .m
+                    .func_index(fname)
+                    .ok_or_else(|| format!("unknown function {fname}"))?;
+                let ptys: Vec<ValTy> = self.cx.m.funcs[g]
+                    .value_params()
+                    .map(|(_, _, r)| r.ty)
+                    .collect();
                 if ptys.len() != args.len() {
                     return Err(format!("{fname} takes {} arguments", ptys.len()));
                 }
@@ -267,7 +310,8 @@ impl<'a, 'm> Pass<'a, 'm> {
                 for (x, ty) in args.iter().zip(ptys) {
                     a.push(self.inst(x, bind, v, Some(ty))?);
                 }
-                call_term(self.cx.m, &self.cx.info, &mut self.terms, g, &a, self.eps).ok_or_else(|| format!("{fname} has no value result"))?
+                call_term(self.cx.m, &self.cx.info, &mut self.terms, g, &a, self.eps)
+                    .ok_or_else(|| format!("{fname} has no value result"))?
             }
         })
     }
@@ -288,8 +332,19 @@ impl<'a, 'm> Pass<'a, 'm> {
 
     // ---------- the lane ----------
 
-    pub fn new_fact(&mut self, atom: Atom, line: u32, kind: &'static str, deps: Vec<Dep>) -> FactId {
-        self.facts.push(Fact { atom, line, kind, deps });
+    pub fn new_fact(
+        &mut self,
+        atom: Atom,
+        line: u32,
+        kind: &'static str,
+        deps: Vec<Dep>,
+    ) -> FactId {
+        self.facts.push(Fact {
+            atom,
+            line,
+            kind,
+            deps,
+        });
         (self.facts.len() - 1) as FactId
     }
 
@@ -305,11 +360,19 @@ impl<'a, 'm> Pass<'a, 'm> {
         {
             return Some(e);
         }
-        self.lane.iter().rev().find(|e| self.facts[e.fact as usize].atom.feeds(goal)).copied()
+        self.lane
+            .iter()
+            .rev()
+            .find(|e| self.facts[e.fact as usize].atom.feeds(goal))
+            .copied()
     }
 
     fn solver_env<'s>(&'s mut self) -> (&'s mut Terms, PassEnv<'s, 'm>) {
-        let env = PassEnv { cx: self.cx, real: &self.real, unfold_memo: &mut self.unfold_memo };
+        let env = PassEnv {
+            cx: self.cx,
+            real: &self.real,
+            unfold_memo: &mut self.unfold_memo,
+        };
         (&mut self.terms, env)
     }
 
@@ -338,10 +401,16 @@ impl<'a, 'm> Pass<'a, 'm> {
         match self.terms.key(t) {
             Key::Const(_, b) => Ok(*b),
             Key::Call(f, args, _) => {
-                let vals: Vec<u64> = args.iter().map(|a| self.terms.as_const(*a).unwrap_or(0)).collect();
+                let vals: Vec<u64> = args
+                    .iter()
+                    .map(|a| self.terms.as_const(*a).unwrap_or(0))
+                    .collect();
                 match it.call(*f as usize, &vals) {
                     Ok(r) => r.first().copied().ok_or_else(|| "no result".into()),
-                    Err(EvalErr::Budget) => Err(format!("evaluation exceeded {} steps", super::eval::EVAL_BUDGET)),
+                    Err(EvalErr::Budget) => Err(format!(
+                        "evaluation exceeded {} steps",
+                        super::eval::EVAL_BUDGET
+                    )),
                     Err(EvalErr::Trap(_)) => Err(TRAPPED.into()),
                     Err(EvalErr::Unsupported(m)) => Err(format!("cannot evaluate: {m}")),
                     Err(EvalErr::CheckFailed { msg, .. }) => Err(msg),
@@ -364,8 +433,18 @@ impl<'a, 'm> Pass<'a, 'm> {
                     return Err("cannot evaluate a float atom".into());
                 }
                 let (x, y) = (self.eval_term(it, *a)?, self.eval_term(it, *b)?);
-                let s = |v: u64| if ty == ValTy::I32 { v as u32 as i32 as i64 as i128 } else { v as i64 as i128 };
-                let (x, y) = if *signed { (s(x), s(y)) } else { (x as i128, y as i128) };
+                let s = |v: u64| {
+                    if ty == ValTy::I32 {
+                        v as u32 as i32 as i64 as i128
+                    } else {
+                        v as i64 as i128
+                    }
+                };
+                let (x, y) = if *signed {
+                    (s(x), s(y))
+                } else {
+                    (x as i128, y as i128)
+                };
                 Ok(match rel {
                     Rel::Eq => x == y,
                     Rel::Ne => x != y,
@@ -379,7 +458,16 @@ impl<'a, 'm> Pass<'a, 'm> {
 
 impl<'a, 'm> Pass<'a, 'm> {
     fn hyp_list(&self, hyps: &[Entry]) -> String {
-        let v: Vec<String> = hyps.iter().map(|e| format!("{} @{}", self.terms.render_atom(&self.facts[e.fact as usize].atom), e.line)).collect();
+        let v: Vec<String> = hyps
+            .iter()
+            .map(|e| {
+                format!(
+                    "{} @{}",
+                    self.terms.render_atom(&self.facts[e.fact as usize].atom),
+                    e.line
+                )
+            })
+            .collect();
         format!("[{}]", v.join(", "))
     }
 
@@ -407,7 +495,13 @@ impl<'a, 'm> Pass<'a, 'm> {
     /// R5: feed the cups of one line. `edge` is the taken-edge fact of a br_if/br_table cup, which is
     /// looked up first and given to a feeding `prove` as an extra hypothesis. Returns the cup ids
     /// and the facts produced by prove/evaluation (not yet entered).
-    pub fn feed(&mut self, line: u32, reqs: &[CupReq], edge: Option<Entry>, lemma_line: bool) -> (Vec<CupId>, Vec<FactId>) {
+    pub fn feed(
+        &mut self,
+        line: u32,
+        reqs: &[CupReq],
+        edge: Option<Entry>,
+        lemma_line: bool,
+    ) -> (Vec<CupId>, Vec<FactId>) {
         let ids: Vec<CupId> = reqs.iter().map(|r| self.new_cup(line, r)).collect();
         if let Some(e) = edge {
             for &c in &ids {
@@ -429,7 +523,10 @@ impl<'a, 'm> Pass<'a, 'm> {
             let c = ids[i] as usize;
             if let Some(e) = self.lookup(&r.atom, edge) {
                 let origin_line = self.facts[e.fact as usize].line;
-                self.cups[c].feed = Feed::Lookup { fact: e.fact, origin_line };
+                self.cups[c].feed = Feed::Lookup {
+                    fact: e.fact,
+                    origin_line,
+                };
                 self.cups[c].verdict = Verdict::Proven;
                 self.cup_deps[c] = vec![Dep::Fact(e.fact)];
                 fed[i] = true;
@@ -441,7 +538,12 @@ impl<'a, 'm> Pass<'a, 'm> {
                     self.cups[c].verdict = Verdict::Proven;
                     fed[i] = true;
                     if !lemma_line {
-                        let f = self.new_fact(r.atom.clone(), line, "evaluation", vec![Dep::Cup(c as CupId)]);
+                        let f = self.new_fact(
+                            r.atom.clone(),
+                            line,
+                            "evaluation",
+                            vec![Dep::Cup(c as CupId)],
+                        );
                         produced.push((i, f));
                     }
                 }
@@ -471,7 +573,10 @@ impl<'a, 'm> Pass<'a, 'm> {
             if let Some(e) = edge {
                 hyps.push(e);
             }
-            let atoms: Vec<Atom> = hyps.iter().map(|e| self.facts[e.fact as usize].atom.clone()).collect();
+            let atoms: Vec<Atom> = hyps
+                .iter()
+                .map(|e| self.facts[e.fact as usize].atom.clone())
+                .collect();
             let (terms, mut env) = self.solver_env();
             let mut s = Solver::new(terms, &mut env);
             let out = s.prove(&atoms, &r.atom);
@@ -486,15 +591,24 @@ impl<'a, 'm> Pass<'a, 'm> {
                     self.cups[c].verdict = Verdict::Proven;
                     self.cup_deps[c] = hyps.iter().map(|e| Dep::Fact(e.fact)).collect();
                     fed[i] = true;
-                    let f = self.new_fact(r.atom.clone(), line, "prove", vec![Dep::Cup(c as CupId)]);
+                    let f =
+                        self.new_fact(r.atom.clone(), line, "prove", vec![Dep::Cup(c as CupId)]);
                     produced.push((i, f));
                 }
                 other => {
                     let hl = self.hyp_list(&hyps);
                     let msg = match other {
                         Outcome::NotImplied(m) => {
-                            let cm: Vec<String> = m.iter().map(|(n, v)| format!("{n}={v}")).collect();
-                            format!("not implied by {hl}: {}", if cm.is_empty() { "no constraint on the inputs".into() } else { cm.join(", ") })
+                            let cm: Vec<String> =
+                                m.iter().map(|(n, v)| format!("{n}={v}")).collect();
+                            format!(
+                                "not implied by {hl}: {}",
+                                if cm.is_empty() {
+                                    "no constraint on the inputs".into()
+                                } else {
+                                    cm.join(", ")
+                                }
+                            )
                         }
                         Outcome::Inexact(s) | Outcome::Cap(s) => format!("{s}; hypotheses {hl}"),
                         Outcome::Valid { .. } => unreachable!(),
@@ -507,7 +621,8 @@ impl<'a, 'm> Pass<'a, 'm> {
         if !lemma_line {
             for p in self.pending.drain(..) {
                 if p.failed.is_none() {
-                    self.line_errors.push((p.line, "prove has nothing to feed".into()));
+                    self.line_errors
+                        .push((p.line, "prove has nothing to feed".into()));
                 }
             }
         }
@@ -574,8 +689,17 @@ impl<'a, 'm> Pass<'a, 'm> {
     fn push(&mut self, t: TermId) {
         self.mark_real(t);
         self.slot_ids.push((self.line, t));
-        if self.dead.is_none() && matches!(self.terms.key(t), Key::Leaf(_) | Key::Load(..) | Key::Float(..) | Key::Call(..)) {
-            self.births.push(Birth { term: t, line: self.line, how: Capture::Top });
+        if self.dead.is_none()
+            && matches!(
+                self.terms.key(t),
+                Key::Leaf(_) | Key::Load(..) | Key::Float(..) | Key::Call(..)
+            )
+        {
+            self.births.push(Birth {
+                term: t,
+                line: self.line,
+                how: Capture::Top,
+            });
         }
         self.stack.push(t);
     }
@@ -603,7 +727,9 @@ impl<'a, 'm> Pass<'a, 'm> {
 
     fn global_index(&self, n: &str) -> Option<usize> {
         let gs = &self.cx.m.globals;
-        gs.iter().position(|g| g.name.as_deref() == Some(n)).or_else(|| n.parse().ok().filter(|i: &usize| *i < gs.len()))
+        gs.iter()
+            .position(|g| g.name.as_deref() == Some(n))
+            .or_else(|| n.parse().ok().filter(|i: &usize| *i < gs.len()))
     }
 
     fn fresh_globals(&mut self, line: u32) {
@@ -615,7 +741,9 @@ impl<'a, 'm> Pass<'a, 'm> {
                 if let Some(r) = g.ty.refine.clone() {
                     let b = self.cur_bind();
                     let a = self.inst_atom(&r, &b, Some(self.globals[i]));
-                    let deps = self.global_groups[i].map(|g| vec![Dep::Group(g)]).unwrap_or_default();
+                    let deps = self.global_groups[i]
+                        .map(|g| vec![Dep::Group(g)])
+                        .unwrap_or_default();
                     self.enter(a, line, "global refinement", deps);
                 }
             }
@@ -642,7 +770,8 @@ impl<'a, 'm> Pass<'a, 'm> {
             }
         }
         let fnames = cx.m.funcs.iter().map(|g| g.name()).collect();
-        let ghost = func.is_lemma() || func.is_axiom() || cx.info[f].is_pred || cx.info[f].is_measure;
+        let ghost =
+            func.is_lemma() || func.is_axiom() || cx.info[f].is_pred || cx.info[f].is_measure;
         let nh = handle_names.len();
         Pass {
             cx,
@@ -723,7 +852,10 @@ impl<'a, 'm> Pass<'a, 'm> {
                     let a = self.inst_atom(e, &bind, None);
                     let fct = self.enter(a, hl, "entry (fact parameter)", vec![]);
                     if p.name.is_some() {
-                        self.handles[hi] = Some(Entry { fact: fct, line: hl });
+                        self.handles[hi] = Some(Entry {
+                            fact: fct,
+                            line: hl,
+                        });
                         hi += 1;
                     }
                 }
@@ -735,11 +867,24 @@ impl<'a, 'm> Pass<'a, 'm> {
             let z = self.terms.konst(*ty, 0);
             self.locals.push(z);
             if let Some(r) = self.loc_ref[i].clone() {
-                let line = func.locals.iter().filter(|l| matches!(l.kind, LocalKind::Val(_))).nth(i - nparams).map(|l| l.line).unwrap_or(hl);
+                let line = func
+                    .locals
+                    .iter()
+                    .filter(|l| matches!(l.kind, LocalKind::Val(_)))
+                    .nth(i - nparams)
+                    .map(|l| l.line)
+                    .unwrap_or(hl);
                 self.line = line;
                 let b = self.cur_bind();
                 let a = self.inst_atom(r.refine.as_ref().unwrap(), &b, Some(z));
-                let ids = self.feed_enter(line, &[CupReq { kind: CupKind::LocalInit, operand: None, atom: a }]);
+                let ids = self.feed_enter(
+                    line,
+                    &[CupReq {
+                        kind: CupKind::LocalInit,
+                        operand: None,
+                        atom: a,
+                    }],
+                );
                 if let Some(g) = self.local_groups[i] {
                     self.groups[g as usize].push(Dep::Cup(ids[0]));
                 }
@@ -749,7 +894,11 @@ impl<'a, 'm> Pass<'a, 'm> {
         for g in &cx.m.globals {
             let t = match (g.mutable, g.init) {
                 (false, Some(b)) => self.terms.konst(g.ty.ty, b),
-                _ => self.terms.leaf(g.ty.ty, g.name.clone().unwrap_or_else(|| "global".into()), None),
+                _ => self.terms.leaf(
+                    g.ty.ty,
+                    g.name.clone().unwrap_or_else(|| "global".into()),
+                    None,
+                ),
             };
             if g.mutable {
                 let gi = self.globals.len() as u32;
@@ -761,12 +910,19 @@ impl<'a, 'm> Pass<'a, 'm> {
             if let Some(r) = g.ty.refine.clone() {
                 let b = self.cur_bind();
                 let a = self.inst_atom(&r, &b, Some(self.globals[i]));
-                let deps = self.global_groups[i].map(|g| vec![Dep::Group(g)]).unwrap_or_default();
+                let deps = self.global_groups[i]
+                    .map(|g| vec![Dep::Group(g)])
+                    .unwrap_or_default();
                 self.enter(a, hl, "global refinement", deps);
             }
         }
         let results: Vec<Refined> = func.value_results().into_iter().cloned().collect();
-        let bt = BlockType { label: None, facts: vec![], params: vec![], results };
+        let bt = BlockType {
+            label: None,
+            facts: vec![],
+            params: vec![],
+            results,
+        };
         self.frames.push(self.frame(FKind::Func, bt, hl));
     }
 
@@ -805,7 +961,10 @@ fn trunc_bounds(name: &str) -> Option<(f64, f64)> {
 impl<'a, 'm> Pass<'a, 'm> {
     fn call_atom_bind(&self, g: usize, args: &[TermId]) -> Bind {
         let func = &self.cx.m.funcs[g];
-        func.value_params().zip(args.iter()).filter_map(|((_, p, _), a)| p.name.clone().map(|n| (n, *a))).collect()
+        func.value_params()
+            .zip(args.iter())
+            .filter_map(|((_, p, _), a)| p.name.clone().map(|n| (n, *a)))
+            .collect()
     }
 
     /// The measure cup of R31 at a recursive call/lemma site with arguments `args`. Never dropped:
@@ -819,17 +978,28 @@ impl<'a, 'm> Pass<'a, 'm> {
                 Atom::Bool { t, neg: false }
             }
         };
-        CupReq { kind: CupKind::Measure, operand: None, atom }
+        CupReq {
+            kind: CupKind::Measure,
+            operand: None,
+            atom,
+        }
     }
 
     fn measure_atom(&mut self, args: &[TermId]) -> Result<Atom, String> {
         let cx = self.cx;
         let name = cx.m.funcs[self.f].name();
-        let mf = cx.info[self.f].measure.ok_or_else(|| format!("{name} is recursive without measure:{}", name.trim_start_matches('$')))?;
+        let mf = cx.info[self.f].measure.ok_or_else(|| {
+            format!(
+                "{name} is recursive without measure:{}",
+                name.trim_start_matches('$')
+            )
+        })?;
         measure_shape(cx.m, self.f, mf)?;
-        let a = call_term(cx.m, &cx.info, &mut self.terms, mf, args, self.eps).ok_or("measure has no result")?;
+        let a = call_term(cx.m, &cx.info, &mut self.terms, mf, args, self.eps)
+            .ok_or("measure has no result")?;
         let entry = self.entry.clone();
-        let b = call_term(cx.m, &cx.info, &mut self.terms, mf, &entry, self.eps).ok_or("measure has no result")?;
+        let b = call_term(cx.m, &cx.info, &mut self.terms, mf, &entry, self.eps)
+            .ok_or("measure has no result")?;
         Ok(Atom::cmp(super::term::Rel::Lt, false, a, b))
     }
 
@@ -842,7 +1012,11 @@ impl<'a, 'm> Pass<'a, 'm> {
             let kc = self.terms.konst(ValTy::I32, k as u64);
             Atom::cmp(super::term::Rel::Le, false, addr, kc)
         };
-        CupReq { kind: CupKind::Bounds, operand: Some(0), atom }
+        CupReq {
+            kind: CupKind::Bounds,
+            operand: Some(0),
+            atom,
+        }
     }
 
     fn do_call(&mut self, line: u32, g: usize) {
@@ -858,17 +1032,27 @@ impl<'a, 'm> Pass<'a, 'm> {
                 Decl::Val(r) => {
                     if let Some(e) = &r.refine {
                         let a = self.inst_atom(e, &bind, Some(args[vi]));
-                        reqs.push(CupReq { kind: CupKind::Refinement { param: pi as u32 }, operand: Some(vi as u8), atom: a });
+                        reqs.push(CupReq {
+                            kind: CupKind::Refinement { param: pi as u32 },
+                            operand: Some(vi as u8),
+                            atom: a,
+                        });
                     }
                     vi += 1;
                 }
                 Decl::Fact(e) => {
                     let a = self.inst_atom(e, &bind, None);
-                    reqs.push(CupReq { kind: CupKind::FactParam { param: pi as u32 }, operand: None, atom: a });
+                    reqs.push(CupReq {
+                        kind: CupKind::FactParam { param: pi as u32 },
+                        operand: None,
+                        atom: a,
+                    });
                 }
             }
         }
-        if g == self.f && (cx.info[g].is_pred || cx.info[g].is_measure || cx.info[g].measure.is_some()) {
+        if g == self.f
+            && (cx.info[g].is_pred || cx.info[g].is_measure || cx.info[g].measure.is_some())
+        {
             reqs.push(self.measure_cup(&args));
         }
         let ids = self.feed_enter(line, &reqs);
@@ -880,7 +1064,8 @@ impl<'a, 'm> Pass<'a, 'm> {
         let results = callee.value_results();
         let r = if let Some(rt) = results.first() {
             let t = if impure {
-                self.terms.leaf(rt.ty, format!("{}(…)@{line}", callee.name()), None)
+                self.terms
+                    .leaf(rt.ty, format!("{}(…)@{line}", callee.name()), None)
             } else {
                 call_term(cx.m, &cx.info, &mut self.terms, g, &args, self.eps).unwrap()
             };
@@ -909,7 +1094,14 @@ impl<'a, 'm> Pass<'a, 'm> {
         if let Some(r) = self.loc_ref[i].clone() {
             let b = self.cur_bind();
             let a = self.inst_atom(r.refine.as_ref().unwrap(), &b, Some(t));
-            let ids = self.feed_enter(line, &[CupReq { kind: CupKind::Refinement { param: i as u32 }, operand: Some(0), atom: a }]);
+            let ids = self.feed_enter(
+                line,
+                &[CupReq {
+                    kind: CupKind::Refinement { param: i as u32 },
+                    operand: Some(0),
+                    atom: a,
+                }],
+            );
             if let Some(g) = self.local_groups[i] {
                 self.groups[g as usize].push(Dep::Cup(ids[0]));
             }
@@ -920,7 +1112,9 @@ impl<'a, 'm> Pass<'a, 'm> {
         if old != t && self.dead.is_none() {
             self.sets.push((i, old, t, line));
             for e in self.lane.clone() {
-                if !self.fray.contains_key(&e.fact) && self.atom_mentions(&self.facts[e.fact as usize].atom, &|_, x| x == old) {
+                if !self.fray.contains_key(&e.fact)
+                    && self.atom_mentions(&self.facts[e.fact as usize].atom, &|_, x| x == old)
+                {
                     self.fray.insert(e.fact, line);
                 }
             }
@@ -928,7 +1122,12 @@ impl<'a, 'm> Pass<'a, 'm> {
         self.locals[i] = t;
     }
 
-    fn mentions(&self, t: TermId, p: &dyn Fn(&Key, TermId) -> bool, seen: &mut Vec<TermId>) -> bool {
+    fn mentions(
+        &self,
+        t: TermId,
+        p: &dyn Fn(&Key, TermId) -> bool,
+        seen: &mut Vec<TermId>,
+    ) -> bool {
         if seen.contains(&t) {
             return false;
         }
@@ -949,7 +1148,9 @@ impl<'a, 'm> Pass<'a, 'm> {
     fn atom_mentions(&self, a: &Atom, p: &dyn Fn(&Key, TermId) -> bool) -> bool {
         let mut seen = vec![];
         match a {
-            Atom::Cmp { a, b, .. } => self.mentions(*a, p, &mut seen) || self.mentions(*b, p, &mut seen),
+            Atom::Cmp { a, b, .. } => {
+                self.mentions(*a, p, &mut seen) || self.mentions(*b, p, &mut seen)
+            }
             Atom::Bool { t, .. } => self.mentions(*t, p, &mut seen),
             Atom::Or(x, y) => self.atom_mentions(x, p) || self.atom_mentions(y, p),
             _ => false,
@@ -963,10 +1164,21 @@ impl<'a, 'm> Pass<'a, 'm> {
             if !self.atom_mentions(goal, &|_, x| x == new) {
                 continue;
             }
-            if let Some(e) = self.lane.iter().rev().find(|e| self.atom_mentions(&self.facts[e.fact as usize].atom, &|_, x| x == old)) {
+            if let Some(e) =
+                self.lane.iter().rev().find(|e| {
+                    self.atom_mentions(&self.facts[e.fact as usize].atom, &|_, x| x == old)
+                })
+            {
                 let f = &self.facts[e.fact as usize];
-                let name = self.locs[i].0.clone().unwrap_or_else(|| format!("local {i}"));
-                return Some(format!("⟨{}⟩ (line {}) is about the old {name} (set at line {line})", self.terms.render_atom(&f.atom), f.line));
+                let name = self.locs[i]
+                    .0
+                    .clone()
+                    .unwrap_or_else(|| format!("local {i}"));
+                return Some(format!(
+                    "⟨{}⟩ (line {}) is about the old {name} (set at line {line})",
+                    self.terms.render_atom(&f.atom),
+                    f.line
+                ));
             }
         }
         None
@@ -984,10 +1196,18 @@ impl<'a, 'm> Pass<'a, 'm> {
                 if k > self.lane.len() {
                     let msg = format!("only {} facts in scope", self.lane.len());
                     self.line_errors.push((line, msg.clone()));
-                    self.pending.push(Pending { line, hyps: vec![], failed: Some(msg) });
+                    self.pending.push(Pending {
+                        line,
+                        hyps: vec![],
+                        failed: Some(msg),
+                    });
                 } else {
                     let hyps: Vec<Entry> = self.lane.iter().rev().take(k).copied().collect();
-                    self.pending.push(Pending { line, hyps, failed: None });
+                    self.pending.push(Pending {
+                        line,
+                        hyps,
+                        failed: None,
+                    });
                 }
             }
             Ins::Lemma(name, args) => self.lemma_line(line, name, args),
@@ -997,28 +1217,46 @@ impl<'a, 'm> Pass<'a, 'm> {
                 let a = self.inst_atom(e, &b, None);
                 self.enter(a, line, "assume", vec![Dep::Assume(line, false)]);
             }
-            Ins::LocalGet(n) | Ins::LocalSet(n) | Ins::LocalTee(n) if self.local_index(n).is_none() => {
+            Ins::LocalGet(n) | Ins::LocalSet(n) | Ins::LocalTee(n)
+                if self.local_index(n).is_none() =>
+            {
                 let Some(h) = self.handle_index(n) else {
                     self.line_errors.push((line, format!("unknown local {n}")));
                     return;
                 };
                 match ins {
                     Ins::LocalGet(_) => match self.handles[h] {
-                        Some(e) if self.lane.iter().any(|x| x.fact == e.fact) => self.lane.push(Entry { fact: e.fact, line }),
-                        Some(e) => self.line_errors.push((line, format!("{n} holds a fact that ended (born at line {})", e.line))),
+                        Some(e) if self.lane.iter().any(|x| x.fact == e.fact) => {
+                            self.lane.push(Entry { fact: e.fact, line })
+                        }
+                        Some(e) => self.line_errors.push((
+                            line,
+                            format!("{n} holds a fact that ended (born at line {})", e.line),
+                        )),
                         None => self.line_errors.push((line, format!("{n} holds no fact"))),
                     },
                     _ => self.handles[h] = self.lane.last().copied(),
                 }
             }
-            Ins::Block(..) | Ins::Else | Ins::End | Ins::Br(_) | Ins::BrIf(_) | Ins::BrTable(_) | Ins::Return => {
-                self.control(pc, line, ins, tab)
-            }
+            Ins::Block(..)
+            | Ins::Else
+            | Ins::End
+            | Ins::Br(_)
+            | Ins::BrIf(_)
+            | Ins::BrTable(_)
+            | Ins::Return => self.control(pc, line, ins, tab),
             Ins::Nop => {
                 self.feed_enter(line, &[]);
             }
             Ins::Unreachable => {
-                self.feed_enter(line, &[CupReq { kind: CupKind::False, operand: None, atom: Atom::False }]);
+                self.feed_enter(
+                    line,
+                    &[CupReq {
+                        kind: CupKind::False,
+                        operand: None,
+                        atom: Atom::False,
+                    }],
+                );
                 self.go_dead(line);
             }
             Ins::Drop => {
@@ -1046,35 +1284,84 @@ impl<'a, 'm> Pass<'a, 'm> {
                 if matches!(op, IOp::DivU | IOp::DivS | IOp::RemU | IOp::RemS) {
                     let z = self.terms.konst(*w, 0);
                     let a = self.terms.mk_eq(args[1], z, false);
-                    reqs.push(CupReq { kind: CupKind::DivByZero, operand: Some(1), atom: a });
+                    reqs.push(CupReq {
+                        kind: CupKind::DivByZero,
+                        operand: Some(1),
+                        atom: a,
+                    });
                     if *op == IOp::DivS {
                         let m1 = self.terms.konst(*w, u64::MAX);
-                        let min = self.terms.konst(*w, if *w == ValTy::I32 { 0x8000_0000 } else { 1 << 63 });
+                        let min = self.terms.konst(
+                            *w,
+                            if *w == ValTy::I32 {
+                                0x8000_0000
+                            } else {
+                                1 << 63
+                            },
+                        );
                         let x = self.terms.mk_eq(args[1], m1, false);
                         let y = self.terms.mk_eq(args[0], min, false);
-                        reqs.push(CupReq { kind: CupKind::DivOverflow, operand: None, atom: Atom::Or(Box::new(x), Box::new(y)) });
+                        reqs.push(CupReq {
+                            kind: CupKind::DivOverflow,
+                            operand: None,
+                            atom: Atom::Or(Box::new(x), Box::new(y)),
+                        });
                     }
                 }
                 self.feed_enter(line, &reqs);
                 let t = self.terms.op(*op, *w, &args);
                 self.push(t);
             }
-            Ins::Float { name, ins: tys, out, trap } => {
+            Ins::Float {
+                name,
+                ins: tys,
+                out,
+                trap,
+            } => {
                 let args = self.popn(tys.len());
                 let mut reqs = vec![];
-                if *trap
-                    && let Some((lo, hi)) = trunc_bounds(name)
-                {
+                if *trap && let Some((lo, hi)) = trunc_bounds(name) {
                     let fty = tys[0];
-                    let bits = |x: f64| if fty == ValTy::F32 { (x as f32).to_bits() as u64 } else { x.to_bits() };
-                    let (l, h) = (self.terms.konst(fty, bits(lo)), self.terms.konst(fty, bits(hi)));
-                    let gt = self.terms.intern(Key::Float(format!("{}.gt", fty.name()), [args[0], l].into_iter().collect()), ValTy::I32);
-                    let lt = self.terms.intern(Key::Float(format!("{}.lt", fty.name()), [args[0], h].into_iter().collect()), ValTy::I32);
-                    reqs.push(CupReq { kind: CupKind::Conversion, operand: Some(0), atom: Atom::Bool { t: gt, neg: false } });
-                    reqs.push(CupReq { kind: CupKind::Conversion, operand: Some(0), atom: Atom::Bool { t: lt, neg: false } });
+                    let bits = |x: f64| {
+                        if fty == ValTy::F32 {
+                            (x as f32).to_bits() as u64
+                        } else {
+                            x.to_bits()
+                        }
+                    };
+                    let (l, h) = (
+                        self.terms.konst(fty, bits(lo)),
+                        self.terms.konst(fty, bits(hi)),
+                    );
+                    let gt = self.terms.intern(
+                        Key::Float(
+                            format!("{}.gt", fty.name()),
+                            [args[0], l].into_iter().collect(),
+                        ),
+                        ValTy::I32,
+                    );
+                    let lt = self.terms.intern(
+                        Key::Float(
+                            format!("{}.lt", fty.name()),
+                            [args[0], h].into_iter().collect(),
+                        ),
+                        ValTy::I32,
+                    );
+                    reqs.push(CupReq {
+                        kind: CupKind::Conversion,
+                        operand: Some(0),
+                        atom: Atom::Bool { t: gt, neg: false },
+                    });
+                    reqs.push(CupReq {
+                        kind: CupKind::Conversion,
+                        operand: Some(0),
+                        atom: Atom::Bool { t: lt, neg: false },
+                    });
                 }
                 self.feed_enter(line, &reqs);
-                let t = self.terms.intern(Key::Float(name.clone(), args.into_iter().collect()), *out);
+                let t = self
+                    .terms
+                    .intern(Key::Float(name.clone(), args.into_iter().collect()), *out);
                 self.push(t);
             }
             Ins::LocalGet(n) => {
@@ -1112,7 +1399,11 @@ impl<'a, 'm> Pass<'a, 'm> {
                 if let Some(e) = self.cx.m.globals[i].ty.refine.clone() {
                     let b = self.cur_bind();
                     let a = self.inst_atom(&e, &b, Some(t));
-                    reqs.push(CupReq { kind: CupKind::Refinement { param: i as u32 }, operand: Some(0), atom: a });
+                    reqs.push(CupReq {
+                        kind: CupKind::Refinement { param: i as u32 },
+                        operand: Some(0),
+                        atom: a,
+                    });
                 }
                 let ids = self.feed_enter(line, &reqs);
                 if let (Some(g), Some(c)) = (self.global_groups[i], ids.first()) {
@@ -1124,7 +1415,10 @@ impl<'a, 'm> Pass<'a, 'm> {
                 let a = self.pop();
                 let req = self.bounds_cup(a, ma.offset, ma.bytes);
                 self.feed_enter(line, &[req]);
-                let t = self.terms.intern(Key::Load(ma.ty, ma.bytes, ma.signed, ma.offset, a, self.eps), ma.ty);
+                let t = self.terms.intern(
+                    Key::Load(ma.ty, ma.bytes, ma.signed, ma.offset, a, self.eps),
+                    ma.ty,
+                );
                 self.push(t);
             }
             Ins::Store(ma) => {
@@ -1135,7 +1429,9 @@ impl<'a, 'm> Pass<'a, 'm> {
                 let old = self.eps;
                 let epoch_of = move |k: &Key, _: TermId| matches!(k, Key::Call(_, _, e) | Key::Load(.., e) if *e == old);
                 for e in self.lane.clone() {
-                    if !self.fray.contains_key(&e.fact) && self.atom_mentions(&self.facts[e.fact as usize].atom, &epoch_of) {
+                    if !self.fray.contains_key(&e.fact)
+                        && self.atom_mentions(&self.facts[e.fact as usize].atom, &epoch_of)
+                    {
                         self.fray.insert(e.fact, line);
                     }
                 }
@@ -1143,16 +1439,27 @@ impl<'a, 'm> Pass<'a, 'm> {
             }
             Ins::MemorySize => {
                 self.feed_enter(line, &[]);
-                let t = self.terms.leaf(ValTy::I32, format!("memory.size@{line}"), None);
+                let t = self
+                    .terms
+                    .leaf(ValTy::I32, format!("memory.size@{line}"), None);
                 self.push(t);
-                let min = self.terms.konst(ValTy::I32, self.cx.mem.unwrap_or(0) / 65536);
-                self.enter(Atom::cmp(super::term::Rel::Le, false, min, t), line, "memory.size", vec![]);
+                let min = self
+                    .terms
+                    .konst(ValTy::I32, self.cx.mem.unwrap_or(0) / 65536);
+                self.enter(
+                    Atom::cmp(super::term::Rel::Le, false, min, t),
+                    line,
+                    "memory.size",
+                    vec![],
+                );
             }
             Ins::MemoryGrow => {
                 self.feed_enter(line, &[]);
                 self.pop();
                 self.eps = self.fresh_eps();
-                let t = self.terms.leaf(ValTy::I32, format!("memory.grow@{line}"), None);
+                let t = self
+                    .terms
+                    .leaf(ValTy::I32, format!("memory.grow@{line}"), None);
                 self.push(t);
             }
             Ins::MemoryFill | Ins::MemoryCopy => {
@@ -1162,10 +1469,19 @@ impl<'a, 'm> Pass<'a, 'm> {
             }
             Ins::Call(name) => match self.cx.m.func_index(name) {
                 Some(g) => self.do_call(line, g),
-                None => self.line_errors.push((line, format!("unknown function {name}"))),
+                None => self
+                    .line_errors
+                    .push((line, format!("unknown function {name}"))),
             },
             Ins::CallIndirect => {
-                self.feed_enter(line, &[CupReq { kind: CupKind::CallIndirect, operand: None, atom: Atom::False }]);
+                self.feed_enter(
+                    line,
+                    &[CupReq {
+                        kind: CupKind::CallIndirect,
+                        operand: None,
+                        atom: Atom::False,
+                    }],
+                );
                 self.pop();
                 self.eps = self.fresh_eps();
                 self.fresh_globals(line);
@@ -1179,17 +1495,22 @@ impl<'a, 'm> Pass<'a, 'm> {
     fn lemma_line(&mut self, line: u32, name: &str, args: &[Expr]) {
         let cx = self.cx;
         let Some(g) = cx.m.func_index(name) else {
-            self.line_errors.push((line, format!("unknown lemma {name}")));
+            self.line_errors
+                .push((line, format!("unknown lemma {name}")));
             return;
         };
         let lf = &cx.m.funcs[g];
         if !lf.is_lemma() && !lf.is_axiom() {
-            self.line_errors.push((line, format!("{name} is not a lemma: export it as \"lemma:…\" or \"axiom:…\"")));
+            self.line_errors.push((
+                line,
+                format!("{name} is not a lemma: export it as \"lemma:…\" or \"axiom:…\""),
+            ));
             return;
         }
         let ptys: Vec<ValTy> = lf.value_params().map(|(_, _, r)| r.ty).collect();
         if ptys.len() != args.len() {
-            self.line_errors.push((line, format!("{name} takes {} arguments", ptys.len())));
+            self.line_errors
+                .push((line, format!("{name} takes {} arguments", ptys.len())));
             return;
         }
         let b = self.cur_bind();
@@ -1208,7 +1529,11 @@ impl<'a, 'm> Pass<'a, 'm> {
         for (pi, p) in lf.header.params.iter().enumerate() {
             if let Decl::Fact(e) = &p.decl {
                 let a = self.inst_atom(e, &bind, None);
-                reqs.push(CupReq { kind: CupKind::FactParam { param: pi as u32 }, operand: None, atom: a });
+                reqs.push(CupReq {
+                    kind: CupKind::FactParam { param: pi as u32 },
+                    operand: None,
+                    atom: a,
+                });
             }
         }
         if g == self.f {
@@ -1230,7 +1555,12 @@ impl<'a, 'm> Pass<'a, 'm> {
         for d in &lf.header.results {
             if let Decl::Fact(e) = d {
                 let a = self.inst_atom(e, &bind, None);
-                self.enter(a, line, if lf.is_axiom() { "axiom" } else { "lemma" }, deps.clone());
+                self.enter(
+                    a,
+                    line,
+                    if lf.is_axiom() { "axiom" } else { "lemma" },
+                    deps.clone(),
+                );
             }
         }
     }
@@ -1238,16 +1568,21 @@ impl<'a, 'm> Pass<'a, 'm> {
     fn unfold_line(&mut self, line: u32, name: &str, args: &[Expr]) {
         let cx = self.cx;
         let Some(g) = cx.m.func_index(name) else {
-            self.line_errors.push((line, format!("unknown predicate {name}")));
+            self.line_errors
+                .push((line, format!("unknown predicate {name}")));
             return;
         };
         if !cx.info[g].self_rec {
-            self.line_errors.push((line, format!("{name} is not recursive; it unfolds automatically")));
+            self.line_errors.push((
+                line,
+                format!("{name} is not recursive; it unfolds automatically"),
+            ));
             return;
         }
         let ptys: Vec<ValTy> = cx.m.funcs[g].value_params().map(|(_, _, r)| r.ty).collect();
         if ptys.len() != args.len() {
-            self.line_errors.push((line, format!("{name} takes {} arguments", ptys.len())));
+            self.line_errors
+                .push((line, format!("{name} takes {} arguments", ptys.len())));
             return;
         }
         let b = self.cur_bind();
@@ -1261,14 +1596,19 @@ impl<'a, 'm> Pass<'a, 'm> {
                 }
             }
         }
-        let Some(call) = call_term(cx.m, &cx.info, &mut self.terms, g, &vals, self.eps) else { return };
+        let Some(call) = call_term(cx.m, &cx.info, &mut self.terms, g, &vals, self.eps) else {
+            return;
+        };
         let ep = self.eps;
         match symex(cx.m, &cx.info, &mut self.terms, g, &vals, ep) {
             Some(body) => {
                 let a = self.terms.mk_eq(call, body, true);
                 self.enter(a, line, "unfold", vec![]);
             }
-            None => self.line_errors.push((line, format!("{name}'s body cannot be unfolded (only straight-line code and if/else)"))),
+            None => self.line_errors.push((
+                line,
+                format!("{name}'s body cannot be unfolded (only straight-line code and if/else)"),
+            )),
         }
     }
 }
@@ -1276,7 +1616,9 @@ impl<'a, 'm> Pass<'a, 'm> {
 impl<'a, 'm> Pass<'a, 'm> {
     fn resolve_label(&self, l: &str) -> Option<usize> {
         if l.starts_with('$') {
-            self.frames.iter().rposition(|f| f.bt.label.as_deref() == Some(l))
+            self.frames
+                .iter()
+                .rposition(|f| f.bt.label.as_deref() == Some(l))
         } else {
             let d: usize = l.parse().ok()?;
             self.frames.len().checked_sub(1 + d)
@@ -1285,12 +1627,20 @@ impl<'a, 'm> Pass<'a, 'm> {
 
     fn arity(&self, fi: usize) -> usize {
         let f = &self.frames[fi];
-        if f.kind == FKind::Loop { f.bt.params.len() } else { f.bt.results.len() }
+        if f.kind == FKind::Loop {
+            f.bt.params.len()
+        } else {
+            f.bt.results.len()
+        }
     }
 
     /// Cups an edge to frame `fi` carries, given the branch values. Returns the requests and, for
     /// block/if targets, which request belongs to each declared fact and each result.
-    fn edge_reqs(&mut self, fi: usize, values: &[TermId]) -> (Vec<CupReq>, Vec<usize>, Vec<Option<usize>>) {
+    fn edge_reqs(
+        &mut self,
+        fi: usize,
+        values: &[TermId],
+    ) -> (Vec<CupReq>, Vec<usize>, Vec<Option<usize>>) {
         let kind = self.frames[fi].kind;
         let bt = self.frames[fi].bt.clone();
         let mut reqs = vec![];
@@ -1305,13 +1655,21 @@ impl<'a, 'm> Pass<'a, 'm> {
                     Decl::Val(r) => {
                         if let (Some(e), Some(v)) = (&r.refine, values.get(vi)) {
                             let a = self.inst_atom(e, &b, Some(*v));
-                            reqs.push(CupReq { kind: CupKind::ResultRefinement, operand: Some(vi as u8), atom: a });
+                            reqs.push(CupReq {
+                                kind: CupKind::ResultRefinement,
+                                operand: Some(vi as u8),
+                                atom: a,
+                            });
                         }
                         vi += 1;
                     }
                     Decl::Fact(e) => {
                         let a = self.inst_atom(e, &b, None);
-                        reqs.push(CupReq { kind: CupKind::ResultRefinement, operand: None, atom: a });
+                        reqs.push(CupReq {
+                            kind: CupKind::ResultRefinement,
+                            operand: None,
+                            atom: a,
+                        });
                     }
                 }
             }
@@ -1325,15 +1683,27 @@ impl<'a, 'm> Pass<'a, 'm> {
         for e in &bt.facts {
             let a = self.inst_atom(e, &b, None);
             fact_ix.push(reqs.len());
-            reqs.push(CupReq { kind: ck, operand: None, atom: a });
+            reqs.push(CupReq {
+                kind: ck,
+                operand: None,
+                atom: a,
+            });
         }
-        let typs = if kind == FKind::Loop { &bt.params } else { &bt.results };
+        let typs = if kind == FKind::Loop {
+            &bt.params
+        } else {
+            &bt.results
+        };
         for (j, r) in typs.iter().enumerate() {
             match (&r.refine, values.get(j)) {
                 (Some(e), Some(v)) => {
                     let a = self.inst_atom(e, &b, Some(*v));
                     res_ix.push(Some(reqs.len()));
-                    reqs.push(CupReq { kind: ck, operand: Some(j as u8), atom: a });
+                    reqs.push(CupReq {
+                        kind: ck,
+                        operand: Some(j as u8),
+                        atom: a,
+                    });
                 }
                 _ => res_ix.push(None),
             }
@@ -1419,14 +1789,23 @@ impl<'a, 'm> Pass<'a, 'm> {
             }
             return;
         }
-        let same = |xs: Vec<TermId>| -> Option<TermId> { if xs.iter().all(|x| *x == xs[0]) { Some(xs[0]) } else { None } };
+        let same = |xs: Vec<TermId>| -> Option<TermId> {
+            if xs.iter().all(|x| *x == xs[0]) {
+                Some(xs[0])
+            } else {
+                None
+            }
+        };
         // R8: locals, globals, epoch, results
         let mut phis: Vec<usize> = vec![];
         for i in 0..self.locals.len() {
             match same(edges.iter().map(|e| e.locals[i]).collect()) {
                 Some(t) => self.locals[i] = t,
                 None => {
-                    let name = self.locs[i].0.clone().unwrap_or_else(|| format!("local {i}"));
+                    let name = self.locs[i]
+                        .0
+                        .clone()
+                        .unwrap_or_else(|| format!("local {i}"));
                     self.locals[i] = self.terms.leaf(self.locs[i].1, name, None);
                     self.birth(self.locals[i], line, Capture::Local(i as u32));
                     phis.push(i);
@@ -1439,7 +1818,11 @@ impl<'a, 'm> Pass<'a, 'm> {
                 Some(t) => self.globals[i] = t,
                 None => {
                     let g = &self.cx.m.globals[i];
-                    self.globals[i] = self.terms.leaf(g.ty.ty, g.name.clone().unwrap_or_else(|| "global".into()), None);
+                    self.globals[i] = self.terms.leaf(
+                        g.ty.ty,
+                        g.name.clone().unwrap_or_else(|| "global".into()),
+                        None,
+                    );
                     self.birth(self.globals[i], line, Capture::Global(i as u32));
                     gphis.push(i);
                 }
@@ -1469,12 +1852,18 @@ impl<'a, 'm> Pass<'a, 'm> {
         for e in &edges[0].lane {
             let atom = self.facts[e.fact as usize].atom.clone();
             let mut matched = vec![e.fact];
-            let ok = edges[1..].iter().all(|ed| match ed.lane.iter().find(|x| self.facts[x.fact as usize].atom == atom) {
-                Some(x) => {
-                    matched.push(x.fact);
-                    true
+            let ok = edges[1..].iter().all(|ed| {
+                match ed
+                    .lane
+                    .iter()
+                    .find(|x| self.facts[x.fact as usize].atom == atom)
+                {
+                    Some(x) => {
+                        matched.push(x.fact);
+                        true
+                    }
+                    None => false,
                 }
-                None => false,
             });
             if !ok {
                 continue;
@@ -1483,7 +1872,12 @@ impl<'a, 'm> Pass<'a, 'm> {
                 self.lane.push(*e);
             } else {
                 let ol = self.facts[e.fact as usize].line;
-                let f = self.new_fact(atom, ol, "join", matched.into_iter().map(Dep::Fact).collect());
+                let f = self.new_fact(
+                    atom,
+                    ol,
+                    "join",
+                    matched.into_iter().map(Dep::Fact).collect(),
+                );
                 self.lane.push(Entry { fact: f, line: ol });
             }
         }
@@ -1495,7 +1889,10 @@ impl<'a, 'm> Pass<'a, 'm> {
             }
         }
         for i in gphis {
-            if let (Some(r), Some(g)) = (self.cx.m.globals[i].ty.refine.clone(), self.global_groups[i]) {
+            if let (Some(r), Some(g)) = (
+                self.cx.m.globals[i].ty.refine.clone(),
+                self.global_groups[i],
+            ) {
                 let b = self.cur_bind();
                 let a = self.inst_atom(&r, &b, Some(self.globals[i]));
                 self.enter(a, line, "refined global at join (R8)", vec![Dep::Group(g)]);
@@ -1510,7 +1907,10 @@ impl<'a, 'm> Pass<'a, 'm> {
         for (j, r) in fr.bt.results.iter().enumerate() {
             if let Some(e) = &r.refine {
                 let a = self.inst_atom(e, &b, Some(values[j]));
-                let deps = edges.iter().filter_map(|ed| ed.result_cups[j].map(Dep::Cup)).collect();
+                let deps = edges
+                    .iter()
+                    .filter_map(|ed| ed.result_cups[j].map(Dep::Cup))
+                    .collect();
                 self.enter(a, line, "block result at join", deps);
             }
         }
@@ -1557,13 +1957,18 @@ impl<'a, 'm> Pass<'a, 'm> {
                         let fi = self.frames.len() - 1;
                         // loop results: refinement cups on the fall-through (no join)
                         let n = fr.bt.results.len();
-                        let values: Vec<TermId> = self.stack[self.stack.len().saturating_sub(n)..].to_vec();
+                        let values: Vec<TermId> =
+                            self.stack[self.stack.len().saturating_sub(n)..].to_vec();
                         let b = self.cur_bind();
                         let mut reqs = vec![];
                         for (j, r) in self.frames[fi].bt.results.clone().iter().enumerate() {
                             if let (Some(e), Some(v)) = (&r.refine, values.get(j)) {
                                 let a = self.inst_atom(e, &b, Some(*v));
-                                reqs.push(CupReq { kind: CupKind::BlockFact { label: fi as u32 }, operand: Some(j as u8), atom: a });
+                                reqs.push(CupReq {
+                                    kind: CupKind::BlockFact { label: fi as u32 },
+                                    operand: Some(j as u8),
+                                    atom: a,
+                                });
                             }
                         }
                         self.feed_enter(line, &reqs);
@@ -1600,7 +2005,8 @@ impl<'a, 'm> Pass<'a, 'm> {
             Ins::BrTable(ls) => {
                 let i = self.pop();
                 if ls.is_empty() {
-                    self.line_errors.push((line, "br_table needs at least one label".into()));
+                    self.line_errors
+                        .push((line, "br_table needs at least one label".into()));
                     self.go_dead(line);
                     return;
                 }
@@ -1636,14 +2042,22 @@ impl<'a, 'm> Pass<'a, 'm> {
         let mut reqs = vec![];
         for e in &bt.facts {
             let a = self.inst_atom(e, &b, None);
-            reqs.push(CupReq { kind: CupKind::LoopEntry, operand: None, atom: a });
+            reqs.push(CupReq {
+                kind: CupKind::LoopEntry,
+                operand: None,
+                atom: a,
+            });
         }
         let np = bt.params.len();
         let params: Vec<TermId> = self.stack[self.stack.len().saturating_sub(np)..].to_vec();
         for (j, r) in bt.params.iter().enumerate() {
             if let (Some(e), Some(v)) = (&r.refine, params.get(j)) {
                 let a = self.inst_atom(e, &b, Some(*v));
-                reqs.push(CupReq { kind: CupKind::LoopEntry, operand: Some(j as u8), atom: a });
+                reqs.push(CupReq {
+                    kind: CupKind::LoopEntry,
+                    operand: Some(j as u8),
+                    atom: a,
+                });
             }
         }
         let ids = self.feed_enter(line, &reqs);
@@ -1673,7 +2087,11 @@ impl<'a, 'm> Pass<'a, 'm> {
                     }
                 }
                 Ins::GlobalSet(n) => set_globals.extend(self.global_index(n)),
-                Ins::Store(_) | Ins::MemoryFill | Ins::MemoryCopy | Ins::MemoryGrow | Ins::CallIndirect => bumps = true,
+                Ins::Store(_)
+                | Ins::MemoryFill
+                | Ins::MemoryCopy
+                | Ins::MemoryGrow
+                | Ins::CallIndirect => bumps = true,
                 Ins::Call(c) => {
                     if let Some(g) = self.cx.m.func_index(c)
                         && self.cx.info[g].impure.is_some()
@@ -1686,7 +2104,9 @@ impl<'a, 'm> Pass<'a, 'm> {
             }
         }
         if impure_call {
-            set_globals = (0..self.globals.len()).filter(|i| self.cx.m.globals[*i].mutable).collect();
+            set_globals = (0..self.globals.len())
+                .filter(|i| self.cx.m.globals[*i].mutable)
+                .collect();
         }
         self.frames.push(fr);
         // φ for the loop parameters
@@ -1705,23 +2125,40 @@ impl<'a, 'm> Pass<'a, 'm> {
             let _ = j;
         }
         for i in set_locals {
-            let name = self.locs[i].0.clone().unwrap_or_else(|| format!("local {i}"));
+            let name = self.locs[i]
+                .0
+                .clone()
+                .unwrap_or_else(|| format!("local {i}"));
             self.locals[i] = self.terms.leaf(self.locs[i].1, name, None);
             self.birth(self.locals[i], line, Capture::Local(i as u32));
             if let (Some(r), Some(g)) = (self.loc_ref[i].clone(), self.local_groups[i]) {
                 let b = self.cur_bind();
                 let a = self.inst_atom(r.refine.as_ref().unwrap(), &b, Some(self.locals[i]));
-                self.enter(a, line, "refined local at loop head (R8)", vec![Dep::Group(g)]);
+                self.enter(
+                    a,
+                    line,
+                    "refined local at loop head (R8)",
+                    vec![Dep::Group(g)],
+                );
             }
         }
         for i in set_globals {
             let gl = &self.cx.m.globals[i];
-            self.globals[i] = self.terms.leaf(gl.ty.ty, gl.name.clone().unwrap_or_else(|| "global".into()), None);
+            self.globals[i] = self.terms.leaf(
+                gl.ty.ty,
+                gl.name.clone().unwrap_or_else(|| "global".into()),
+                None,
+            );
             self.birth(self.globals[i], line, Capture::Global(i as u32));
             if let (Some(r), Some(g)) = (gl.ty.refine.clone(), self.global_groups[i]) {
                 let b = self.cur_bind();
                 let a = self.inst_atom(&r, &b, Some(self.globals[i]));
-                self.enter(a, line, "refined global at loop head (R8)", vec![Dep::Group(g)]);
+                self.enter(
+                    a,
+                    line,
+                    "refined global at loop head (R8)",
+                    vec![Dep::Group(g)],
+                );
             }
         }
         if bumps {
@@ -1743,7 +2180,8 @@ impl<'a, 'm> Pass<'a, 'm> {
         let func = &cx.m.funcs[self.f];
         if func.is_axiom() {
             if !func.body.is_empty() {
-                self.line_errors.push((func.header_line, "an axiom has an empty body".into()));
+                self.line_errors
+                    .push((func.header_line, "an axiom has an empty body".into()));
             }
             return;
         }
@@ -1756,7 +2194,10 @@ impl<'a, 'm> Pass<'a, 'm> {
         let line = func.end_line;
         self.line = line;
         while self.frames.len() > 1 {
-            self.line_errors.push((self.frames.last().unwrap().line, "block is not closed with end".into()));
+            self.line_errors.push((
+                self.frames.last().unwrap().line,
+                "block is not closed with end".into(),
+            ));
             self.frames.pop();
         }
         self.branch(line, 0, None);
@@ -1775,18 +2216,29 @@ impl<'a, 'm> Pass<'a, 'm> {
         }
         let what = if i.is_pred { "predicate" } else { "measure" };
         if let Some((l, why)) = &i.impure {
-            self.line_errors.push((hl, format!("{what} {name} must be pure: line {l} {why}")));
+            self.line_errors
+                .push((hl, format!("{what} {name} must be pure: line {l} {why}")));
         }
         if let Some(l) = i.has_loop {
-            self.line_errors.push((hl, format!("{what} {name} has a loop (line {l})")));
+            self.line_errors
+                .push((hl, format!("{what} {name} has a loop (line {l})")));
         }
         if i.is_pred {
             let rs = func.value_results();
             if rs.len() != 1 || rs[0].ty != ValTy::I32 {
-                self.line_errors.push((hl, format!("predicate {name} must return one i32")));
+                self.line_errors
+                    .push((hl, format!("predicate {name} must return one i32")));
             }
-            if func.header.params.iter().any(|p| !matches!(&p.decl, Decl::Val(r) if r.refine.is_none())) {
-                self.line_errors.push((hl, format!("predicate {name} may not have refined or fact parameters")));
+            if func
+                .header
+                .params
+                .iter()
+                .any(|p| !matches!(&p.decl, Decl::Val(r) if r.refine.is_none()))
+            {
+                self.line_errors.push((
+                    hl,
+                    format!("predicate {name} may not have refined or fact parameters"),
+                ));
             }
             if let Some(g) = i.mutual_rec {
                 self.line_errors.push((hl, format!("predicate {name} is recursive through {} (only direct self-recursion with a measure is allowed)", cx.m.funcs[g].name())));
@@ -1797,10 +2249,17 @@ impl<'a, 'm> Pass<'a, 'm> {
                 self.line_errors.push((hl, e));
             }
             if i.self_rec && i.measure.is_none() {
-                self.line_errors.push((hl, format!("predicate {name} is recursive without measure:{}", name.trim_start_matches('$'))));
+                self.line_errors.push((
+                    hl,
+                    format!(
+                        "predicate {name} is recursive without measure:{}",
+                        name.trim_start_matches('$')
+                    ),
+                ));
             }
         } else if i.self_rec {
-            self.line_errors.push((hl, format!("measure {name} may not be recursive")));
+            self.line_errors
+                .push((hl, format!("measure {name} may not be recursive")));
         }
     }
 
@@ -1859,7 +2318,13 @@ impl<'a, 'm> Pass<'a, 'm> {
             let (checks, assumes) = self.closure(&self.cup_deps[c].clone());
             let cup = &mut self.cups[c];
             cup.depends_on_checks = checks.into_iter().collect();
-            cup.assumptions = assumes.iter().map(|(l, ax)| Origin { line: *l, kind: if *ax { "axiom" } else { "assume" } }).collect();
+            cup.assumptions = assumes
+                .iter()
+                .map(|(l, ax)| Origin {
+                    line: *l,
+                    kind: if *ax { "axiom" } else { "assume" },
+                })
+                .collect();
             if !assumes.is_empty() && cup.verdict == Verdict::Proven {
                 cup.verdict = Verdict::Assumed;
             }
@@ -1871,7 +2336,10 @@ impl<'a, 'm> Pass<'a, 'm> {
                     && c.depends_on_checks.is_empty()
                     && c.assumptions.iter().all(|o| o.kind == "axiom")
             });
-        let mut deps: Vec<Dep> = all_assumes.into_iter().map(|(l, ax)| Dep::Assume(l, ax)).collect();
+        let mut deps: Vec<Dep> = all_assumes
+            .into_iter()
+            .map(|(l, ax)| Dep::Assume(l, ax))
+            .collect();
         if unproven {
             deps.push(Dep::Assume(func.header_line, false));
         }
@@ -1879,7 +2347,12 @@ impl<'a, 'm> Pass<'a, 'm> {
             .facts
             .iter()
             .enumerate()
-            .map(|(i, f)| super::out::ChipOut { line: f.line, text: self.terms.render_atom(&f.atom), origin: f.kind, frayed_at: self.fray.get(&(i as FactId)).copied() })
+            .map(|(i, f)| super::out::ChipOut {
+                line: f.line,
+                text: self.terms.render_atom(&f.atom),
+                origin: f.kind,
+                frayed_at: self.fray.get(&(i as FactId)).copied(),
+            })
             .collect();
         let out = FuncOut {
             name: func.name(),
@@ -1904,7 +2377,13 @@ impl<'a, 'm> Pass<'a, 'm> {
 pub fn check_module(m: &Module, gradual: bool) -> super::out::ModuleOut {
     let info = super::info::analyze(m);
     let mem = m.memory_min.map(|p| p.saturating_mul(65536).min(1 << 32));
-    let mut cx = ModCtx { m, info, mem, lemma_assumes: HashMap::new(), gradual };
+    let mut cx = ModCtx {
+        m,
+        info,
+        mem,
+        lemma_assumes: HashMap::new(),
+        gradual,
+    };
     // lemma order: callees first (depth-first over lemma lines)
     let mut order: Vec<usize> = vec![];
     fn visit(m: &Module, f: usize, seen: &mut Vec<bool>, order: &mut Vec<usize>) {
@@ -1926,9 +2405,17 @@ pub fn check_module(m: &Module, gradual: bool) -> super::out::ModuleOut {
             visit(m, f, &mut seen, &mut order);
         }
     }
-    let lemmas: Vec<usize> = order.iter().copied().filter(|f| m.funcs[*f].is_lemma() || m.funcs[*f].is_axiom()).collect();
+    let lemmas: Vec<usize> = order
+        .iter()
+        .copied()
+        .filter(|f| m.funcs[*f].is_lemma() || m.funcs[*f].is_axiom())
+        .collect();
     let mut outs: Vec<Option<super::out::FuncOut>> = vec![None; m.funcs.len()];
-    for f in lemmas.iter().copied().chain((0..m.funcs.len()).filter(|f| !lemmas.contains(f))) {
+    for f in lemmas
+        .iter()
+        .copied()
+        .chain((0..m.funcs.len()).filter(|f| !lemmas.contains(f)))
+    {
         if m.funcs[f].imported {
             continue;
         }
@@ -1941,7 +2428,10 @@ pub fn check_module(m: &Module, gradual: bool) -> super::out::ModuleOut {
         outs[f] = Some(out);
     }
     // VERIFIED: strict-clean and every callee verified (greatest fixed point)
-    let mut ver: Vec<bool> = outs.iter().map(|o| o.as_ref().is_some_and(|o| o.strict_clean)).collect();
+    let mut ver: Vec<bool> = outs
+        .iter()
+        .map(|o| o.as_ref().is_some_and(|o| o.strict_clean))
+        .collect();
     loop {
         let mut changed = false;
         for f in 0..m.funcs.len() {
@@ -1953,7 +2443,10 @@ pub fn check_module(m: &Module, gradual: bool) -> super::out::ModuleOut {
                 _ => None,
             });
             let uses = cx.info[f].uses.iter().copied();
-            let ok = callees.into_iter().chain(uses).all(|g| ver[g] || m.funcs[g].is_axiom());
+            let ok = callees
+                .into_iter()
+                .chain(uses)
+                .all(|g| ver[g] || m.funcs[g].is_axiom());
             if !ok {
                 ver[f] = false;
                 changed = true;
@@ -1964,7 +2457,10 @@ pub fn check_module(m: &Module, gradual: bool) -> super::out::ModuleOut {
         }
     }
     let _ = cx.gradual;
-    let mut res = super::out::ModuleOut { funcs: vec![], errors: m.errors.clone() };
+    let mut res = super::out::ModuleOut {
+        funcs: vec![],
+        errors: m.errors.clone(),
+    };
     for (f, o) in outs.into_iter().enumerate() {
         if let Some(mut o) = o {
             o.verified = ver[f];
@@ -1981,10 +2477,17 @@ pub fn measure_shape(m: &Module, f: usize, mf: usize) -> Result<(), String> {
     let p2: Vec<ValTy> = meas.value_params().map(|(_, _, r)| r.ty).collect();
     let rs = meas.value_results();
     if p1 != p2 || meas.header.params.len() != p2.len() {
-        return Err(format!("measure {} must have the value parameters of {}", meas.name(), func.name()));
+        return Err(format!(
+            "measure {} must have the value parameters of {}",
+            meas.name(),
+            func.name()
+        ));
     }
     if rs.len() != 1 || !rs[0].ty.is_int() || meas.header.results.len() != 1 {
-        return Err(format!("measure {} must return exactly one i32 or i64", meas.name()));
+        return Err(format!(
+            "measure {} must return exactly one i32 or i64",
+            meas.name()
+        ));
     }
     Ok(())
 }

@@ -12,7 +12,9 @@ use crate::{
         set_selection_range,
     },
     symbolic::{LineSymbols, parse_line_symbols},
-    syntax::{FuncPart, InstrKind, LineAnnotation, LineKind, ModulePart, SyntheticWasm, parse_line_spec},
+    syntax::{
+        FuncPart, InstrKind, LineAnnotation, LineKind, ModulePart, SyntheticWasm, parse_line_spec,
+    },
     utils::{AnimationRequest, Tween, find_comment},
 };
 use anyhow::{Result, bail};
@@ -506,7 +508,11 @@ impl CodeLine {
         let (kind, annotation) = parse_line_spec(self.instr().get());
         self.info.kind = kind;
         self.info.erased = annotation.map(|LineAnnotation::Erased(e)| e);
-        let text = self.info.erased.clone().unwrap_or_else(|| self.instr().get().to_string());
+        let text = self
+            .info
+            .erased
+            .clone()
+            .unwrap_or_else(|| self.instr().get().to_string());
         self.info.symbols = parse_line_symbols(&text, &self.info.kind);
         self.conform();
         Ok(ws_bytes)
@@ -518,7 +524,9 @@ impl CodeLine {
         if self.info.erased == erased {
             return;
         }
-        let text = erased.clone().unwrap_or_else(|| self.instr().get().to_string());
+        let text = erased
+            .clone()
+            .unwrap_or_else(|| self.instr().get().to_string());
         self.info.erased = erased;
         self.info.kind = crate::syntax::parse_line_spec(&text).0;
         self.info.symbols = parse_line_symbols(&text, &self.info.kind);

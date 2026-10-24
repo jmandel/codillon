@@ -55,7 +55,14 @@ fn deleted_group(t: &Toks, lo: usize, hi: usize) -> bool {
 
 /// Erase tokens lo..hi of `code`, copying the text between tokens verbatim. Returns the text and
 /// the source position reached.
-fn erase_toks(code: &str, t: &Toks, lo: usize, hi: usize, mut pos: usize, out: &mut String) -> usize {
+fn erase_toks(
+    code: &str,
+    t: &Toks,
+    lo: usize,
+    hi: usize,
+    mut pos: usize,
+    out: &mut String,
+) -> usize {
     let mut i = lo;
     while i < hi {
         let (tok, span) = &t[i];
@@ -97,7 +104,9 @@ fn erase_toks(code: &str, t: &Toks, lo: usize, hi: usize, mut pos: usize, out: &
 
 /// Delete `(fact …)`, `(param $x (fact …))`, `(result (fact …))`; turn `(T | …)` into `T`.
 pub fn erase_groups(code: &str) -> String {
-    let Ok(t) = tokenize_spans(code) else { return code.to_string() };
+    let Ok(t) = tokenize_spans(code) else {
+        return code.to_string();
+    };
     let mut out = String::new();
     let pos = erase_toks(code, &t, 0, t.len(), 0, &mut out);
     out.push_str(&code[pos..]);
@@ -113,18 +122,32 @@ fn tidy(s: &str) -> String {
 }
 
 fn with_comment(code: String, comment: &str) -> String {
-    if comment.is_empty() { code } else { format!("{code} {comment}") }
+    if comment.is_empty() {
+        code
+    } else {
+        format!("{code} {comment}")
+    }
 }
 
 /// Is this line a proof instruction by itself (no context needed)?
 pub fn is_proof_op(stripped: &str) -> bool {
-    stripped.split_whitespace().next().is_some_and(|t| PROOF_OPS.contains(&t))
+    stripped
+        .split_whitespace()
+        .next()
+        .is_some_and(|t| PROOF_OPS.contains(&t))
 }
 
 /// Names of the fact parameters declared on a function header line.
 pub fn fact_params(code: &str) -> Vec<String> {
-    let Ok(r) = read_line(code) else { return vec![] };
-    let items: Vec<&S> = r.open.iter().flatten().chain(r.items.iter().flat_map(|x| x.list().unwrap_or(&[]))).collect();
+    let Ok(r) = read_line(code) else {
+        return vec![];
+    };
+    let items: Vec<&S> = r
+        .open
+        .iter()
+        .flatten()
+        .chain(r.items.iter().flat_map(|x| x.list().unwrap_or(&[])))
+        .collect();
     items
         .into_iter()
         .filter(|x| x.head() == Some("param"))
@@ -207,6 +230,14 @@ pub fn erase_text(text: &str) -> String {
     s
 }
 
+/// Context-free erasure of one line, as if it stood in an ordinary function body (comment
+/// dropped). Lines whose erasure depends on context (lemma bodies, fact-handle get/set/tee) are
+/// corrected by a whole-document pass ([`erase_lines`]).
+pub fn erase_line(line: &str) -> String {
+    let e = erase_lines(&["(func", line]);
+    split_comment(&e[1]).0.trim_end().to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -222,15 +253,10 @@ mod tests {
     #[test]
     fn shared_tokenizer_cases() {
         assert_eq!(erase_groups("(param $x (i32| $p))"), "(param $x i32)");
-        assert_eq!(erase_groups("(func $f (export \"a;;(b\") (param $x (i32 | $p))"), "(func $f (export \"a;;(b\") (param $x i32)");
+        assert_eq!(
+            erase_groups("(func $f (export \"a;;(b\") (param $x (i32 | $p))"),
+            "(func $f (export \"a;;(b\") (param $x i32)"
+        );
         assert_eq!(split_comment("(export \"a;;b\") ;; c").1, ";; c");
     }
-}
-
-/// Context-free erasure of one line, as if it stood in an ordinary function body (comment
-/// dropped). Lines whose erasure depends on context (lemma bodies, fact-handle get/set/tee) are
-/// corrected by a whole-document pass ([`erase_lines`]).
-pub fn erase_line(line: &str) -> String {
-    let e = erase_lines(&["(func", line]);
-    split_comment(&e[1]).0.trim_end().to_string()
 }

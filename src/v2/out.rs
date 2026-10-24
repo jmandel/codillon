@@ -31,13 +31,19 @@ pub enum CupKind {
     DivByZero,
     DivOverflow,
     /// R13 call argument (param index), R7 local.set/tee (local index), R9 global.set (global index)
-    Refinement { param: u32 },
+    Refinement {
+        param: u32,
+    },
     ResultRefinement,
     /// R16/R18 exit fact (br or end); `label` is the frame depth from the function frame
-    BlockFact { label: u32 },
+    BlockFact {
+        label: u32,
+    },
     LoopEntry,
     BackEdge,
-    FactParam { param: u32 },
+    FactParam {
+        param: u32,
+    },
     Measure,
     False,
     Conversion,
@@ -71,11 +77,23 @@ pub type WrapNote = String;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Feed {
-    Lookup { fact: FactId, origin_line: u32 },
+    Lookup {
+        fact: FactId,
+        origin_line: u32,
+    },
     /// `hyp_lines`: the lane-entry line of each hypothesis (top of lane first), parallel to `hyps`
-    Prove { prove_line: u32, hyps: SmallVec<[FactId; 8]>, hyp_lines: SmallVec<[u32; 8]>, wraps_removed: SmallVec<[WrapNote; 4]> },
-    Eval { steps: u32 },
-    DeadCode { ended_at: u32 },
+    Prove {
+        prove_line: u32,
+        hyps: SmallVec<[FactId; 8]>,
+        hyp_lines: SmallVec<[u32; 8]>,
+        wraps_removed: SmallVec<[WrapNote; 4]>,
+    },
+    Eval {
+        steps: u32,
+    },
+    DeadCode {
+        ended_at: u32,
+    },
     Unfed,
 }
 
@@ -93,8 +111,14 @@ impl Feed {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Witness {
-    Eval { value: i64 },
-    Run { func: FuncIdx, args: Vec<u64>, step: u32 },
+    Eval {
+        value: i64,
+    },
+    Run {
+        func: FuncIdx,
+        args: Vec<u64>,
+        step: u32,
+    },
 }
 
 /// Where a fact came from: a line and what kind of rule produced it.
@@ -194,6 +218,8 @@ impl ModuleOut {
     }
     /// The function containing a 1-based line.
     pub fn func_at(&self, line: u32) -> Option<&FuncOut> {
-        self.funcs.iter().find(|f| f.header_line <= line && line <= f.end_line)
+        self.funcs
+            .iter()
+            .find(|f| f.header_line <= line && line <= f.end_line)
     }
 }

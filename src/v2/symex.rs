@@ -12,7 +12,14 @@ struct St {
     locals: Vec<TermId>,
 }
 
-pub fn call_term(m: &Module, info: &[FnInfo], terms: &mut Terms, g: usize, args: &[TermId], epoch: u32) -> Option<TermId> {
+pub fn call_term(
+    m: &Module,
+    info: &[FnInfo],
+    terms: &mut Terms,
+    g: usize,
+    args: &[TermId],
+    epoch: u32,
+) -> Option<TermId> {
     let ty = *m.funcs[g].value_results().first().map(|r| &r.ty)?;
     let ep = if info[g].reads_mem { epoch } else { NO_EPOCH };
     Some(terms.intern(Key::Call(g as u32, args.iter().copied().collect(), ep), ty))
@@ -20,7 +27,14 @@ pub fn call_term(m: &Module, info: &[FnInfo], terms: &mut Terms, g: usize, args:
 
 /// The result term of `f(args)` evaluated symbolically in memory epoch `epoch`; None if the body
 /// has a shape the unfolder does not handle (loops, branches other than `if`, …).
-pub fn symex(m: &Module, info: &[FnInfo], terms: &mut Terms, f: usize, args: &[TermId], epoch: u32) -> Option<TermId> {
+pub fn symex(
+    m: &Module,
+    info: &[FnInfo],
+    terms: &mut Terms,
+    f: usize,
+    args: &[TermId],
+    epoch: u32,
+) -> Option<TermId> {
     let func = &m.funcs[f];
     if func.imported || info[f].impure.is_some() || info[f].has_loop.is_some() {
         return None;
@@ -34,8 +48,22 @@ pub fn symex(m: &Module, info: &[FnInfo], terms: &mut Terms, f: usize, args: &[T
         });
     }
     let tab = block_table(&func.body);
-    let mut st = St { stack: vec![], locals };
-    exec(m, info, terms, f, &locs, &tab, 0, func.body.len(), &mut st, epoch)?;
+    let mut st = St {
+        stack: vec![],
+        locals,
+    };
+    exec(
+        m,
+        info,
+        terms,
+        f,
+        &locs,
+        &tab,
+        0,
+        func.body.len(),
+        &mut st,
+        epoch,
+    )?;
     st.stack.last().copied()
 }
 
@@ -61,13 +89,18 @@ fn exec(
                 st.stack.pop()?;
             }
             Ins::Const(ty, b) => st.stack.push(terms.konst(*ty, *b)),
-            Ins::LocalGet(n) => match resolve_local(locs, n) {
-                Some(i) => st.stack.push(st.locals[i]),
-                None => {}
-            },
+            Ins::LocalGet(n) => {
+                if let Some(i) = resolve_local(locs, n) {
+                    st.stack.push(st.locals[i]);
+                }
+            }
             Ins::LocalSet(n) | Ins::LocalTee(n) => {
                 if let Some(i) = resolve_local(locs, n) {
-                    let v = if matches!(body[pc].1, Ins::LocalSet(_)) { st.stack.pop()? } else { *st.stack.last()? };
+                    let v = if matches!(body[pc].1, Ins::LocalSet(_)) {
+                        st.stack.pop()?
+                    } else {
+                        *st.stack.last()?
+                    };
                     st.locals[i] = v;
                 }
             }
@@ -79,9 +112,15 @@ fn exec(
                 let a = st.stack.split_off(st.stack.len() - n);
                 st.stack.push(terms.op(*op, *w, &a));
             }
-            Ins::Float { name, ins, out, trap: false } => {
+            Ins::Float {
+                name,
+                ins,
+                out,
+                trap: false,
+            } => {
                 let a = st.stack.split_off(st.stack.len().checked_sub(ins.len())?);
-                st.stack.push(terms.intern(Key::Float(name.clone(), a.into_iter().collect()), *out));
+                st.stack
+                    .push(terms.intern(Key::Float(name.clone(), a.into_iter().collect()), *out));
             }
             Ins::Select => {
                 let c = st.stack.pop()?;
@@ -92,10 +131,16 @@ fn exec(
             }
             Ins::Load(ma) => {
                 let a = st.stack.pop()?;
-                st.stack.push(terms.intern(Key::Load(ma.ty, ma.bytes, ma.signed, ma.offset, a, epoch), ma.ty));
+                st.stack.push(terms.intern(
+                    Key::Load(ma.ty, ma.bytes, ma.signed, ma.offset, a, epoch),
+                    ma.ty,
+                ));
             }
             Ins::GlobalGet(g) => {
-                let gl = m.globals.iter().find(|x| x.name.as_deref() == Some(g.as_str()))?;
+                let gl = m
+                    .globals
+                    .iter()
+                    .find(|x| x.name.as_deref() == Some(g.as_str()))?;
                 if gl.mutable {
                     return None;
                 }
@@ -114,9 +159,15 @@ fn exec(
             Ins::Block(BlockKind::If, bt) if bt.params.is_empty() => {
                 let c = st.stack.pop()?;
                 let (els, end) = tab[pc];
-                let mut a = St { stack: st.stack.clone(), locals: st.locals.clone() };
+                let mut a = St {
+                    stack: st.stack.clone(),
+                    locals: st.locals.clone(),
+                };
                 exec(m, info, terms, f, locs, tab, pc + 1, els, &mut a, epoch)?;
-                let mut b = St { stack: st.stack.clone(), locals: st.locals.clone() };
+                let mut b = St {
+                    stack: st.stack.clone(),
+                    locals: st.locals.clone(),
+                };
                 if els != end {
                     exec(m, info, terms, f, locs, tab, els + 1, end, &mut b, epoch)?;
                 }
@@ -124,10 +175,25 @@ fn exec(
                     return None;
                 }
                 let merge = |terms: &mut Terms, x: TermId, y: TermId| {
-                    if x == y { x } else { let ty = terms.ty(x); terms.intern(Key::Ite(c, x, y), ty) }
+                    if x == y {
+                        x
+                    } else {
+                        let ty = terms.ty(x);
+                        terms.intern(Key::Ite(c, x, y), ty)
+                    }
                 };
-                st.stack = a.stack.iter().zip(b.stack.iter()).map(|(x, y)| merge(terms, *x, *y)).collect();
-                st.locals = a.locals.iter().zip(b.locals.iter()).map(|(x, y)| merge(terms, *x, *y)).collect();
+                st.stack = a
+                    .stack
+                    .iter()
+                    .zip(b.stack.iter())
+                    .map(|(x, y)| merge(terms, *x, *y))
+                    .collect();
+                st.locals = a
+                    .locals
+                    .iter()
+                    .zip(b.locals.iter())
+                    .map(|(x, y)| merge(terms, *x, *y))
+                    .collect();
                 pc = end + 1;
                 continue;
             }

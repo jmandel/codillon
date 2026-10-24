@@ -20,7 +20,10 @@ pub const EXAMPLES: [&str; 13] = [
 ];
 
 pub fn testdata(name: &str, ext: &str) -> String {
-    let p = format!("{}/src/v2/testdata/{name}.{ext}", env!("CARGO_MANIFEST_DIR"));
+    let p = format!(
+        "{}/src/v2/testdata/{name}.{ext}",
+        env!("CARGO_MANIFEST_DIR")
+    );
     std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("{p}: {e}"))
 }
 
@@ -33,7 +36,11 @@ fn erasure_matches_erase_py() {
         for (i, (g, w)) in got.lines().zip(want.lines()).enumerate() {
             assert_eq!(g, w, "{ex}: line {}", i + 1);
         }
-        assert_eq!(got.lines().count(), want.lines().count(), "{ex}: line count");
+        assert_eq!(
+            got.lines().count(),
+            want.lines().count(),
+            "{ex}: line count"
+        );
         assert_eq!(got, want, "{ex}");
     }
 }
@@ -59,10 +66,23 @@ fn examples_parse_without_errors() {
 #[test]
 fn malformed_lines_never_panic() {
     use super::ast::{LineKind, parse_line};
-    for t in ["i32.trunc_", "i64.trunc_sat_", "f32.convert_", "i32.load offset=", "(param $x (i32 |", "prove 99", ")", "\"", "(i32| $p)"] {
+    for t in [
+        "i32.trunc_",
+        "i64.trunc_sat_",
+        "f32.convert_",
+        "i32.load offset=",
+        "(param $x (i32 |",
+        "prove 99",
+        ")",
+        "\"",
+        "(i32| $p)",
+    ] {
         let k = parse_line(t, 1);
         if t != ")" {
-            assert!(matches!(k, LineKind::Error(_) | LineKind::Other), "{t}: {k:?}");
+            assert!(
+                matches!(k, LineKind::Error(_) | LineKind::Other),
+                "{t}: {k:?}"
+            );
         }
     }
 }
@@ -92,7 +112,14 @@ fn ours(out: &ModuleOut) -> Vec<CupKey> {
         .map(|c| {
             let (feed_line, hyp_lines) = match &c.feed {
                 Feed::Lookup { origin_line, .. } => (Some(*origin_line as u64), vec![]),
-                Feed::Prove { prove_line, hyp_lines, .. } => (Some(*prove_line as u64), hyp_lines.iter().map(|x| *x as u64).collect()),
+                Feed::Prove {
+                    prove_line,
+                    hyp_lines,
+                    ..
+                } => (
+                    Some(*prove_line as u64),
+                    hyp_lines.iter().map(|x| *x as u64).collect(),
+                ),
                 Feed::DeadCode { ended_at } => (Some(*ended_at as u64), vec![]),
                 _ => (None, vec![]),
             };
@@ -100,7 +127,11 @@ fn ours(out: &ModuleOut) -> Vec<CupKey> {
                 line: c.line as u64,
                 kind: c.kind.name().into(),
                 operand: c.operand.map(|x| x as u64),
-                verdict: if c.verdict == Verdict::Refuted { "refuted".into() } else { c.verdict.name().into() },
+                verdict: if c.verdict == Verdict::Refuted {
+                    "refuted".into()
+                } else {
+                    c.verdict.name().into()
+                },
                 by: c.feed.by().into(),
                 feed_line,
                 checks: c.depends_on_checks.iter().map(|x| *x as u64).collect(),
@@ -132,8 +163,16 @@ fn oracle(j: &Value) -> Vec<CupKey> {
                 verdict: c["verdict"].as_str().unwrap().into(),
                 by,
                 feed_line,
-                checks: c.get("depends_on_checks").and_then(|x| x.as_array()).map(|a| a.iter().map(|x| x.as_u64().unwrap()).collect()).unwrap_or_default(),
-                hyp_lines: f.get("hyps").and_then(|x| x.as_array()).map(|a| a.iter().map(|h| h["line"].as_u64().unwrap()).collect()).unwrap_or_default(),
+                checks: c
+                    .get("depends_on_checks")
+                    .and_then(|x| x.as_array())
+                    .map(|a| a.iter().map(|x| x.as_u64().unwrap()).collect())
+                    .unwrap_or_default(),
+                hyp_lines: f
+                    .get("hyps")
+                    .and_then(|x| x.as_array())
+                    .map(|a| a.iter().map(|h| h["line"].as_u64().unwrap()).collect())
+                    .unwrap_or_default(),
             }
         })
         .collect()
@@ -150,20 +189,37 @@ pub fn compare(ex: &str) -> (usize, usize, Vec<String>) {
     let mut ok = 0;
     let mut report = vec![];
     for w in &want {
-        let pos = mine.iter().position(|m| m.line == w.line && m.kind == w.kind);
+        let pos = mine
+            .iter()
+            .position(|m| m.line == w.line && m.kind == w.kind);
         match pos {
             None => report.push(format!("  MISSING {w:?}")),
             Some(p) => {
                 let m = mine.remove(p);
-                let same = m.verdict == w.verdict && m.by == w.by && m.feed_line == w.feed_line && m.checks == w.checks && m.operand == w.operand;
+                let same = m.verdict == w.verdict
+                    && m.by == w.by
+                    && m.feed_line == w.feed_line
+                    && m.checks == w.checks
+                    && m.operand == w.operand;
                 if same {
                     ok += 1;
                     if m.hyp_lines != w.hyp_lines {
-                        report.push(format!("  (hyps differ) line {} {}: ours {:?} oracle {:?}", w.line, w.kind, m.hyp_lines, w.hyp_lines));
+                        report.push(format!(
+                            "  (hyps differ) line {} {}: ours {:?} oracle {:?}",
+                            w.line, w.kind, m.hyp_lines, w.hyp_lines
+                        ));
                     }
                 } else {
-                    let diag = out.cups().find(|c| c.line as u64 == w.line && c.kind.name() == w.kind).and_then(|c| c.diag.clone()).unwrap_or_default();
-                    let goal = out.cups().find(|c| c.line as u64 == w.line && c.kind.name() == w.kind).map(|c| c.goal.clone()).unwrap_or_default();
+                    let diag = out
+                        .cups()
+                        .find(|c| c.line as u64 == w.line && c.kind.name() == w.kind)
+                        .and_then(|c| c.diag.clone())
+                        .unwrap_or_default();
+                    let goal = out
+                        .cups()
+                        .find(|c| c.line as u64 == w.line && c.kind.name() == w.kind)
+                        .map(|c| c.goal.clone())
+                        .unwrap_or_default();
                     report.push(format!("  DIFF line {} {} goal {goal}\n     ours   {:?} {:?} {:?} op {:?} checks {:?} hyps {:?}\n     oracle {:?} {:?} {:?} op {:?} checks {:?} hyps {:?}\n     diag {diag}",
                         w.line, w.kind, m.verdict, m.by, m.feed_line, m.operand, m.checks, m.hyp_lines, w.verdict, w.by, w.feed_line, w.operand, w.checks, w.hyp_lines));
                 }
@@ -194,7 +250,10 @@ fn oracle_report() {
         let t0 = std::time::Instant::now();
         let (ok, n, rep) = compare(ex);
         let dt = t0.elapsed();
-        text.push_str(&format!("{ex}: {ok}/{n} ({:.1} ms)\n", dt.as_secs_f64() * 1000.0));
+        text.push_str(&format!(
+            "{ex}: {ok}/{n} ({:.1} ms)\n",
+            dt.as_secs_f64() * 1000.0
+        ));
         for r in rep {
             text.push_str(&r);
             text.push('\n');
@@ -203,11 +262,20 @@ fn oracle_report() {
         total.1 += n;
     }
     text.push_str(&format!("TOTAL {}/{}\n", total.0, total.1));
-    let _ = std::fs::write(format!("{}/target/v2-oracle-report.txt", env!("CARGO_MANIFEST_DIR")), &text);
+    let _ = std::fs::write(
+        format!("{}/target/v2-oracle-report.txt", env!("CARGO_MANIFEST_DIR")),
+        &text,
+    );
     println!("{text}");
     // the only extra cups are the second declared fact at gcd's line 131 (oracle-diffs.md, item 1)
-    for l in text.lines().filter(|l| l.contains("DIFF") || l.contains("MISSING") || l.contains("EXTRA")) {
-        assert!(l.contains("EXTRA") && l.contains("line: 131, kind: \"BlockFact\""), "{l}");
+    for l in text
+        .lines()
+        .filter(|l| l.contains("DIFF") || l.contains("MISSING") || l.contains("EXTRA"))
+    {
+        assert!(
+            l.contains("EXTRA") && l.contains("line: 131, kind: \"BlockFact\""),
+            "{l}"
+        );
     }
     if only.is_none() {
         assert_eq!(total.0, total.1);
@@ -238,7 +306,11 @@ mod solver_units {
         let mut env = NoEnv;
         let t0 = std::time::Instant::now();
         let r = Solver::new(t, &mut env).prove(hyps, goal);
-        assert!(t0.elapsed().as_millis() < 2000, "prove took {:?}", t0.elapsed());
+        assert!(
+            t0.elapsed().as_millis() < 2000,
+            "prove took {:?}",
+            t0.elapsed()
+        );
         r
     }
 
@@ -300,14 +372,23 @@ mod solver_units {
         let sq = t.op(IOp::Mul, ValTy::I64, &[e, e]);
         let sq1 = t.op(IOp::Mul, ValTy::I64, &[e1, e1]);
         // (2^32)^2 wraps to 0 in i64, so it needs a bound on r
-        assert!(!matches!(prove(&mut t, &[], &lt(sq, sq1)), Outcome::Valid { .. }));
+        assert!(!matches!(
+            prove(&mut t, &[], &lt(sq, sq1)),
+            Outcome::Valid { .. }
+        ));
         let c65535 = t.konst(ValTy::I32, 65535);
-        assert!(matches!(prove(&mut t, &[le(r, c65535)], &lt(sq, sq1)), Outcome::Valid { .. }));
+        assert!(matches!(
+            prove(&mut t, &[le(r, c65535)], &lt(sq, sq1)),
+            Outcome::Valid { .. }
+        ));
         // the same in i32 wraps at r = 65535 (the isqrt lesson): not valid
         let r1 = t.op(IOp::Add, ValTy::I32, &[r, one]);
         let sq32 = t.op(IOp::Mul, ValTy::I32, &[r, r]);
         let sq32b = t.op(IOp::Mul, ValTy::I32, &[r1, r1]);
-        assert!(!matches!(prove(&mut t, &[], &lt(sq32, sq32b)), Outcome::Valid { .. }));
+        assert!(!matches!(
+            prove(&mut t, &[], &lt(sq32, sq32b)),
+            Outcome::Valid { .. }
+        ));
     }
 
     #[test]
@@ -318,12 +399,21 @@ mod solver_units {
         let z = t.konst(ValTy::I32, 0);
         // ne is a two-way split: x ≠ 0 ∧ x ≤ 0 ⇒ False
         let ne = t.mk_eq(x, z, false);
-        assert!(matches!(prove(&mut t, &[ne.clone(), le(x, z)], &Atom::False), Outcome::Valid { .. }));
+        assert!(matches!(
+            prove(&mut t, &[ne.clone(), le(x, z)], &Atom::False),
+            Outcome::Valid { .. }
+        ));
         // select is an ite split: select(x, y, x<y) ≥ … the minimum is ≤ both
         let c = t.op(IOp::LtU, ValTy::I32, &[x, y]);
         let mn = t.intern(crate::v2::term::Key::Ite(c, x, y), ValTy::I32);
-        assert!(matches!(prove(&mut t, &[], &le(mn, x)), Outcome::Valid { .. }));
-        assert!(matches!(prove(&mut t, &[], &le(mn, y)), Outcome::Valid { .. }));
+        assert!(matches!(
+            prove(&mut t, &[], &le(mn, x)),
+            Outcome::Valid { .. }
+        ));
+        assert!(matches!(
+            prove(&mut t, &[], &le(mn, y)),
+            Outcome::Valid { .. }
+        ));
         // a countermodel names program values
         match prove(&mut t, &[ne], &lt(y, x)) {
             Outcome::NotImplied(m) => assert!(!m.is_empty()),
@@ -377,12 +467,26 @@ mod solver_units {
 // ---------------- Fable review §A counterexamples: none may prove ----------------
 
 /// Check `src`; return (verdict, diag) of every cup on lines marked `;; @cup`, and line errors.
+#[allow(clippy::type_complexity)]
 fn marked(src: &str) -> (Vec<(u32, Verdict, String)>, Vec<(u32, String)>) {
     let out = check_module(&Module::parse(src), true);
-    let lines: Vec<u32> = src.lines().enumerate().filter(|(_, l)| l.contains(";; @cup")).map(|(i, _)| i as u32 + 1).collect();
+    let lines: Vec<u32> = src
+        .lines()
+        .enumerate()
+        .filter(|(_, l)| l.contains(";; @cup"))
+        .map(|(i, _)| i as u32 + 1)
+        .collect();
     assert!(!lines.is_empty());
-    let cups = out.cups().filter(|c| lines.contains(&c.line)).map(|c| (c.line, c.verdict, c.diag.clone().unwrap_or_default())).collect();
-    let errs = out.funcs.iter().flat_map(|f| f.line_errors.clone()).collect();
+    let cups = out
+        .cups()
+        .filter(|c| lines.contains(&c.line))
+        .map(|c| (c.line, c.verdict, c.diag.clone().unwrap_or_default()))
+        .collect();
+    let errs = out
+        .funcs
+        .iter()
+        .flat_map(|f| f.line_errors.clone())
+        .collect();
     (cups, errs)
 }
 
@@ -390,7 +494,10 @@ fn none_proven(src: &str) {
     let (cups, errs) = marked(src);
     assert!(!cups.is_empty(), "no cups on marked lines");
     for (l, v, d) in &cups {
-        assert!(!matches!(v, Verdict::Proven | Verdict::Assumed), "line {l} is {v:?} ({d}); errors {errs:?}");
+        assert!(
+            !matches!(v, Verdict::Proven | Verdict::Assumed),
+            "line {l} is {v:?} ({d}); errors {errs:?}"
+        );
     }
 }
 
@@ -419,7 +526,10 @@ fn fable_a1_predicate_reading_a_mutable_global() {
 )"#;
     none_proven(src);
     let (_, errs) = marked(src);
-    assert!(errs.iter().any(|(_, e)| e.contains("must be pure")), "{errs:?}");
+    assert!(
+        errs.iter().any(|(_, e)| e.contains("must be pure")),
+        "{errs:?}"
+    );
 }
 
 #[test]
@@ -557,7 +667,10 @@ fn b5_virtual_rem_u_bounds_only_when_the_divisor_is_nonzero() {
   i32.div_u ;; @cup
 )"#,
     );
-    assert!(cups.iter().all(|c| c.1 == Verdict::Assumed), "{cups:?} {errs:?}");
+    assert!(
+        cups.iter().all(|c| c.1 == Verdict::Assumed),
+        "{cups:?} {errs:?}"
+    );
 }
 
 // ---------------- gradual mode: runtime checks on recorded inputs (R35) ----------------
@@ -566,7 +679,10 @@ use super::eval::{EvalErr, Interp};
 use super::runtime::RuntimePlan;
 
 fn export_index(m: &Module, name: &str) -> usize {
-    m.funcs.iter().position(|f| f.header.exports.iter().any(|e| e == name)).unwrap_or_else(|| panic!("no export {name}"))
+    m.funcs
+        .iter()
+        .position(|f| f.header.exports.iter().any(|e| e == name))
+        .unwrap_or_else(|| panic!("no export {name}"))
 }
 
 /// Run `export(args)` as the instrumented program of gradual mode.
@@ -587,17 +703,30 @@ fn runtime_checks_refute_the_oracles_witnesses() {
         let src = testdata(ex, "wat");
         let j: Value = serde_json::from_str(&testdata(ex, "expect.json")).unwrap();
         for c in j["cups"].as_array().unwrap() {
-            let Some(ar) = c.get("after_runs") else { continue };
+            let Some(ar) = c.get("after_runs") else {
+                continue;
+            };
             let w = &ar["witness"];
-            let args: Vec<i64> = w["args"].as_array().unwrap().iter().map(|a| a.as_i64().unwrap()).collect();
+            let args: Vec<i64> = w["args"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|a| a.as_i64().unwrap())
+                .collect();
             let (r, _) = instrumented_run(&src, w["export"].as_str().unwrap(), &args);
             let line = c["line"].as_u64().unwrap() as u32;
             // oracle-diffs.md: in hashtable-bug-tombstone the run (1, 9) stops at the check on line
             // 302 ($remove's exit) before it can reach the harness's unreachable on line 366
-            let line = if ex == "hashtable-bug-tombstone" && line == 366 { 302 } else { line };
+            let line = if ex == "hashtable-bug-tombstone" && line == 366 {
+                302
+            } else {
+                line
+            };
             match r {
                 Err(EvalErr::CheckFailed { line: l, msg }) => assert_eq!(l, line, "{ex}: {msg}"),
-                other => panic!("{ex} line {line} with {args:?}: expected a failed check, got {other:?}"),
+                other => {
+                    panic!("{ex} line {line} with {args:?}: expected a failed check, got {other:?}")
+                }
             }
             n += 1;
         }
@@ -608,9 +737,21 @@ fn runtime_checks_refute_the_oracles_witnesses() {
 #[test]
 fn runtime_checks_pass_on_correct_programs() {
     let cases: [(&str, &str, &[&[i64]]); 5] = [
-        ("parity-missing-proof", "half_or_neg1", &[&[0], &[3], &[-4], &[i32::MIN as i64]]),
-        ("hashtable", "harness:table", &[&[1, 9], &[5, 5], &[-1, 7], &[3, 11]]),
-        ("isqrt-wrong-cup", "harness:isqrt", &[&[0], &[15], &[16], &[1000], &[-1]]),
+        (
+            "parity-missing-proof",
+            "half_or_neg1",
+            &[&[0], &[3], &[-4], &[i32::MIN as i64]],
+        ),
+        (
+            "hashtable",
+            "harness:table",
+            &[&[1, 9], &[5, 5], &[-1, 7], &[3, 11]],
+        ),
+        (
+            "isqrt-wrong-cup",
+            "harness:isqrt",
+            &[&[0], &[15], &[16], &[1000], &[-1]],
+        ),
         ("gcd", "harness:gcd", &[&[12, 8], &[0, 5], &[7, 0]]),
         ("primality", "harness:prime", &[&[1], &[2], &[97], &[91]]),
     ];
@@ -632,7 +773,13 @@ fn runtime_checks_pass_on_correct_programs() {
 fn b3_empty_br_table_is_a_line_error_not_a_panic() {
     let src = "(func $m5 (export \"harness:m5\") (param $i i32) (result i32)\n  block $b\n    local.get $i\n    br_table\n  end\n  i32.const 0\n)";
     let m = Module::parse(src);
-    assert!(m.errors.iter().any(|(l, e)| *l == 4 && e.contains("br_table")), "{:?}", m.errors);
+    assert!(
+        m.errors
+            .iter()
+            .any(|(l, e)| *l == 4 && e.contains("br_table")),
+        "{:?}",
+        m.errors
+    );
     let _ = check_module(&m, true);
 }
 
@@ -671,15 +818,31 @@ fn b4_measure_without_result_never_drops_the_cup() {
   i32.const 0
 )"#;
     let out = check_module(&Module::parse(src), true);
-    let m = out.cups().find(|c| c.line == 10).expect("a Measure cup on line 10");
+    let m = out
+        .cups()
+        .find(|c| c.line == 10)
+        .expect("a Measure cup on line 10");
     assert_eq!(m.kind.name(), "Measure");
     assert_ne!(m.verdict, Verdict::Proven);
-    let errs: Vec<String> = out.funcs.iter().flat_map(|f| f.line_errors.iter().map(|e| e.1.clone())).collect();
-    assert!(errs.iter().any(|e| e.contains("must return exactly one")), "{errs:?}");
+    let errs: Vec<String> = out
+        .funcs
+        .iter()
+        .flat_map(|f| f.line_errors.iter().map(|e| e.1.clone()))
+        .collect();
+    assert!(
+        errs.iter().any(|e| e.contains("must return exactly one")),
+        "{errs:?}"
+    );
     // a recursive lemma without a measure is not induction: its self-call has an unfed measure cup
-    let lm = out.cups().find(|c| c.line == 20 && c.kind.name() == "Measure").expect("measure cup on the lemma line");
+    let lm = out
+        .cups()
+        .find(|c| c.line == 20 && c.kind.name() == "Measure")
+        .expect("measure cup on the lemma line");
     assert_ne!(lm.verdict, Verdict::Proven);
-    assert!(errs.iter().any(|e| e.contains("recursive through")), "{errs:?}");
+    assert!(
+        errs.iter().any(|e| e.contains("recursive through")),
+        "{errs:?}"
+    );
     for f in out.funcs.iter().filter(|f| f.name != "$p_m1_m") {
         assert!(!f.verified, "{} must not be VERIFIED", f.name);
     }
@@ -716,9 +879,18 @@ fn stale_hint_and_fraying() {
     let d = c.diag.clone().unwrap();
     assert!(d.contains("is about the old $i (set at line 314)"), "{d}");
     let f = out.func_at(320).unwrap();
-    assert!(f.chips.iter().any(|ch| ch.line == 310 && ch.frayed_at == Some(314)), "no frayed chip");
+    assert!(
+        f.chips
+            .iter()
+            .any(|ch| ch.line == 310 && ch.frayed_at == Some(314)),
+        "no frayed chip"
+    );
     // a store frays chips that carry the old epoch (hashtable $insert: $rep_ok at the loop head)
     let out = check_module(&Module::parse(&testdata("hashtable", "wat")), true);
     let f = out.func_at(245).unwrap();
-    assert!(f.chips.iter().any(|ch| ch.line == 202 && ch.text.contains("rep_ok") && ch.frayed_at == Some(245)));
+    assert!(
+        f.chips
+            .iter()
+            .any(|ch| ch.line == 202 && ch.text.contains("rep_ok") && ch.frayed_at == Some(245))
+    );
 }

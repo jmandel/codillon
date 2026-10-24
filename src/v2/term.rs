@@ -43,12 +43,19 @@ pub struct Terms {
 }
 
 pub fn mask(ty: ValTy) -> u64 {
-    if ty.bits() == 32 { 0xffff_ffff } else { u64::MAX }
+    if ty.bits() == 32 {
+        0xffff_ffff
+    } else {
+        u64::MAX
+    }
 }
 
 impl Terms {
     pub fn new(fnames: Vec<String>) -> Terms {
-        Terms { fnames, ..Default::default() }
+        Terms {
+            fnames,
+            ..Default::default()
+        }
     }
     pub fn get(&self, t: TermId) -> &Term {
         &self.terms[t as usize]
@@ -64,17 +71,32 @@ impl Terms {
             return t;
         }
         let id = self.terms.len() as TermId;
-        self.terms.push(Term { key: key.clone(), ty, name: None, range: None });
+        self.terms.push(Term {
+            key: key.clone(),
+            ty,
+            name: None,
+            range: None,
+        });
         self.vn.insert(key, id);
         id
     }
     pub fn konst(&mut self, ty: ValTy, bits: u64) -> TermId {
         self.intern(Key::Const(ty, bits & mask(ty)), ty)
     }
-    pub fn leaf(&mut self, ty: ValTy, name: impl Into<String>, range: Option<(u128, u128)>) -> TermId {
+    pub fn leaf(
+        &mut self,
+        ty: ValTy,
+        name: impl Into<String>,
+        range: Option<(u128, u128)>,
+    ) -> TermId {
         let id = self.terms.len() as TermId;
         self.leaves += 1;
-        self.terms.push(Term { key: Key::Leaf(self.leaves), ty, name: Some(name.into()), range });
+        self.terms.push(Term {
+            key: Key::Leaf(self.leaves),
+            ty,
+            name: Some(name.into()),
+            range,
+        });
         id
     }
     pub fn op(&mut self, op: IOp, w: ValTy, args: &[TermId]) -> TermId {
@@ -156,7 +178,12 @@ impl Terms {
             return self.atom_of(b, !pol);
         }
         let (x, y) = self.sorted(a, b);
-        Atom::Cmp { rel: if pol { Rel::Eq } else { Rel::Ne }, signed: false, a: x, b: y }
+        Atom::Cmp {
+            rel: if pol { Rel::Eq } else { Rel::Ne },
+            signed: false,
+            a: x,
+            b: y,
+        }
     }
 
     fn sorted(&self, a: TermId, b: TermId) -> (TermId, TermId) {
@@ -169,8 +196,18 @@ impl Terms {
             Atom::True => Atom::False,
             Atom::False => Atom::True,
             Atom::Cmp { rel, signed, a, b } => match rel {
-                Rel::Eq => Atom::Cmp { rel: Rel::Ne, signed: false, a: *a, b: *b },
-                Rel::Ne => Atom::Cmp { rel: Rel::Eq, signed: false, a: *a, b: *b },
+                Rel::Eq => Atom::Cmp {
+                    rel: Rel::Ne,
+                    signed: false,
+                    a: *a,
+                    b: *b,
+                },
+                Rel::Ne => Atom::Cmp {
+                    rel: Rel::Eq,
+                    signed: false,
+                    a: *a,
+                    b: *b,
+                },
                 Rel::Lt => Atom::cmp(Rel::Le, *signed, *b, *a),
                 Rel::Le => Atom::cmp(Rel::Lt, *signed, *b, *a),
             },
@@ -224,14 +261,32 @@ impl Terms {
             }
             Key::Call(f, a, e) => {
                 let args: Vec<String> = a.iter().map(|x| self.render(*x)).collect();
-                let name = self.fnames.get(*f as usize).cloned().unwrap_or_else(|| format!("${f}"));
-                let ep = if *e == NO_EPOCH { String::new() } else { format!("@ε{e}") };
+                let name = self
+                    .fnames
+                    .get(*f as usize)
+                    .cloned()
+                    .unwrap_or_else(|| format!("${f}"));
+                let ep = if *e == NO_EPOCH {
+                    String::new()
+                } else {
+                    format!("@ε{e}")
+                };
                 format!("{name}({}){ep}", args.join(", "))
             }
             Key::Load(ty, bytes, _, off, a, e) => {
-                format!("{}.load{}[{}+{off}]@ε{e}", ty.name(), bytes * 8, self.render(*a))
+                format!(
+                    "{}.load{}[{}+{off}]@ε{e}",
+                    ty.name(),
+                    bytes * 8,
+                    self.render(*a)
+                )
             }
-            Key::Ite(c, a, b) => format!("ite({}, {}, {})", self.render(*c), self.render(*a), self.render(*b)),
+            Key::Ite(c, a, b) => format!(
+                "ite({}, {}, {})",
+                self.render(*c),
+                self.render(*a),
+                self.render(*b)
+            ),
         }
     }
 
@@ -241,7 +296,13 @@ impl Terms {
             Atom::False => "False".into(),
             Atom::Cmp { rel, signed, a, b } => {
                 let (x, y) = (self.render(*a), self.render(*b));
-                let r = |v: String| if *signed { format!("s({v})") } else { format!("u({v})") };
+                let r = |v: String| {
+                    if *signed {
+                        format!("s({v})")
+                    } else {
+                        format!("u({v})")
+                    }
+                };
                 match rel {
                     Rel::Eq => format!("{x} = {y}"),
                     Rel::Ne => format!("{x} ≠ {y}"),
@@ -268,9 +329,17 @@ pub enum Rel {
 pub enum Atom {
     True,
     False,
-    Cmp { rel: Rel, signed: bool, a: TermId, b: TermId },
+    Cmp {
+        rel: Rel,
+        signed: bool,
+        a: TermId,
+        b: TermId,
+    },
     /// a predicate call (or float comparison) taken as a truth value
-    Bool { t: TermId, neg: bool },
+    Bool {
+        t: TermId,
+        neg: bool,
+    },
     /// the disjunctive cup of R25
     Or(Box<Atom>, Box<Atom>),
 }

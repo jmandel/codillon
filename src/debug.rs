@@ -117,18 +117,35 @@ impl RunLog {
         let uncompiled = id & crate::utils::V2_CHECK_UNCOMPILED != 0;
         let id = id & !crate::utils::V2_CHECK_UNCOMPILED;
         let Some(plan) = plan else { return true };
-        let Some(spec) = plan.checks.get(id as usize) else { return true };
+        let Some(spec) = plan.checks.get(id as usize) else {
+            return true;
+        };
         if uncompiled {
-            let message = format!("runtime check ⟨{}⟩ could not be compiled (the kernel and the assembler disagree about this function)", spec.goal);
-            *self.v2_failure.borrow_mut() = Some(V2CheckFailure { line: spec.line, check: id, message });
+            let message = format!(
+                "runtime check ⟨{}⟩ could not be compiled (the kernel and the assembler disagree about this function)",
+                spec.goal
+            );
+            *self.v2_failure.borrow_mut() = Some(V2CheckFailure {
+                line: spec.line,
+                check: id,
+                message,
+            });
             return false;
         }
         // only checks that call memory-reading predicates need (a copy of) memory
-        let mem = if spec.reads_mem { self.v2_memory_bytes() } else { None };
+        let mem = if spec.reads_mem {
+            self.v2_memory_bytes()
+        } else {
+            None
+        };
         match plan.eval_check(id, &vals, mem.as_deref()) {
             CheckOutcome::Holds | CheckOutcome::Unknown(_) => true,
             CheckOutcome::Fails(message) => {
-                *self.v2_failure.borrow_mut() = Some(V2CheckFailure { line: spec.line, check: id, message });
+                *self.v2_failure.borrow_mut() = Some(V2CheckFailure {
+                    line: spec.line,
+                    check: id,
+                    message,
+                });
                 false
             }
         }
@@ -765,7 +782,9 @@ pub async fn run_binary(binary: &[u8], args: &[RunArg]) -> Result<()> {
         .fmt_err()?;
     let instance = Reflect::get(&js_value, &JsValue::from_str("instance")).fmt_err()?;
     let exports = Reflect::get(&instance, &JsValue::from_str("exports")).fmt_err()?;
-    let memory = Reflect::get(&exports, &JsValue::from_str(crate::utils::V2_MEMORY_EXPORT)).ok().filter(|m| !m.is_undefined());
+    let memory = Reflect::get(&exports, &JsValue::from_str(crate::utils::V2_MEMORY_EXPORT))
+        .ok()
+        .filter(|m| !m.is_undefined());
     RUN_LOG.with(|r| r.set_v2_memory(memory));
 
     let main = Reflect::get(&exports, &JsValue::from_str("main")).fmt_err()?;

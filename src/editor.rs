@@ -173,12 +173,20 @@ impl V2State {
         let mut out = self.out.borrow_mut();
         for f in out.funcs.iter_mut().filter(|f| bad.contains(&f.func)) {
             let mut lines = vec![];
-            for c in f.cups.iter_mut().filter(|c| c.verdict == crate::v2::out::Verdict::RuntimeChecked && !c.ghost) {
-                c.diag = Some(format!("error: this runtime check could not be compiled into the run ({})", c.diag.clone().unwrap_or_default()));
+            for c in f
+                .cups
+                .iter_mut()
+                .filter(|c| c.verdict == crate::v2::out::Verdict::RuntimeChecked && !c.ghost)
+            {
+                c.diag = Some(format!(
+                    "error: this runtime check could not be compiled into the run ({})",
+                    c.diag.clone().unwrap_or_default()
+                ));
                 lines.push(c.line);
             }
             for l in lines {
-                f.line_errors.push((l, "runtime check could not be compiled".into()));
+                f.line_errors
+                    .push((l, "runtime check could not be compiled".into()));
             }
             f.strict_clean = false;
             f.verified = false;
@@ -554,11 +562,17 @@ impl Editor {
     /// fact-handle get/set/tee) are re-classified by their erased text. Per-line erasure already
     /// happened when each line's text changed.
     fn apply_v2_erasure(&mut self) {
-        let texts: Vec<String> = (0..self.len()).map(|i| self.line(i).instr().get().to_string()).collect();
+        let texts: Vec<String> = (0..self.len())
+            .map(|i| self.line(i).instr().get().to_string())
+            .collect();
         let doc = crate::v2::erase::erase_lines(&texts);
         for (i, e) in doc.iter().enumerate() {
             let code = crate::v2::sexpr::split_comment(e).0.trim_end().to_string();
-            let want = if code.trim() == texts[i].trim() { None } else { Some(code) };
+            let want = if code.trim() == texts[i].trim() {
+                None
+            } else {
+                Some(code)
+            };
             if self.line(i).info().erased != want {
                 self.line_mut(i).set_erasure(want);
             }
@@ -576,7 +590,10 @@ impl Editor {
         let module = crate::v2::ast::Module::parse_lines(&texts);
         let out = crate::v2::kernel::check_module(&module, true);
         let plan = Rc::new(crate::v2::runtime::RuntimePlan::new(&module, &out));
-        let state = Rc::new(V2State { out: std::cell::RefCell::new(out), plan });
+        let state = Rc::new(V2State {
+            out: std::cell::RefCell::new(out),
+            plan,
+        });
         self.v2 = Some(state.clone());
         state
     }
@@ -991,7 +1008,8 @@ impl Editor {
         // instrumentation
         // gradual mode: unfed cups become runtime checks in the instrumented run (R35)
         RUN_LOG.with(|r| r.set_v2_plan(Some(v2.plan.clone())));
-        let instrumented_binary = &validized.build_instrumented_binary_with_checks(&types, Some(&v2.plan))?;
+        let instrumented_binary =
+            &validized.build_instrumented_binary_with_checks(&types, Some(&v2.plan))?;
         v2.mark_uncompiled();
         let instrumented_binary_hash = self.run_hash(instrumented_binary);
         let step_count = RUN_LOG.with(|r| r.step_count());

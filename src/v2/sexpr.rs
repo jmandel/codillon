@@ -93,10 +93,16 @@ pub fn tokenize_spans(code: &str) -> Result<Vec<(Tok, std::ops::Range<usize>)>, 
             i = j + 1;
         } else {
             let mut j = i;
-            while j < cs.len() && !cs[j].1.is_whitespace() && !matches!(cs[j].1, '(' | ')' | '"' | '|') {
+            while j < cs.len()
+                && !cs[j].1.is_whitespace()
+                && !matches!(cs[j].1, '(' | ')' | '"' | '|')
+            {
                 j += 1;
             }
-            out.push((Tok::Atom(cs[i..j].iter().map(|x| x.1).collect()), at(i)..at(j)));
+            out.push((
+                Tok::Atom(cs[i..j].iter().map(|x| x.1).collect()),
+                at(i)..at(j),
+            ));
             i = j;
         }
     }
@@ -116,7 +122,9 @@ pub fn split_comment(line: &str) -> (&str, &str) {
         match b[i] {
             b'"' => in_str = !in_str,
             b'\\' if in_str => i += 1,
-            b';' if !in_str && i + 1 < b.len() && b[i + 1] == b';' => return (&line[..i], &line[i..]),
+            b';' if !in_str && i + 1 < b.len() && b[i + 1] == b';' => {
+                return (&line[..i], &line[i..]);
+            }
             _ => {}
         }
         i += 1;
@@ -160,7 +168,11 @@ pub fn read_line(code: &str) -> Result<LineItems, String> {
             },
         }
     }
-    Ok(LineItems { items, open: stack, extra_close })
+    Ok(LineItems {
+        items,
+        open: stack,
+        extra_close,
+    })
 }
 
 /// Parse a WAT integer literal (decimal or hex, optional sign, `_` separators) to i128.

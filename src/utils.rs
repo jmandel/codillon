@@ -1308,12 +1308,17 @@ impl<'a> ValidModule<'a> {
             for func_idx in 0..self.functions.len() {
                 // the kernel's view of the function must match the binary's (same header line,
                 // same value locals); otherwise its checks are compiled as failures, never dropped
-                let plan = checks.and_then(|c| c.funcs.iter().find(|p| p.header_line as usize == self.functions[func_idx].lines.0 + 1));
+                let plan = checks.and_then(|c| {
+                    c.funcs
+                        .iter()
+                        .find(|p| p.header_line as usize == self.functions[func_idx].lines.0 + 1)
+                });
                 if let Some(p) = plan {
                     matched.push(p.func);
                 }
                 let mismatch = plan.filter(|p| {
-                    p.n_locals as usize != types.funcs[func_idx].params.len() + types.funcs[func_idx].locals.len()
+                    p.n_locals as usize
+                        != types.funcs[func_idx].params.len() + types.funcs[func_idx].locals.len()
                 });
                 if let (Some(c), Some(p)) = (checks, mismatch) {
                     c.uncompiled.borrow_mut().push(p.func);
@@ -1374,6 +1379,7 @@ impl<'a> ValidModule<'a> {
         Ok(wasm)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn build_function(
         &self,
         func_idx: usize,
@@ -1385,7 +1391,11 @@ impl<'a> ValidModule<'a> {
         uncompilable: bool,
     ) -> Result<wasm_encoder::Function> {
         // a function whose checks cannot be compiled: each check site stops the run instead
-        let (checks, failing) = if uncompilable { (None, checks) } else { (checks, None) };
+        let (checks, failing) = if uncompilable {
+            (None, checks)
+        } else {
+            (checks, None)
+        };
         use wasm_encoder::Instruction::*;
         let orig_function = &self.functions[func_idx];
         let typed_function = &types.funcs[func_idx];
@@ -1430,7 +1440,9 @@ impl<'a> ValidModule<'a> {
                 return;
             }
             let Some(p) = checks else { return };
-            let Some(ids) = p.before.get(&line) else { return };
+            let Some(ids) = p.before.get(&line) else {
+                return;
+            };
             for &id in ids {
                 for (k, sh) in p.sends_of(id).iter().enumerate() {
                     f.instruction(&LocalGet(shadow_base + sh.0));
@@ -1618,7 +1630,9 @@ impl<'a> ValidModule<'a> {
             transparent_record_results(&mut new_function, &op_type.outputs);
 
             // v2: capture opaque values born on this line
-            if let Some(acts) = checks.and_then(|p| p.after.get(&(codillon_operator.line_idx as u32 + 1))) {
+            if let Some(acts) =
+                checks.and_then(|p| p.after.get(&(codillon_operator.line_idx as u32 + 1)))
+            {
                 captures(&mut new_function, acts);
             }
 
@@ -3339,15 +3353,20 @@ pub(crate) mod tests {
         type Ctx<'a> = Caller<'a, RunLog>;
 
         // Match the imports provided in make_imports() (excluding graphics for now)
-        linker.func_wrap("codillon_debug", "record_step", |mut ctx: Ctx<'_>, n: u32| -> i32 {
-            if n & (1 << 31) == 0 && n & V2_CHECK_FLAG != 0
-                && let Some(Extern::Memory(m)) = ctx.get_export(V2_MEMORY_EXPORT)
-            {
-                let bytes = m.data(&ctx).to_vec();
-                ctx.data().set_v2_memory_bytes(Some(bytes));
-            }
-            ctx.data().wasm_step(n).into()
-        })?;
+        linker.func_wrap(
+            "codillon_debug",
+            "record_step",
+            |mut ctx: Ctx<'_>, n: u32| -> i32 {
+                if n & (1 << 31) == 0
+                    && n & V2_CHECK_FLAG != 0
+                    && let Some(Extern::Memory(m)) = ctx.get_export(V2_MEMORY_EXPORT)
+                {
+                    let bytes = m.data(&ctx).to_vec();
+                    ctx.data().set_v2_memory_bytes(Some(bytes));
+                }
+                ctx.data().wasm_step(n).into()
+            },
+        )?;
         linker.func_wrap("codillon_debug", "record_invalid", |ctx: Ctx<'_>| {
             ctx.data().set_termination_type(TerminationType::HitInvalid)
         })?;
@@ -3391,7 +3410,10 @@ pub(crate) mod tests {
         Ok(store.into_data())
     }
 
-    fn test_execution_with_checks(binary: &[u8], plan: std::rc::Rc<crate::v2::runtime::RuntimePlan>) -> Result<RunLog> {
+    fn test_execution_with_checks(
+        binary: &[u8],
+        plan: std::rc::Rc<crate::v2::runtime::RuntimePlan>,
+    ) -> Result<RunLog> {
         V2_TEST_PLAN.with(|p| *p.borrow_mut() = Some(plan));
         let r = test_execution(binary, &[], &mut []);
         V2_TEST_PLAN.with(|p| *p.borrow_mut() = None);
@@ -3420,11 +3442,19 @@ pub(crate) mod tests {
             ("hashtable-bug-tombstone", None),
         ];
         for (name, fail_line) in cases {
-            let path = format!("{}/public/examples/v2/{name}.wat", env!("CARGO_MANIFEST_DIR"));
+            let path = format!(
+                "{}/public/examples/v2/{name}.wat",
+                env!("CARGO_MANIFEST_DIR")
+            );
             let src = std::fs::read_to_string(&path)?;
             let mut editor = FakeTextBuffer::from_v2(&src);
             for (i, line) in editor.lines.iter().enumerate() {
-                assert!(!matches!(line.info.kind, LineKind::Malformed(_)), "{name}:{} malformed: {}", i + 1, line.instr_text);
+                assert!(
+                    !matches!(line.info.kind, LineKind::Malformed(_)),
+                    "{name}:{} malformed: {}",
+                    i + 1,
+                    line.instr_text
+                );
             }
             let m = crate::v2::ast::Module::parse(&src);
             let out = crate::v2::kernel::check_module(&m, true);
@@ -3432,7 +3462,12 @@ pub(crate) mod tests {
             let EditorOutput { binary, .. } = test_editor_flow_with(&mut editor, Some(&plan))?;
             let log = test_execution_with_checks(&binary, plan.clone())?;
             match fail_line {
-                None => assert_eq!(TerminationType::Success, log.termination_type(), "{name}: {:?}", log.v2_failure()),
+                None => assert_eq!(
+                    TerminationType::Success,
+                    log.termination_type(),
+                    "{name}: {:?}",
+                    log.v2_failure()
+                ),
                 Some(l) => {
                     assert_eq!(TerminationType::Error, log.termination_type(), "{name}");
                     let f = log.v2_failure().expect("a failed check");
@@ -3453,14 +3488,19 @@ pub(crate) mod tests {
         let binary_src = "(func $main\n  nop\n  unreachable\n)";
         let m = crate::v2::ast::Module::parse(kernel_src);
         let out = crate::v2::kernel::check_module(&m, true);
-        assert!(out.cups().any(|c| c.verdict == crate::v2::out::Verdict::RuntimeChecked));
+        assert!(
+            out.cups()
+                .any(|c| c.verdict == crate::v2::out::Verdict::RuntimeChecked)
+        );
         let plan = std::rc::Rc::new(crate::v2::runtime::RuntimePlan::new(&m, &out));
         let mut editor = FakeTextBuffer::from_v2(binary_src);
         let EditorOutput { binary, .. } = test_editor_flow_with(&mut editor, Some(&plan))?;
         assert_eq!(plan.uncompiled.borrow().as_slice(), &[0]);
         let log = test_execution_with_checks(&binary, plan.clone())?;
         assert_eq!(TerminationType::Error, log.termination_type());
-        let f = log.v2_failure().expect("the uncompiled check stops the run");
+        let f = log
+            .v2_failure()
+            .expect("the uncompiled check stops the run");
         assert!(f.message.contains("could not be compiled"), "{}", f.message);
 
         // a plan with checks for a function the binary does not have at that line

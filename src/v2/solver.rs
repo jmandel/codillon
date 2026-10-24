@@ -63,10 +63,17 @@ impl Lin {
         Lin { ts: vec![], c }
     }
     pub fn var(v: VarId) -> Lin {
-        Lin { ts: vec![(v, 1)], c: 0 }
+        Lin {
+            ts: vec![(v, 1)],
+            c: 0,
+        }
     }
     pub fn as_const(&self) -> Option<i128> {
-        if self.ts.is_empty() { Some(self.c) } else { None }
+        if self.ts.is_empty() {
+            Some(self.c)
+        } else {
+            None
+        }
     }
     pub fn scale(&self, k: i128) -> R<Lin> {
         if k == 0 {
@@ -76,7 +83,10 @@ impl Lin {
         for (v, c) in &self.ts {
             ts.push((*v, mul(*c, k)?));
         }
-        Ok(Lin { ts, c: mul(self.c, k)? })
+        Ok(Lin {
+            ts,
+            c: mul(self.c, k)?,
+        })
     }
     pub fn plus(&self, o: &Lin) -> R<Lin> {
         let mut ts = Vec::with_capacity(self.ts.len() + o.ts.len());
@@ -101,16 +111,26 @@ impl Lin {
                 j += 1;
             }
         }
-        Ok(Lin { ts, c: add(self.c, o.c)? })
+        Ok(Lin {
+            ts,
+            c: add(self.c, o.c)?,
+        })
     }
     pub fn minus(&self, o: &Lin) -> R<Lin> {
         self.plus(&o.scale(-1)?)
     }
     pub fn add_c(&self, k: i128) -> R<Lin> {
-        Ok(Lin { ts: self.ts.clone(), c: add(self.c, k)? })
+        Ok(Lin {
+            ts: self.ts.clone(),
+            c: add(self.c, k)?,
+        })
     }
     pub fn coef(&self, v: VarId) -> i128 {
-        self.ts.iter().find(|(x, _)| *x == v).map(|(_, c)| *c).unwrap_or(0)
+        self.ts
+            .iter()
+            .find(|(x, _)| *x == v)
+            .map(|(_, c)| *c)
+            .unwrap_or(0)
     }
     /// Replace variable v by the linear form e.
     pub fn subst(&self, v: VarId, e: &Lin) -> R<Lin> {
@@ -118,7 +138,10 @@ impl Lin {
         if k == 0 {
             return Ok(self.clone());
         }
-        let rest = Lin { ts: self.ts.iter().filter(|(x, _)| *x != v).copied().collect(), c: self.c };
+        let rest = Lin {
+            ts: self.ts.iter().filter(|(x, _)| *x != v).copied().collect(),
+            c: self.c,
+        };
         rest.plus(&e.scale(k)?)
     }
 }
@@ -246,7 +269,11 @@ impl<'a> Solver<'a> {
             return Err(Stop::Infeasible);
         }
         let id = self.vars.len() as VarId;
-        self.vars.push(Var { lo, hi, desc: desc.clone() });
+        self.vars.push(Var {
+            lo,
+            hi,
+            desc: desc.clone(),
+        });
         self.var_of.insert(desc, id);
         Ok(id)
     }
@@ -254,14 +281,26 @@ impl<'a> Solver<'a> {
     /// A variable as a translated term; a point interval becomes a constant (§3.3).
     fn var_tr(&mut self, desc: VarDesc, lo: i128, hi: i128) -> R<Tr> {
         if lo == hi {
-            return Ok(Tr { lin: Lin::konst(lo), lo, hi });
+            return Ok(Tr {
+                lin: Lin::konst(lo),
+                lo,
+                hi,
+            });
         }
         let v = self.new_var(desc, lo, hi)?;
         let (lo, hi) = (self.vars[v as usize].lo, self.vars[v as usize].hi);
         if lo == hi {
-            return Ok(Tr { lin: Lin::konst(lo), lo, hi });
+            return Ok(Tr {
+                lin: Lin::konst(lo),
+                lo,
+                hi,
+            });
         }
-        Ok(Tr { lin: Lin::var(v), lo, hi })
+        Ok(Tr {
+            lin: Lin::var(v),
+            lo,
+            hi,
+        })
     }
 
     /// Range of a linear form from its variables' intervals.
@@ -279,7 +318,11 @@ impl<'a> Solver<'a> {
     /// Assert l ≤ 0.
     fn le0(&mut self, l: Lin) -> R<()> {
         if let Some(c) = l.as_const() {
-            return if c <= 0 { Ok(()) } else { Err(Stop::Infeasible) };
+            return if c <= 0 {
+                Ok(())
+            } else {
+                Err(Stop::Infeasible)
+            };
         }
         // single-variable constraints tighten the interval at once
         if l.ts.len() == 1 {
@@ -304,7 +347,11 @@ impl<'a> Solver<'a> {
 
     fn eq0(&mut self, l: Lin) -> R<()> {
         if let Some(c) = l.as_const() {
-            return if c == 0 { Ok(()) } else { Err(Stop::Infeasible) };
+            return if c == 0 {
+                Ok(())
+            } else {
+                Err(Stop::Infeasible)
+            };
         }
         if l.ts.len() == 1 {
             let (v, k) = l.ts[0];
@@ -365,7 +412,10 @@ impl<'a> Solver<'a> {
             r => r,
         }?;
         if r.lin.ts.len() > CAP_TERMS {
-            return Err(Stop::Cap(format!("this fact expands to {} terms (cap {CAP_TERMS}); state an intermediate fact with a lemma", r.lin.ts.len())));
+            return Err(Stop::Cap(format!(
+                "this fact expands to {} terms (cap {CAP_TERMS}); state an intermediate fact with a lemma",
+                r.lin.ts.len()
+            )));
         }
         self.memo.insert(t, r.clone());
         Ok(r)
@@ -378,12 +428,21 @@ impl<'a> Solver<'a> {
         let (q0, q1) = (fdiv(lo, wv), fdiv(hi, wv));
         if q0 == q1 {
             if q0 != 0 && lo != hi {
-                self.wraps.push(format!("{} wraps by {q0}·2^{w}", self.terms.render(t)));
-            } else if lo != hi && (lo < 0 || hi > 0) && !matches!(self.terms.key(t), Key::Op(IOp::ExtendI32U, ..)) {
-                self.wraps.push(format!("{} does not wrap", self.terms.render(t)));
+                self.wraps
+                    .push(format!("{} wraps by {q0}·2^{w}", self.terms.render(t)));
+            } else if lo != hi
+                && (lo < 0 || hi > 0)
+                && !matches!(self.terms.key(t), Key::Op(IOp::ExtendI32U, ..))
+            {
+                self.wraps
+                    .push(format!("{} does not wrap", self.terms.render(t)));
             }
             let lin = exact.add_c(mul(-q0, wv)?)?;
-            return Ok(Tr { lin, lo: lo - q0 * wv, hi: hi - q0 * wv });
+            return Ok(Tr {
+                lin,
+                lo: lo - q0 * wv,
+                hi: hi - q0 * wv,
+            });
         }
         if split01 && q1 - q0 == 1 {
             let q = if self.choose()? { q1 } else { q0 };
@@ -391,17 +450,30 @@ impl<'a> Solver<'a> {
             self.le0(lin.scale(-1)?)?;
             self.le0(lin.add_c(-(wv - 1))?)?;
             let (a, b) = self.range(&lin)?;
-            return Ok(Tr { lin, lo: a.max(0), hi: b.min(wv - 1) });
+            return Ok(Tr {
+                lin,
+                lo: a.max(0),
+                hi: b.min(wv - 1),
+            });
         }
         let q = self.new_var(VarDesc::Wrap(t), q0, q1)?;
         let lin = exact.minus(&Lin::var(q).scale(wv)?)?;
         self.le0(lin.scale(-1)?)?;
         self.le0(lin.add_c(-(wv - 1))?)?;
-        Ok(Tr { lin, lo: 0, hi: wv - 1 })
+        Ok(Tr {
+            lin,
+            lo: 0,
+            hi: wv - 1,
+        })
     }
 
     fn has_wrap(&self, l: &Lin) -> bool {
-        l.ts.iter().any(|(v, _)| matches!(self.vars[*v as usize].desc, VarDesc::Wrap(_) | VarDesc::TermMono(_)))
+        l.ts.iter().any(|(v, _)| {
+            matches!(
+                self.vars[*v as usize].desc,
+                VarDesc::Wrap(_) | VarDesc::TermMono(_)
+            )
+        })
     }
 
     /// Base factors of a variable (a monomial's factors, or itself).
@@ -417,7 +489,12 @@ impl<'a> Solver<'a> {
         let (mut lo, mut hi) = (1i128, 1i128);
         for v in &f {
             let var = &self.vars[*v as usize];
-            let c = [mul(lo, var.lo)?, mul(lo, var.hi)?, mul(hi, var.lo)?, mul(hi, var.hi)?];
+            let c = [
+                mul(lo, var.lo)?,
+                mul(lo, var.hi)?,
+                mul(hi, var.lo)?,
+                mul(hi, var.hi)?,
+            ];
             lo = *c.iter().min().unwrap();
             hi = *c.iter().max().unwrap();
         }
@@ -434,7 +511,10 @@ impl<'a> Solver<'a> {
                 let mut f = self.factors(*va);
                 f.extend(self.factors(*vb));
                 let m = self.mono(f)?;
-                out = out.plus(&Lin { ts: vec![(m, mul(*ca, *cb)?)], c: 0 })?;
+                out = out.plus(&Lin {
+                    ts: vec![(m, mul(*ca, *cb)?)],
+                    c: 0,
+                })?;
             }
         }
         Ok(out)
@@ -447,8 +527,16 @@ impl<'a> Solver<'a> {
         let ty = self.terms.ty(t);
         match key {
             Key::Const(cty, b) => {
-                let v = if cty.is_int() { b as i128 } else { return self.opaque(t) };
-                Ok(Tr { lin: Lin::konst(v), lo: v, hi: v })
+                let v = if cty.is_int() {
+                    b as i128
+                } else {
+                    return self.opaque(t);
+                };
+                Ok(Tr {
+                    lin: Lin::konst(v),
+                    lo: v,
+                    hi: v,
+                })
             }
             Key::Op(op, w, args) => self.tr_op(t, op, w, &args),
             Key::Ite(c, a, b) => {
@@ -459,7 +547,11 @@ impl<'a> Solver<'a> {
             Key::Call(..) => {
                 if let Some(v) = self.env.eval_call(self.terms, t) {
                     let v = v as i128;
-                    return Ok(Tr { lin: Lin::konst(v), lo: v, hi: v });
+                    return Ok(Tr {
+                        lin: Lin::konst(v),
+                        lo: v,
+                        hi: v,
+                    });
                 }
                 if self.depth < UNFOLD_DEPTH
                     && let Some(body) = self.env.unfold(self.terms, t)
@@ -531,7 +623,15 @@ impl<'a> Solver<'a> {
                     Some((c, x)) => {
                         let a = self.tr(x)?;
                         if c == 1 {
-                            return Ok(if is_div { a } else { Tr { lin: Lin::konst(0), lo: 0, hi: 0 } });
+                            return Ok(if is_div {
+                                a
+                            } else {
+                                Tr {
+                                    lin: Lin::konst(0),
+                                    lo: 0,
+                                    hi: 0,
+                                }
+                            });
                         }
                         if !is_div && a.lo >= 0 && a.hi < c {
                             return Ok(a);
@@ -546,7 +646,11 @@ impl<'a> Solver<'a> {
                         } else {
                             let lin = a.lin.minus(&cd)?;
                             let (lo, hi) = self.range(&lin)?;
-                            Ok(Tr { lin, lo: lo.max(0), hi: hi.min(c - 1) })
+                            Ok(Tr {
+                                lin,
+                                lo: lo.max(0),
+                                hi: hi.min(c - 1),
+                            })
                         }
                     }
                     None if matches!(op, DivU | RemU) => {
@@ -561,7 +665,11 @@ impl<'a> Solver<'a> {
                             return self.var_tr(VarDesc::Res(t), 0, w - 1);
                         }
                         self.le(&Lin::konst(1), &b.lin)?;
-                        let hi = if op == RemU { a.hi.min(b.hi - 1).max(0) } else { a.hi };
+                        let hi = if op == RemU {
+                            a.hi.min(b.hi - 1).max(0)
+                        } else {
+                            a.hi
+                        };
                         let r = self.var_tr(VarDesc::Res(t), 0, hi)?;
                         self.le(&r.lin, &a.lin)?;
                         if op == RemU {
@@ -584,7 +692,11 @@ impl<'a> Solver<'a> {
                     return Ok(s);
                 }
                 if s.hi < 0 {
-                    return Ok(Tr { lin: s.lin.add_c(pow2(64))?, lo: s.lo + pow2(64), hi: s.hi + pow2(64) });
+                    return Ok(Tr {
+                        lin: s.lin.add_c(pow2(64))?,
+                        lo: s.lo + pow2(64),
+                        hi: s.hi + pow2(64),
+                    });
                 }
                 if self.choose()? {
                     self.le0(s.lin.add_c(1)?)?;
@@ -598,7 +710,9 @@ impl<'a> Solver<'a> {
                 }
             }
             ShrS => {
-                let Some(k) = konst(self, args[1]) else { return self.opaque(t) };
+                let Some(k) = konst(self, args[1]) else {
+                    return self.opaque(t);
+                };
                 let k = (k as u32) % w;
                 if k == 0 {
                     return self.tr(args[0]);
@@ -606,7 +720,11 @@ impl<'a> Solver<'a> {
                 let s = self.signed(args[0])?;
                 let p = pow2(k);
                 let half = pow2(w - 1 - k);
-                let d = self.var_tr(VarDesc::SDiv(t), fdiv(s.lo, p).max(-half), fdiv(s.hi, p).min(half - 1))?;
+                let d = self.var_tr(
+                    VarDesc::SDiv(t),
+                    fdiv(s.lo, p).max(-half),
+                    fdiv(s.hi, p).min(half - 1),
+                )?;
                 let pd = d.lin.scale(p)?;
                 self.le(&pd, &s.lin)?;
                 self.le(&s.lin, &pd.add_c(p - 1)?)?;
@@ -614,7 +732,11 @@ impl<'a> Solver<'a> {
                     return Ok(d);
                 }
                 if d.hi < 0 {
-                    return Ok(Tr { lin: d.lin.add_c(wv)?, lo: d.lo + wv, hi: d.hi + wv });
+                    return Ok(Tr {
+                        lin: d.lin.add_c(wv)?,
+                        lo: d.lo + wv,
+                        hi: d.hi + wv,
+                    });
                 }
                 if self.choose()? {
                     self.le0(d.lin.add_c(1)?)?;
@@ -631,7 +753,11 @@ impl<'a> Solver<'a> {
                 let b = self.choose()?;
                 self.truthy(t, b)?;
                 let v = b as i128;
-                Ok(Tr { lin: Lin::konst(v), lo: v, hi: v })
+                Ok(Tr {
+                    lin: Lin::konst(v),
+                    lo: v,
+                    hi: v,
+                })
             }
             _ => self.opaque(t),
         }
@@ -648,7 +774,11 @@ impl<'a> Solver<'a> {
         let r = if a.hi < half {
             a
         } else if a.lo >= half {
-            Tr { lin: a.lin.add_c(-pow2(w))?, lo: a.lo - pow2(w), hi: a.hi - pow2(w) }
+            Tr {
+                lin: a.lin.add_c(-pow2(w))?,
+                lo: a.lo - pow2(w),
+                hi: a.hi - pow2(w),
+            }
         } else if self.choose()? {
             self.le(&Lin::konst(half), &a.lin)?;
             let lin = a.lin.add_c(-pow2(w))?;
@@ -667,13 +797,19 @@ impl<'a> Solver<'a> {
     fn truthy(&mut self, t: TermId, pol: bool) -> R<()> {
         match self.terms.key(t).clone() {
             Key::Const(_, c) => {
-                if (c != 0) == pol { Ok(()) } else { Err(Stop::Infeasible) }
+                if (c != 0) == pol {
+                    Ok(())
+                } else {
+                    Err(Stop::Infeasible)
+                }
             }
             Key::Op(o, ..) if o.is_cmp() => {
                 let a = self.terms.atom_of(t, pol);
                 self.assert(&a, true)
             }
-            Key::Op(IOp::And, _, args) if self.terms.is_cmp(args[0]) && self.terms.is_cmp(args[1]) => {
+            Key::Op(IOp::And, _, args)
+                if self.terms.is_cmp(args[0]) && self.terms.is_cmp(args[1]) =>
+            {
                 if pol {
                     self.truthy(args[0], true)?;
                     self.truthy(args[1], true)
@@ -691,7 +827,11 @@ impl<'a> Solver<'a> {
             }
             Key::Call(..) => {
                 if let Some(v) = self.env.eval_call(self.terms, t) {
-                    return if (v != 0) == pol { Ok(()) } else { Err(Stop::Infeasible) };
+                    return if (v != 0) == pol {
+                        Ok(())
+                    } else {
+                        Err(Stop::Infeasible)
+                    };
                 }
                 if self.depth < UNFOLD_DEPTH
                     && let Some(body) = self.env.unfold(self.terms, t)
@@ -719,19 +859,39 @@ impl<'a> Solver<'a> {
     /// Assert an atom (pol) or its negation.
     pub fn assert(&mut self, a: &Atom, pol: bool) -> R<()> {
         match a {
-            Atom::True => if pol { Ok(()) } else { Err(Stop::Infeasible) },
-            Atom::False => if pol { Err(Stop::Infeasible) } else { Ok(()) },
+            Atom::True => {
+                if pol {
+                    Ok(())
+                } else {
+                    Err(Stop::Infeasible)
+                }
+            }
+            Atom::False => {
+                if pol {
+                    Err(Stop::Infeasible)
+                } else {
+                    Ok(())
+                }
+            }
             Atom::Bool { t, neg } => self.truthy(*t, pol != *neg),
             Atom::Or(x, y) => {
                 if pol {
-                    if self.choose()? { self.assert(y, true) } else { self.assert(x, true) }
+                    if self.choose()? {
+                        self.assert(y, true)
+                    } else {
+                        self.assert(x, true)
+                    }
                 } else {
                     self.assert(x, false)?;
                     self.assert(y, false)
                 }
             }
             Atom::Cmp { rel, signed, a, b } => {
-                let (x, y) = if *signed { (self.signed(*a)?, self.signed(*b)?) } else { (self.tr(*a)?, self.tr(*b)?) };
+                let (x, y) = if *signed {
+                    (self.signed(*a)?, self.signed(*b)?)
+                } else {
+                    (self.tr(*a)?, self.tr(*b)?)
+                };
                 let (rel, x, y) = match (rel, pol) {
                     (Rel::Lt, true) => (Rel::Lt, x, y),
                     (Rel::Lt, false) => (Rel::Le, y, x),
@@ -915,7 +1075,9 @@ impl<'a> Solver<'a> {
             }
         }
         match inexact {
-            Some(v) => Outcome::Inexact(format!("could not decide (inexact step on {v}); add a lemma")),
+            Some(v) => Outcome::Inexact(format!(
+                "could not decide (inexact step on {v}); add a lemma"
+            )),
             None => Outcome::Valid { wraps },
         }
     }
@@ -923,8 +1085,16 @@ impl<'a> Solver<'a> {
     pub fn render_var(&self, v: VarId) -> String {
         match &self.vars[v as usize].desc {
             VarDesc::Term(t) => format!("u({})", self.terms.render(*t)),
-            VarDesc::Mono(f) => f.iter().map(|x| self.render_var(*x)).collect::<Vec<_>>().join("·"),
-            VarDesc::TermMono(f) => f.iter().map(|x| self.terms.render(*x)).collect::<Vec<_>>().join("·"),
+            VarDesc::Mono(f) => f
+                .iter()
+                .map(|x| self.render_var(*x))
+                .collect::<Vec<_>>()
+                .join("·"),
+            VarDesc::TermMono(f) => f
+                .iter()
+                .map(|x| self.terms.render(*x))
+                .collect::<Vec<_>>()
+                .join("·"),
             VarDesc::Wrap(t) => format!("wrap({})", self.terms.render(*t)),
             VarDesc::Div(t) | VarDesc::SDiv(t) => format!("quot({})", self.terms.render(*t)),
             VarDesc::Res(t) => format!("u({})", self.terms.render(*t)),
@@ -934,7 +1104,12 @@ impl<'a> Solver<'a> {
     fn render_model(&self, m: &[(VarId, i128)]) -> Vec<(String, i128)> {
         let mut out: Vec<(String, i128)> = m
             .iter()
-            .filter(|(v, _)| matches!(self.vars[*v as usize].desc, VarDesc::Term(_) | VarDesc::Res(_)))
+            .filter(|(v, _)| {
+                matches!(
+                    self.vars[*v as usize].desc,
+                    VarDesc::Term(_) | VarDesc::Res(_)
+                )
+            })
             .map(|(v, x)| (self.render_var(*v), *x))
             .collect();
         out.sort();
@@ -964,11 +1139,20 @@ impl<'a> Solver<'a> {
         used.sort();
         for &v in &used {
             let var = &self.vars[v as usize];
-            ineqs.push(Lin { ts: vec![(v, -1)], c: var.lo });
-            ineqs.push(Lin { ts: vec![(v, 1)], c: -var.hi });
+            ineqs.push(Lin {
+                ts: vec![(v, -1)],
+                c: var.lo,
+            });
+            ineqs.push(Lin {
+                ts: vec![(v, 1)],
+                c: -var.hi,
+            });
         }
         if used.len() > CAP_VARS {
-            return Err(Stop::Cap(format!("too many variables: {} (cap {CAP_VARS})", used.len())));
+            return Err(Stop::Cap(format!(
+                "too many variables: {} (cap {CAP_VARS})",
+                used.len()
+            )));
         }
         // 1. equalities
         let mut solved: Vec<(VarId, Lin)> = vec![];
@@ -984,7 +1168,10 @@ impl<'a> Solver<'a> {
             }
             if let Some(&(v, k)) = e.ts.iter().find(|(_, k)| k.abs() == 1) {
                 // v = −(e − k·v)/k
-                let rest = Lin { ts: e.ts.iter().filter(|(x, _)| *x != v).copied().collect(), c: e.c };
+                let rest = Lin {
+                    ts: e.ts.iter().filter(|(x, _)| *x != v).copied().collect(),
+                    c: e.c,
+                };
                 let sol = rest.scale(-k)?;
                 for l in eqs.iter_mut().skip(i) {
                     *l = l.subst(v, &sol)?;
@@ -1035,10 +1222,19 @@ impl<'a> Solver<'a> {
             if order.len() > CAP_CONS {
                 return Err(Stop::Cap(format!("too many constraints (cap {CAP_CONS})")));
             }
-            ineqs = order.into_iter().map(|ts| { let d = tight[&ts]; Lin { ts, c: -d } }).collect();
+            ineqs = order
+                .into_iter()
+                .map(|ts| {
+                    let d = tight[&ts];
+                    Lin { ts, c: -d }
+                })
+                .collect();
             // pick the variable with the fewest lower × upper pairs
             let mut best: Option<(usize, VarId)> = None;
-            let mut vars: Vec<VarId> = ineqs.iter().flat_map(|l| l.ts.iter().map(|(v, _)| *v)).collect();
+            let mut vars: Vec<VarId> = ineqs
+                .iter()
+                .flat_map(|l| l.ts.iter().map(|(v, _)| *v))
+                .collect();
             vars.sort();
             vars.dedup();
             vars.retain(|v| !eliminated.contains(v));
@@ -1055,7 +1251,8 @@ impl<'a> Solver<'a> {
             }
             let v = best.unwrap().1;
             eliminated.push(v);
-            let (lows, rest): (Vec<Lin>, Vec<Lin>) = ineqs.iter().cloned().partition(|l| l.coef(v) < 0);
+            let (lows, rest): (Vec<Lin>, Vec<Lin>) =
+                ineqs.iter().cloned().partition(|l| l.coef(v) < 0);
             let (ups, keep): (Vec<Lin>, Vec<Lin>) = rest.into_iter().partition(|l| l.coef(v) > 0);
             let mut next = keep;
             for lo in &lows {

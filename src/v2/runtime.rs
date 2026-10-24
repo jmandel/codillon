@@ -83,7 +83,13 @@ pub struct RuntimePlan {
     pub uncompiled: std::cell::RefCell<Vec<u32>>,
 }
 
-fn walk(terms: &Terms, t: TermId, born: &HashSet<TermId>, out: &mut Vec<TermId>, seen: &mut HashSet<TermId>) {
+fn walk(
+    terms: &Terms,
+    t: TermId,
+    born: &HashSet<TermId>,
+    out: &mut Vec<TermId>,
+    seen: &mut HashSet<TermId>,
+) {
     if !seen.insert(t) {
         return;
     }
@@ -92,7 +98,9 @@ fn walk(terms: &Terms, t: TermId, born: &HashSet<TermId>, out: &mut Vec<TermId>,
         return;
     }
     match terms.key(t) {
-        Key::Op(_, _, a) | Key::Float(_, a) => a.iter().for_each(|x| walk(terms, *x, born, out, seen)),
+        Key::Op(_, _, a) | Key::Float(_, a) => {
+            a.iter().for_each(|x| walk(terms, *x, born, out, seen))
+        }
         Key::Call(_, a, _) => a.iter().for_each(|x| walk(terms, *x, born, out, seen)),
         Key::Load(.., a, _) => walk(terms, *a, born, out, seen),
         Key::Ite(c, a, b) => {
@@ -144,8 +152,18 @@ fn atom_terms(a: &Atom, v: &mut Vec<TermId>) {
 impl RuntimePlan {
     /// The plan for a checked module: one check per runtime-checked cup on an executable line.
     pub fn new(m: &Module, out: &ModuleOut) -> RuntimePlan {
-        let reads_mem = super::info::analyze(m).iter().map(|i| i.reads_mem).collect();
-        let mut plan = RuntimePlan { module: m.clone(), funcs: vec![], checks: vec![], terms: vec![Terms::default(); m.funcs.len()], reads_mem, uncompiled: Default::default() };
+        let reads_mem = super::info::analyze(m)
+            .iter()
+            .map(|i| i.reads_mem)
+            .collect();
+        let mut plan = RuntimePlan {
+            module: m.clone(),
+            funcs: vec![],
+            checks: vec![],
+            terms: vec![Terms::default(); m.funcs.len()],
+            reads_mem,
+            uncompiled: Default::default(),
+        };
         for fo in &out.funcs {
             let f = fo.func as usize;
             let born: HashSet<TermId> = fo.births.iter().map(|b| b.term).collect();
@@ -176,17 +194,19 @@ impl RuntimePlan {
                 checks.push((c, sends));
             }
             for t in needed {
-                if !shadow_of.contains_key(&t) {
-                    shadow_of.insert(t, fp.shadow_tys.len() as u32);
+                if let std::collections::hash_map::Entry::Vacant(e) = shadow_of.entry(t) {
+                    e.insert(fp.shadow_tys.len() as u32);
                     fp.shadow_tys.push(fo.terms.ty(t));
                 }
             }
             for b in &fo.births {
-                let Some(&shadow) = shadow_of.get(&b.term) else { continue };
+                let Some(&shadow) = shadow_of.get(&b.term) else {
+                    continue;
+                };
                 let act = ShadowAct { shadow, how: b.how };
-                if matches!(b.how, Capture::Param(_)) {
-                    fp.entry.push(act);
-                } else if b.line == fo.header_line && matches!(b.how, Capture::Global(_)) {
+                let at_entry = matches!(b.how, Capture::Param(_))
+                    || (b.line == fo.header_line && matches!(b.how, Capture::Global(_)));
+                if at_entry {
                     fp.entry.push(act);
                 } else {
                     let v = fp.after.entry(b.line).or_default();
@@ -206,10 +226,19 @@ impl RuntimePlan {
                     goal: c.goal.clone(),
                     atom: c.atom.clone(),
                     guard: c.guard.clone(),
-                    sends: sends.iter().map(|t| (*t, shadow_of[t], fo.terms.ty(*t))).collect(),
+                    sends: sends
+                        .iter()
+                        .map(|t| (*t, shadow_of[t], fo.terms.ty(*t)))
+                        .collect(),
                 });
                 fp.before.entry(c.line).or_default().push(id);
-                fp.sends.insert(id, sends.iter().map(|t| (shadow_of[t], fo.terms.ty(*t))).collect());
+                fp.sends.insert(
+                    id,
+                    sends
+                        .iter()
+                        .map(|t| (shadow_of[t], fo.terms.ty(*t)))
+                        .collect(),
+                );
             }
             plan.terms[f] = fo.terms.clone();
             plan.funcs.push(fp);
@@ -223,7 +252,14 @@ impl RuntimePlan {
 
     /// The plan of the `k`-th defined (non-imported) function, as the binary numbers them.
     pub fn for_defined(&self, k: usize) -> Option<&FuncPlan> {
-        let f = self.module.funcs.iter().enumerate().filter(|(_, f)| !f.imported).nth(k)?.0;
+        let f = self
+            .module
+            .funcs
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| !f.imported)
+            .nth(k)?
+            .0;
         self.func_plan(f as u32)
     }
 
@@ -236,7 +272,12 @@ impl RuntimePlan {
         for ((t, _, _), v) in c.sends.iter().zip(vals) {
             env.insert(*t, *v);
         }
-        let mut ev = Evaluator { plan: self, terms, env, mem };
+        let mut ev = Evaluator {
+            plan: self,
+            terms,
+            env,
+            mem,
+        };
         if let Some(g) = &c.guard {
             match ev.atom(g) {
                 Ok(false) => return CheckOutcome::Holds,
@@ -249,7 +290,9 @@ impl RuntimePlan {
             Ok(true) => CheckOutcome::Holds,
             Ok(false) => CheckOutcome::Fails(format!("check failed: ⟨{}⟩", c.goal)),
             // a fact whose evaluation traps is false (it holds iff it evaluates, without trapping, to nonzero)
-            Err(e) if e == TRAPS => CheckOutcome::Fails(format!("check failed: ⟨{}⟩ (its evaluation traps)", c.goal)),
+            Err(e) if e == TRAPS => {
+                CheckOutcome::Fails(format!("check failed: ⟨{}⟩ (its evaluation traps)", c.goal))
+            }
             Err(e) => CheckOutcome::Unknown(e),
         }
     }
@@ -284,7 +327,9 @@ impl Evaluator<'_> {
             }
             Key::Call(f, a, _) => {
                 let args: Vec<u64> = a.iter().map(|x| self.term(*x)).collect::<Result<_, _>>()?;
-                if self.mem.is_none() && self.plan.reads_mem.get(f as usize).copied().unwrap_or(true) {
+                if self.mem.is_none()
+                    && self.plan.reads_mem.get(f as usize).copied().unwrap_or(true)
+                {
                     return Err("memory is not available to the checker".into());
                 }
                 let mut it = Interp::new(&self.plan.module);
@@ -294,12 +339,19 @@ impl Evaluator<'_> {
                 it.budget = 1_000_000;
                 match it.call(f as usize, &args) {
                     Ok(r) => r.first().copied().ok_or("no result")?,
-                    Err(EvalErr::Budget) => return Err("predicate evaluation exceeded its budget".into()),
+                    Err(EvalErr::Budget) => {
+                        return Err("predicate evaluation exceeded its budget".into());
+                    }
                     Err(EvalErr::Trap(_)) => return Err(TRAPS.to_string()),
                     Err(e) => return Err(format!("predicate evaluation failed: {e:?}")),
                 }
             }
-            _ => return Err(format!("value of {} was not captured", self.terms.render(t))),
+            _ => {
+                return Err(format!(
+                    "value of {} was not captured",
+                    self.terms.render(t)
+                ));
+            }
         };
         self.env.insert(t, v);
         Ok(v)
@@ -314,8 +366,18 @@ impl Evaluator<'_> {
             Atom::Cmp { rel, signed, a, b } => {
                 let ty = self.terms.ty(*a);
                 let (x, y) = (self.term(*a)?, self.term(*b)?);
-                let s = |v: u64| if ty == ValTy::I32 { v as u32 as i32 as i128 } else { v as i64 as i128 };
-                let (x, y) = if *signed { (s(x), s(y)) } else { (x as i128, y as i128) };
+                let s = |v: u64| {
+                    if ty == ValTy::I32 {
+                        v as u32 as i32 as i128
+                    } else {
+                        v as i64 as i128
+                    }
+                };
+                let (x, y) = if *signed {
+                    (s(x), s(y))
+                } else {
+                    (x as i128, y as i128)
+                };
                 match rel {
                     Rel::Eq => x == y,
                     Rel::Ne => x != y,
