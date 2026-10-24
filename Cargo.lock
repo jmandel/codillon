@@ -361,6 +361,7 @@ dependencies = [
  "palette",
  "pretty_assertions",
  "regex",
+ "serde_json",
  "smallvec",
  "str_indices",
  "thousands",

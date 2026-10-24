@@ -3,9 +3,13 @@
 
 pub mod ast;
 pub mod erase;
-pub mod sexpr;
 pub mod eval;
+pub mod info;
+pub mod kernel;
+pub mod out;
+pub mod sexpr;
 pub mod solver;
+pub mod symex;
 pub mod term;
 
 #[cfg(all(test, not(target_arch = "wasm32")))]

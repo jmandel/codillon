@@ -83,10 +83,14 @@ impl Lin {
         let (mut i, mut j) = (0, 0);
         while i < self.ts.len() || j < o.ts.len() {
             if j >= o.ts.len() || (i < self.ts.len() && self.ts[i].0 < o.ts[j].0) {
-                ts.push(self.ts[i]);
+                if self.ts[i].1 != 0 {
+                    ts.push(self.ts[i]);
+                }
                 i += 1;
             } else if i >= self.ts.len() || o.ts[j].0 < self.ts[i].0 {
-                ts.push(o.ts[j]);
+                if o.ts[j].1 != 0 {
+                    ts.push(o.ts[j]);
+                }
                 j += 1;
             } else {
                 let c = add(self.ts[i].1, o.ts[j].1)?;
@@ -424,7 +428,7 @@ impl<'a> Solver<'a> {
     fn poly_mul(&mut self, a: &Lin, b: &Lin) -> R<Lin> {
         let mut out = Lin::konst(mul(a.c, b.c)?);
         out = out.plus(&b.scale(a.c)?.add_c(-mul(a.c, b.c)?)?)?;
-        out = out.plus(&Lin { ts: a.ts.iter().map(|(v, c)| Ok((*v, mul(*c, b.c)?))).collect::<R<Vec<_>>>()?, c: 0 })?;
+        out = out.plus(&a.scale(b.c)?.add_c(-mul(a.c, b.c)?)?)?;
         for (va, ca) in &a.ts {
             for (vb, cb) in &b.ts {
                 let mut f = self.factors(*va);
@@ -930,7 +934,8 @@ impl<'a> Solver<'a> {
         let mut exact = true;
         let mut inexact_var = 0;
         let mut elim: Vec<(VarId, Vec<Lin>)> = vec![];
-        loop {
+        let mut eliminated: Vec<VarId> = vec![];
+        for _round in 0..=used.len() + 1 {
             let mut tight: HashMap<Vec<(VarId, i128)>, i128> = HashMap::new();
             let mut order: Vec<Vec<(VarId, i128)>> = vec![];
             for l in &ineqs {
@@ -961,6 +966,7 @@ impl<'a> Solver<'a> {
             let mut vars: Vec<VarId> = ineqs.iter().flat_map(|l| l.ts.iter().map(|(v, _)| *v)).collect();
             vars.sort();
             vars.dedup();
+            vars.retain(|v| !eliminated.contains(v));
             if vars.is_empty() {
                 break;
             }
@@ -973,6 +979,7 @@ impl<'a> Solver<'a> {
                 }
             }
             let v = best.unwrap().1;
+            eliminated.push(v);
             let (lows, rest): (Vec<Lin>, Vec<Lin>) = ineqs.iter().cloned().partition(|l| l.coef(v) < 0);
             let (ups, keep): (Vec<Lin>, Vec<Lin>) = rest.into_iter().partition(|l| l.coef(v) > 0);
             let mut next = keep;
@@ -984,7 +991,8 @@ impl<'a> Solver<'a> {
                         inexact_var = v;
                     }
                     let g = gcd(a, b);
-                    let n = lo.scale(b / g)?.plus(&up.scale(a / g)?)?;
+                    let mut n = lo.scale(b / g)?.plus(&up.scale(a / g)?)?;
+                    n.ts.retain(|(x, _)| *x != v);
                     next.push(n);
                 }
             }
@@ -992,6 +1000,9 @@ impl<'a> Solver<'a> {
             bounds.extend(ups);
             elim.push((v, bounds));
             ineqs = next;
+        }
+        if ineqs.iter().any(|l| l.ts.is_empty() && l.c > 0) {
+            return Ok(Fm::Unsat);
         }
         if !exact {
             return Ok(Fm::Inexact(inexact_var));
