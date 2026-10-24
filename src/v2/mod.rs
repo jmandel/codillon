@@ -24,3 +24,5 @@ mod vericode_tests;
 mod fable_probes;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod review_adv;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod gfix_tests;

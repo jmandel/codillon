@@ -1496,6 +1496,12 @@ impl<'a, 'm> Pass<'a, 'm> {
                 self.eps = self.fresh_eps();
             }
             Ins::Call(name) => match self.cx.m.func_index(name) {
+                Some(g) if self.cx.m.funcs[g].is_lemma() || self.cx.m.funcs[g].is_axiom() => {
+                    self.line_errors.push((
+                        line,
+                        format!("{name} is ghost code: write `lemma {name} …`, not `call`"),
+                    ));
+                }
                 Some(g) => self.do_call(line, g),
                 None => self
                     .line_errors
@@ -2256,6 +2262,10 @@ impl<'a, 'm> Pass<'a, 'm> {
         let func = &cx.m.funcs[self.f];
         let hl = func.header_line;
         let name = func.name();
+        if func.is_lemma() {
+            self.lemma_checks();
+            return;
+        }
         if !(i.is_pred || i.is_measure) {
             return;
         }
@@ -2305,6 +2315,56 @@ impl<'a, 'm> Pass<'a, 'm> {
         } else if i.self_rec {
             self.line_errors
                 .push((hl, format!("measure {name} may not be recursive")));
+        }
+    }
+
+    /// R33: a lemma is ghost code, never run, so it must be total: no loops, no stores or impure
+    /// calls, no value results, calls only to predicates (which R29 keeps total), and recursion only
+    /// direct and measured (R31). Otherwise a lemma could "prove" False by never returning.
+    fn lemma_checks(&mut self) {
+        let cx = self.cx;
+        let i = &cx.info[self.f];
+        let func = &cx.m.funcs[self.f];
+        let hl = func.header_line;
+        let name = func.name();
+        if let Some((l, why)) = &i.impure {
+            self.line_errors
+                .push((hl, format!("lemma {name} must be pure: line {l} {why}")));
+        }
+        if let Some(l) = i.has_loop {
+            self.line_errors.push((
+                hl,
+                format!("lemma {name} has a loop (line {l}); ghost code must terminate"),
+            ));
+        }
+        if !func.value_results().is_empty() {
+            self.line_errors
+                .push((hl, format!("lemma {name} may have only fact results")));
+        }
+        for (l, ins) in &func.body {
+            if let Ins::Call(c) = ins
+                && let Some(g) = cx.m.func_index(c)
+                && !cx.info[g].is_pred
+            {
+                self.line_errors.push((
+                    *l,
+                    format!("a lemma may call only predicates: {c} is not total (ghost code must terminate)"),
+                ));
+            }
+        }
+        if let Some(g) = i.mutual_rec {
+            self.line_errors.push((
+                hl,
+                format!(
+                    "lemma {name} is recursive through {} (only direct self-recursion with a measure is allowed)",
+                    cx.m.funcs[g].name()
+                ),
+            ));
+        }
+        if let Some(mf) = i.measure
+            && let Err(e) = measure_shape(cx.m, self.f, mf)
+        {
+            self.line_errors.push((hl, e));
         }
     }
 

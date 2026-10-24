@@ -12,6 +12,8 @@ pub struct FnInfo {
     /// directly self-recursive (a `call` to itself, or a `lemma` line naming itself)
     pub self_rec: bool,
     pub calls: Vec<usize>,
+    /// `lemma $g` lines (ghost calls): edges for recursion through lemmas (R31, R33)
+    pub lemma_calls: Vec<usize>,
     /// named in some proposition (R29)
     pub is_pred: bool,
     /// reaches itself through another function (mutual recursion): that function
@@ -105,8 +107,13 @@ pub fn analyze(m: &Module) -> Vec<FnInfo> {
                     }
                 }
                 Ins::Lemma(c, args) | Ins::Unfold(c, args) => {
-                    if matches!(ins, Ins::Lemma(..)) && m.func_index(c) == Some(i) {
-                        fi.self_rec = true;
+                    if matches!(ins, Ins::Lemma(..))
+                        && let Some(g) = m.func_index(c)
+                    {
+                        fi.lemma_calls.push(g);
+                        if g == i {
+                            fi.self_rec = true;
+                        }
                     }
                     if matches!(ins, Ins::Unfold(..)) {
                         named.push(c.clone());
@@ -153,9 +160,12 @@ pub fn analyze(m: &Module) -> Vec<FnInfo> {
             break;
         }
     }
-    // mutual recursion: f reaches itself through a call path of length ≥ 2
+    // mutual recursion: f reaches itself through a call or lemma path of length ≥ 2
+    let edges = |x: &FnInfo| -> Vec<usize> {
+        x.calls.iter().chain(x.lemma_calls.iter()).copied().collect()
+    };
     for f in 0..n {
-        for &g in &info[f].calls.clone() {
+        for g in edges(&info[f]) {
             if g == f {
                 continue;
             }
@@ -169,7 +179,7 @@ pub fn analyze(m: &Module) -> Vec<FnInfo> {
                 if std::mem::replace(&mut seen[x], true) {
                     continue;
                 }
-                work.extend(info[x].calls.iter().copied());
+                work.extend(edges(&info[x]));
             }
             if info[f].mutual_rec.is_some() {
                 break;
