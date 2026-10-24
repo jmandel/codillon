@@ -174,6 +174,10 @@ pub struct Pass<'a, 'm> {
     pub line_errors: Vec<(u32, String)>,
     pub slot_ids: Vec<(u32, u32)>,
     pub births: Vec<Birth>,
+    /// local rebindings: (local, old id, new id, line), in pass order (R7 stale hints)
+    sets: Vec<(usize, TermId, TermId, u32)>,
+    /// the line where a fact frays (R7, R11)
+    fray: HashMap<FactId, u32>,
     ghost: bool,
     /// lines of `assume` (not instructor axioms)
     line: u32,
@@ -522,10 +526,13 @@ impl<'a, 'm> Pass<'a, 'm> {
                 CupKind::False => "reachable: needs False; nothing feeds it".into(),
                 _ => base,
             };
-            let d = match self.cups[c].diag.take() {
+            let mut d = match self.cups[c].diag.take() {
                 Some(x) => format!("{what} ({x})"),
                 None => what,
             };
+            if let Some(h) = self.stale_hint(&r.atom) {
+                d = format!("{d}; {h}");
+            }
             if self.ghost {
                 self.line_errors.push((line, d.clone()));
             }
@@ -667,6 +674,8 @@ impl<'a, 'm> Pass<'a, 'm> {
             line_errors: vec![],
             slot_ids: vec![],
             births: vec![],
+            sets: vec![],
+            fray: HashMap::new(),
             ghost,
             line: func.header_line,
         }
@@ -907,7 +916,60 @@ impl<'a, 'm> Pass<'a, 'm> {
         } else {
             self.feed_enter(line, &[]);
         }
+        let old = self.locals[i];
+        if old != t && self.dead.is_none() {
+            self.sets.push((i, old, t, line));
+            for e in self.lane.clone() {
+                if !self.fray.contains_key(&e.fact) && self.atom_mentions(&self.facts[e.fact as usize].atom, &|_, x| x == old) {
+                    self.fray.insert(e.fact, line);
+                }
+            }
+        }
         self.locals[i] = t;
+    }
+
+    fn mentions(&self, t: TermId, p: &dyn Fn(&Key, TermId) -> bool, seen: &mut Vec<TermId>) -> bool {
+        if seen.contains(&t) {
+            return false;
+        }
+        seen.push(t);
+        let k = self.terms.key(t);
+        if p(k, t) {
+            return true;
+        }
+        match k {
+            Key::Op(_, _, a) | Key::Float(_, a) => a.iter().any(|x| self.mentions(*x, p, seen)),
+            Key::Call(_, a, _) => a.iter().any(|x| self.mentions(*x, p, seen)),
+            Key::Load(.., a, _) => self.mentions(*a, p, seen),
+            Key::Ite(c, a, b) => [c, a, b].iter().any(|x| self.mentions(**x, p, seen)),
+            _ => false,
+        }
+    }
+
+    fn atom_mentions(&self, a: &Atom, p: &dyn Fn(&Key, TermId) -> bool) -> bool {
+        let mut seen = vec![];
+        match a {
+            Atom::Cmp { a, b, .. } => self.mentions(*a, p, &mut seen) || self.mentions(*b, p, &mut seen),
+            Atom::Bool { t, .. } => self.mentions(*t, p, &mut seen),
+            Atom::Or(x, y) => self.atom_mentions(x, p) || self.atom_mentions(y, p),
+            _ => false,
+        }
+    }
+
+    /// R5's stale-fact hint: a lane fact about the value a local held before a rebinding that the
+    /// goal's value replaced.
+    fn stale_hint(&self, goal: &Atom) -> Option<String> {
+        for &(i, old, new, line) in self.sets.iter().rev() {
+            if !self.atom_mentions(goal, &|_, x| x == new) {
+                continue;
+            }
+            if let Some(e) = self.lane.iter().rev().find(|e| self.atom_mentions(&self.facts[e.fact as usize].atom, &|_, x| x == old)) {
+                let f = &self.facts[e.fact as usize];
+                let name = self.locs[i].0.clone().unwrap_or_else(|| format!("local {i}"));
+                return Some(format!("⟨{}⟩ (line {}) is about the old {name} (set at line {line})", self.terms.render_atom(&f.atom), f.line));
+            }
+        }
+        None
     }
 
     /// One body line.
@@ -1070,6 +1132,13 @@ impl<'a, 'm> Pass<'a, 'm> {
                 let a = self.pop();
                 let req = self.bounds_cup(a, ma.offset, ma.bytes);
                 self.feed_enter(line, &[req]);
+                let old = self.eps;
+                let epoch_of = move |k: &Key, _: TermId| matches!(k, Key::Call(_, _, e) | Key::Load(.., e) if *e == old);
+                for e in self.lane.clone() {
+                    if !self.fray.contains_key(&e.fact) && self.atom_mentions(&self.facts[e.fact as usize].atom, &epoch_of) {
+                        self.fray.insert(e.fact, line);
+                    }
+                }
                 self.eps = self.fresh_eps();
             }
             Ins::MemorySize => {
@@ -1809,7 +1878,8 @@ impl<'a, 'm> Pass<'a, 'm> {
         let chips = self
             .facts
             .iter()
-            .map(|f| super::out::ChipOut { line: f.line, text: self.terms.render_atom(&f.atom), origin: f.kind, frayed_at: None })
+            .enumerate()
+            .map(|(i, f)| super::out::ChipOut { line: f.line, text: self.terms.render_atom(&f.atom), origin: f.kind, frayed_at: self.fray.get(&(i as FactId)).copied() })
             .collect();
         let out = FuncOut {
             name: func.name(),

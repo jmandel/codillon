@@ -708,3 +708,17 @@ fn editor_examples_run_their_main() {
         }
     }
 }
+
+#[test]
+fn stale_hint_and_fraying() {
+    let out = check_module(&Module::parse(&testdata("hashtable-stale", "wat")), true);
+    let c = out.cups().find(|c| c.line == 320).unwrap();
+    let d = c.diag.clone().unwrap();
+    assert!(d.contains("is about the old $i (set at line 314)"), "{d}");
+    let f = out.func_at(320).unwrap();
+    assert!(f.chips.iter().any(|ch| ch.line == 310 && ch.frayed_at == Some(314)), "no frayed chip");
+    // a store frays chips that carry the old epoch (hashtable $insert: $rep_ok at the loop head)
+    let out = check_module(&Module::parse(&testdata("hashtable", "wat")), true);
+    let f = out.func_at(245).unwrap();
+    assert!(f.chips.iter().any(|ch| ch.line == 202 && ch.text.contains("rep_ok") && ch.frayed_at == Some(245)));
+}
