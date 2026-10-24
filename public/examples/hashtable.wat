@@ -16,7 +16,7 @@
 (@define copies($k) = count $s in 0..CAP: st($s) == FULL && key($s) == $k)
 (@define R2 = forall $k in $M: copies($k) == 1)
 (@define open($k, $d) = st(at($k, $d)) != EMPTY)
-(@define reach($s) = forall $d in 0..dist(key($s), $s) + 1: open(key($s), $d))
+(@define reach($s) = forall $d in 0..CAP: $d <= dist(key($s), $s) ==> open(key($s), $d))
 (@define R3 = forall $s in 0..CAP: st($s) == FULL ==> reach($s))
 (@define FULLS = count $s in 0..CAP: st($s) == FULL)
 (@define USED = count $s in 0..CAP: st($s) != EMPTY)
@@ -66,7 +66,7 @@
   local.set $i
   loop $probe
     (@invariant 0 <= $j && $j <= $used && $i == at($k, $j))
-    (@invariant forall $d in 0..$j: passed($k, $d))
+    (@invariant forall $d in 0..CAP: $d < $j ==> passed($k, $d))
     (@decreases CAP - $j)
     local.get $i
     call $slot
@@ -175,7 +175,7 @@
   local.set $i
   loop $free
     (@invariant !($k in $M) && 0 <= $j && $j <= $used && $i == at($k, $j))
-    (@invariant forall $d in 0..$j: st(at($k, $d)) != EMPTY)
+    (@invariant forall $d in 0..CAP: $d < $j ==> open($k, $d))
     (@decreases CAP - $j)
     local.get $i
     call $slot

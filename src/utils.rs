@@ -204,6 +204,17 @@ impl GeneralOperator<'_> {
         }
     }
 
+    /// The operator itself (for analyses of the program, e.g. verification conditions).
+    pub fn operator(&self) -> &Operator<'_> {
+        &self.op
+    }
+
+    /// Was this operator changed to make the module valid (so it traps if reached), or
+    /// added by Codillon (a synthetic else or end)?
+    pub fn is_synthetic(&self) -> bool {
+        self.untyped || !self.prepended.is_empty() || self.info == OpInfo::SyntheticElse
+    }
+
     /// Is this a direct or indirect call (whose outputs are the callee's results)?
     pub fn is_call(&self) -> bool {
         matches!(
@@ -5012,6 +5023,7 @@ pub(crate) mod tests {
             log: RunLog,
             binary: Vec<u8>, // the plain module (before instrumentation)
             instrumented: Vec<u8>,
+            obligations: Vec<crate::vc::Obligation>,
         }
 
         fn load(src: &str) -> FakeTextBuffer {
@@ -5039,6 +5051,7 @@ pub(crate) mod tests {
             let types = validized.to_types_table(&wasm_bin)?;
             indent_and_frame(&mut editor, &validized, &types, None);
             let plan = build_plan(&editor, &validized, &types);
+            let obligations = crate::vc::generate(&plan, &validized, &types);
             let binary = wasm_bin.clone();
             let options = InstrumentOptions {
                 record_stores: plan.uses_memory,
@@ -5060,6 +5073,7 @@ pub(crate) mod tests {
                 log,
                 binary,
                 instrumented,
+                obligations,
             })
         }
 
@@ -5111,6 +5125,11 @@ pub(crate) mod tests {
                 "hashtable",
                 include_str!("../public/examples/hashtable.wat"),
             ),
+            ("hashtable-a", include_str!("../public/examples/hashtable-a.wat")),
+            ("hashtable-b", include_str!("../public/examples/hashtable-b.wat")),
+            ("hashtable-b2", include_str!("../public/examples/hashtable-b2.wat")),
+            ("hashtable-c", include_str!("../public/examples/hashtable-c.wat")),
+            ("hashtable-d", include_str!("../public/examples/hashtable-d.wat")),
             ("hello", include_str!("../public/examples/hello.wat")),
             (
                 "isqrt-args",
@@ -5387,7 +5406,7 @@ i32.store offset=8
             let r = run_spec(src)?;
             assert_eq!(failures(&r), vec![]);
             assert_eq!(fixture_steps_through(&r, r.log.step_count() - 1), 383);
-            assert!(held(&r, line_of(src, "(@invariant forall $d in 0..$j: passed")) > 0);
+            assert!(held(&r, line_of(src, "(@invariant forall $d in 0..CAP: $d < $j ==> passed")) > 0);
 
             // (first failing check: fixture step, fixture kind, the line it is written on)
             let cases: [(&str, &str, usize, CheckKind, &str); 4] = [
@@ -5693,6 +5712,127 @@ local.get $r
                 bad.plan.errors,
                 vec![(1, "$main takes 1 argument(s)".to_string())]
             );
+            Ok(())
+        }
+
+        // ---- proofs: the same queries through the native z3 binary ----
+
+        fn z3_binary() -> String {
+            if let Ok(p) = std::env::var("Z3_BIN") {
+                return p;
+            }
+            let home = std::env::var("HOME").unwrap_or_default();
+            let local = format!("{home}/.local/bin/z3");
+            if std::path::Path::new(&local).exists() {
+                return local;
+            }
+            "z3".to_string()
+        }
+
+        fn solve(smt: &str) -> String {
+            use std::io::Write;
+            let mut child = std::process::Command::new(z3_binary())
+                .args(["-in", "-smt2"])
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .expect("z3 binary (set Z3_BIN, or install z3 in ~/.local/bin)");
+            child.stdin.take().unwrap().write_all(smt.as_bytes()).unwrap();
+            let out = child.wait_with_output().unwrap();
+            String::from_utf8_lossy(&out.stdout).to_string()
+        }
+
+        fn prove(r: &SpecRun) -> Vec<(usize, crate::vc::Verdict)> {
+            let obs = &r.obligations;
+            let results = std::sync::Mutex::new(vec![None; obs.len()]);
+            let next = std::sync::atomic::AtomicUsize::new(0);
+            std::thread::scope(|s| {
+                for _ in 0..8 {
+                    s.spawn(|| loop {
+                        let i = next.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        if i >= obs.len() {
+                            break;
+                        }
+                        let t0 = std::time::Instant::now();
+                        let mut proof = crate::vc::Proof::new(&obs[i]);
+                        while let Some(q) = proof.next(&obs[i]) {
+                            let out = solve(&q);
+                            assert!(
+                                !out.lines().any(|l| l.contains("(error") && !l.contains("model is not available")),
+                                "solver error {out} in\n{q}"
+                            );
+                            proof.feed(&obs[i], &out);
+                        }
+                        let v = proof.verdict().cloned().expect("a verdict");
+                        if std::env::var("STATS").is_ok() {
+                            eprintln!(
+                                "    stats f{} line {} {}: {} queries, {:.2}s",
+                                obs[i].func,
+                                obs[i].at_line + 1,
+                                obs[i].kind.describe(),
+                                proof.queries,
+                                t0.elapsed().as_secs_f64()
+                            );
+                        }
+                        results.lock().unwrap()[i] = Some(v);
+                    });
+                }
+            });
+            results
+                .into_inner()
+                .unwrap()
+                .into_iter()
+                .enumerate()
+                .map(|(i, v)| (i, v.unwrap()))
+                .collect()
+        }
+
+        fn describe_verdicts(src: &str, r: &SpecRun, vs: &[(usize, crate::vc::Verdict)]) -> String {
+            let mut out = String::new();
+            for (i, v) in vs {
+                let ob = &r.obligations[*i];
+                let line = |l: usize| src.lines().nth(l).unwrap_or("").trim().chars().take(48).collect::<String>();
+                let what = match v {
+                    crate::vc::Verdict::Proven => "proven".to_string(),
+                    crate::vc::Verdict::Refuted(m) => format!("REFUTED {:?} {:?} {:?}", m.vars, m.words.iter().filter(|(_, v)| **v != 0).collect::<Vec<_>>(), m.maps),
+                    crate::vc::Verdict::Unknown(w) => format!("unknown: {w}"),
+                };
+                out.push_str(&format!(
+                    "  f{} {:<34} at {:>3} [{}] spec {:?}: {}\n",
+                    ob.func,
+                    ob.kind.describe(),
+                    ob.at_line + 1,
+                    line(ob.at_line),
+                    ob.spec_line.map(|l| l + 1),
+                    what
+                ));
+            }
+            out
+        }
+
+        #[test]
+        #[ignore]
+        fn explore_proofs() -> Result<()> {
+            let only = std::env::var("ONLY").unwrap_or_default();
+            for (name, src) in EXAMPLES {
+                if !only.is_empty() && !only.split(',').any(|o| o == *name) {
+                    continue;
+                }
+                let t = std::time::Instant::now();
+                let r = run_spec(src)?;
+                let vs = prove(&r);
+                eprintln!("== {name} ({} obligations, {:?})", r.obligations.len(), t.elapsed());
+                eprint!("{}", describe_verdicts(src, &r, &vs));
+                if std::env::var("DUMP").is_ok() {
+                    for ob in &r.obligations {
+                        let _ = std::fs::write(format!("/home/jmandel/hobby/.agent-scratch/codalon-viz/z3/q-{name}-{:x}.smt2", ob.hash), format!("; f{} {} line {}\n{}", ob.func, ob.kind.describe(), ob.at_line, ob.smt));
+                        if let Some(q) = &ob.smt_int {
+                            let _ = std::fs::write(format!("/home/jmandel/hobby/.agent-scratch/codalon-viz/z3/q-{name}-{:x}.int.smt2", ob.hash), q);
+                        }
+                    }
+                }
+            }
             Ok(())
         }
 
