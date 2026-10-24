@@ -67,8 +67,9 @@ fn replace(lines: &[String], a: usize, b: usize, with: &[&str]) -> Vec<String> {
 /// A lemma may call only predicates "which R29 keeps total" — but R29 checks the predicate's own
 /// body, not its callees. $p calls $spin, an ordinary function that never returns and whose
 /// result refinement is False (dead-fed, so proven). The lemma erases to nop; $f then divides by 0.
+/// Fixed (B1): a function a predicate calls is itself a predicate (R29), so `$spin` is rejected
+/// for its loop and nothing downstream is VERIFIED.
 #[test]
-#[ignore = "HOLE (research/22 B1): R29 does not check a predicate's callees; all VERIFIED, f(0) traps"]
 fn fable_f1_lemma_through_predicate_through_partial_callee() {
     let src = r#"(func $spin (result (i32 | (i32.ne v v)))
   loop $l
@@ -98,8 +99,31 @@ fn fable_f1_lemma_through_predicate_through_partial_callee() {
     let (r, _) = super::tests::instrumented_run(src, "f", &[0]);
     println!("run f(0): {r:?}");
     assert!(
-        !verified(&out, "$f") || !verified(&out, "$boom"),
+        !verified(&out, "$f") && !verified(&out, "$boom") && !verified(&out, "$p"),
         "lemma rests on a non-terminating predicate callee"
+    );
+    assert!(
+        errors(&out)
+            .iter()
+            .any(|(l, e)| *l == 1 && e.contains("predicate $spin has a loop")),
+        "{:?}",
+        errors(&out)
+    );
+    // the same with unmeasured self-recursion instead of a loop
+    let rec = src.replace(
+        "  loop $l\n    br $l\n  end\n  unreachable",
+        "  call $spin",
+    );
+    assert_ne!(rec, src);
+    let out = check(&rec);
+    println!("{}", dump(&out));
+    assert!(!verified(&out, "$f") && !verified(&out, "$boom"));
+    assert!(
+        errors(&out)
+            .iter()
+            .any(|(l, e)| *l == 1 && e.contains("recursive without measure")),
+        "{:?}",
+        errors(&out)
     );
 }
 

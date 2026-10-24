@@ -203,5 +203,21 @@ pub fn analyze(m: &Module) -> Vec<FnInfo> {
             info[i].is_measure = true;
         }
     }
+    // R29: a predicate or measure may call only predicates, so totality is inductive. A function
+    // reached by `call` from one is therefore itself a predicate (helpers like gcd's `$common` are
+    // never named in a proposition) and gets every R29 check; an ordinary function that loops or
+    // recurses unmeasured is then rejected on its own header instead of lending its vacuous
+    // contract to the predicate (research/22 B1).
+    let mut work: Vec<usize> = (0..n)
+        .filter(|&i| info[i].is_pred || info[i].is_measure)
+        .collect();
+    while let Some(i) = work.pop() {
+        for g in info[i].calls.clone() {
+            if !info[g].is_pred && !m.funcs[g].is_lemma() && !m.funcs[g].is_axiom() {
+                info[g].is_pred = true;
+                work.push(g);
+            }
+        }
+    }
     info
 }
