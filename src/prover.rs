@@ -173,8 +173,7 @@ pub fn obligations(
 use crate::vc::{Cut, Model, ObKind, TrapKind};
 
 /// What can go wrong, with where (for the witness track).
-pub fn refuted_where(ob: &Obligation) -> String {
-    let at = ob.at_line + 1;
+pub fn refuted_where(ob: &Obligation, at: usize) -> String {
     match ob.kind {
         ObKind::Requires => format!("the callee's precondition can fail at the call on line {at}"),
         ObKind::Ensures => format!("the postcondition can fail at the return on line {at}"),
@@ -201,8 +200,7 @@ pub fn refuted_phrase(ob: &Obligation) -> String {
 }
 
 // The same, said on the spec line itself (which names what fails).
-fn short_phrase(ob: &Obligation) -> String {
-    let at = ob.at_line + 1;
+fn short_phrase(ob: &Obligation, at: usize) -> String {
     match ob.kind {
         ObKind::Requires => format!("fails at the call on line {at}"),
         ObKind::Ensures => format!("fails at the return on line {at}"),
@@ -248,7 +246,11 @@ pub fn state_text(plan: &SpecPlan, ob: &Obligation, m: &Model) -> String {
         parts.push(format!("${n} = {v}"));
     }
     for (n, v) in &m.ghosts {
-        parts.push(format!("${n} = {v}"));
+        // (at function entry, ghost locals are still at their initial value)
+        let global = plan.ghost_globals.iter().any(|(g, _)| g == n);
+        if global || ob.cut != Cut::Entry {
+            parts.push(format!("${n} = {v}"));
+        }
     }
     for (n, map) in &m.maps {
         parts.push(format!("${n} = {}", map_text(map)));
@@ -264,10 +266,11 @@ pub fn state_text(plan: &SpecPlan, ob: &Obligation, m: &Model) -> String {
 }
 
 /// The commentary of a refuted obligation, on its spec line.
-pub fn refuted_text(plan: &SpecPlan, ob: &Obligation, m: &Model) -> String {
+/// (`at` is the number the gutter shows for the obligation's instruction line.)
+pub fn refuted_text(plan: &SpecPlan, ob: &Obligation, m: &Model, at: usize) -> String {
     format!(
         "\u{2696} {} from {} \u{b7} allowed by the spec",
-        short_phrase(ob),
+        short_phrase(ob, at),
         state_text(plan, ob, m)
     )
 }
@@ -380,7 +383,12 @@ pub fn state_card(plan: &SpecPlan, m: &Model) -> Option<(usize, Vec<CardCell>)> 
             }
         }
     }
-    for (n, map) in &m.maps {
+    let empty = std::collections::BTreeMap::new();
+    for (n, ty) in &plan.ghost_globals {
+        if *ty != crate::spec::GhostType::Map {
+            continue;
+        }
+        let map = m.maps.get(n).unwrap_or(&empty);
         let entries: Vec<String> = map
             .iter()
             .map(|(k, v)| format!("{k} \u{21a6} {v}"))

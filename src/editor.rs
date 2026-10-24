@@ -1167,7 +1167,12 @@ impl Editor {
                 let ob = &p.obligations[i];
                 m.proof = ProofMark::Refuted;
                 if m.failed.is_none() {
-                    m.failed = Some(crate::prover::refuted_text(plan, ob, model));
+                    m.failed = Some(crate::prover::refuted_text(
+                        plan,
+                        ob,
+                        model,
+                        self.shown_line_number(ob.at_line),
+                    ));
                 }
                 if ob.at_line != line {
                     at_labels.push((
@@ -1196,6 +1201,13 @@ impl Editor {
                 m.proof = ProofMark::Refuted;
             }
         }
+    }
+
+    // The number the gutter shows for a line (blank and comment lines are not numbered).
+    fn shown_line_number(&self, idx: usize) -> usize {
+        (0..=idx.min(self.len().saturating_sub(1)))
+            .filter(|&i| !matches!(self.info(i).kind, LineKind::Empty))
+            .count()
     }
 
     // The proofs, in a line of the witness track (None: nothing to say).
@@ -1251,7 +1263,7 @@ impl Editor {
                         TrackState::NotReplayed,
                         format!(
                             "\u{2696} the spec allows {state}, and then {} \u{b7} not replayed \u{2014} click to replay",
-                            crate::prover::refuted_where(ob)
+                            crate::prover::refuted_where(ob, self.shown_line_number(ob.at_line))
                         ),
                         format!(
                             "{summary}. A state the solver found; a run may never reach it.{timing}"
@@ -1262,7 +1274,7 @@ impl Editor {
                         TrackState::NotReplayed,
                         format!(
                             "\u{2696} at the loop head the spec allows {state}, and then {} \u{b7} a mid-run state, not replayable",
-                            crate::prover::refuted_where(ob)
+                            crate::prover::refuted_where(ob, self.shown_line_number(ob.at_line))
                         ),
                         format!(
                             "{summary}. A state the solver found; a run may never reach it.{timing}"
