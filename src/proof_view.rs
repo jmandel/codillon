@@ -28,11 +28,14 @@ pub const DARK_PURPLE: &str = "#483D8B";
 const DARKRED: &str = "darkred";
 
 /// What the editor knows about one line's layout (0-based by editor line).
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct LineGeom {
     pub indent: Option<u16>,
     /// right edge of the line's value input cups, if it has a fraction with inputs
     pub frac_right: Option<f32>,
+    /// the line's instruction, as a consumer is named in a prove's goal line (`i32.add`,
+    /// `call $f`, `unreachable`)
+    pub op: Option<String>,
 }
 
 /// Per-line results for the text column (0-based by editor line).
@@ -53,6 +56,13 @@ pub struct LineProof {
     /// vericoding commentary: (text, tone) with tone "lock" (a refused edit), "reject" (a
     /// rejected submission, darkred) or "mutant" (a surviving mutant)
     pub vnote: Option<(String, &'static str)>,
+    /// a `prove` line's account, one short line each: the goal it feeds, the hypotheses it uses,
+    /// why it holds (drawn right of the code, quiet)
+    pub explain: Option<String>,
+    /// the kernel shows this line can never run (a decided branch): drawn lightly greyed
+    pub never: bool,
+    /// hover text for the row's fact lane: the propositions on the chips and ribbons here
+    pub lane: Option<String>,
 }
 
 #[derive(Default)]
@@ -381,6 +391,11 @@ struct Ctx<'a> {
 }
 
 impl Ctx<'_> {
+    fn op(&self, line: u32) -> Option<&str> {
+        self.geom
+            .get(line.saturating_sub(1) as usize)
+            .and_then(|g| g.op.as_deref())
+    }
     fn indent(&self, line: u32) -> u16 {
         self.geom
             .get(line.saturating_sub(1) as usize)
@@ -410,6 +425,139 @@ impl Ctx<'_> {
     }
 }
 
+/// Per-line output beyond hover text and commentary (kernel lines, renumbered in `build`).
+#[derive(Default)]
+struct Extra {
+    /// a prove line's account (goal, hypotheses, reason), one entry per drawn line
+    explains: HashMap<u32, Vec<String>>,
+    /// lines that never run
+    never: std::collections::HashSet<u32>,
+    /// the facts on the lane at each row (drawn chips whose ribbon covers it)
+    lanes: HashMap<u32, Vec<String>>,
+}
+
+/// The longest line of a prove's account (the full text is the line's hover title).
+const EXPLAIN_CHARS: usize = 150;
+
+fn clip(s: &str, n: usize) -> String {
+    if s.chars().count() <= n {
+        s.to_string()
+    } else {
+        let mut t: String = s.chars().take(n - 1).collect();
+        t.push('…');
+        t
+    }
+}
+
+/// ①, ②, … for the j-th hypothesis of a prove (as the solver's explanation labels them).
+fn circled(j: usize) -> String {
+    const C: [&str; 10] = ["①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨", "⑩"];
+    C.get(j)
+        .map(|c| c.to_string())
+        .unwrap_or_else(|| format!("({})", j + 1))
+}
+
+/// Where a lane fact came from, for a student: "br_if on line 13 not taken".
+fn origin_desc(origin: &str, line: u32) -> String {
+    match origin {
+        "br_if fall-through" => format!("br_if on line {line} not taken"),
+        "br_if taken edge" => format!("br_if on line {line} taken"),
+        "br_table edge" => format!("br_table on line {line}"),
+        "if then-arm" => format!("if on line {line}, then-arm"),
+        "if else-arm" => format!("else-arm, line {line}"),
+        "prove" => format!("proved on line {line}"),
+        "evaluation" => format!("evaluated on line {line}"),
+        "call result" => format!("result of the call on line {line}"),
+        "entry (parameter refinement)" => format!("parameter refinement, line {line}"),
+        "entry (fact parameter)" => format!("fact parameter, line {line}"),
+        "loop invariant" => format!("loop invariant, line {line}"),
+        "loop parameter" => format!("loop parameter, line {line}"),
+        "assume" => format!("assumed on line {line}"),
+        "unfold" => format!("unfolded on line {line}"),
+        o => format!("{o}, line {line}"),
+    }
+}
+
+/// The cup a prove feeds, for a student: "feeds unreachable (line 15)", "feeds the i32.add cup
+/// on line 20".
+fn consumer_desc(c: &CupOut, op: Option<&str>) -> String {
+    let l = c.line;
+    let op = op.filter(|o| !o.is_empty());
+    match (c.kind, op) {
+        (CupKind::False, Some(o)) => format!("feeds {o} (line {l})"),
+        (CupKind::ResultRefinement, _) => format!("feeds the function's result cup (line {l})"),
+        (CupKind::BlockFact { .. }, _) => format!("feeds the block fact at line {l}"),
+        (CupKind::LoopEntry, _) => format!("feeds the loop entry on line {l}"),
+        (CupKind::BackEdge, _) => format!("feeds the back edge on line {l}"),
+        (CupKind::Measure, _) => format!("feeds the measure on line {l}"),
+        (CupKind::DivByZero, Some(o)) => format!("feeds the {o} divisor cup on line {l}"),
+        (CupKind::Bounds, Some(o)) => format!("feeds the {o} bounds cup on line {l}"),
+        (_, Some(o)) => format!("feeds the {o} cup on line {l}"),
+        (_, None) => format!("feeds the cup on line {l}"),
+    }
+}
+
+/// A prove's account: the goal it feeds, the hypotheses it takes (marking those the proof does
+/// not need), and the solver's reason. `hyps` are (proposition, origin) in socket order.
+fn prove_block(f: &FuncOut, ctx: &Ctx, goals: &[usize], hyps: &[(String, String)]) -> Vec<String> {
+    let mut out = vec![];
+    let Some(&g) = goals.first() else {
+        return out;
+    };
+    let c = &f.cups[g];
+    out.push(format!(
+        "⊢ {} — {}",
+        c.goal,
+        consumer_desc(c, ctx.op(c.line))
+    ));
+    let e = c.explain.clone().unwrap_or_default();
+    if hyps.is_empty() {
+        out.push("using no hypotheses".into());
+    } else {
+        let parts: Vec<String> = hyps
+            .iter()
+            .enumerate()
+            .map(|(j, (t, o))| {
+                let unused = c.explain.is_some() && !e.used.contains(&(j as u8));
+                let mark = if unused { " (not needed)" } else { "" };
+                format!("{} {t} — {o}{mark}", circled(j))
+            })
+            .collect();
+        out.push(format!("using {}", parts.join("; ")));
+    }
+    if e.ex_falso {
+        out.push("your hypotheses contradict each other: this line can never run".into());
+    }
+    for (i, l) in e.lines.iter().enumerate() {
+        out.push(if i == 0 {
+            format!("why: {l}")
+        } else {
+            format!("        {l}")
+        });
+    }
+    out
+}
+
+/// How a consumer line is named in a prove's goal line: its opcode, with the target for calls,
+/// locals and globals (`call $f`, `local.set $x`).
+pub fn op_name(instr: &str) -> Option<String> {
+    let mut w = instr.split_whitespace();
+    let op = w.next()?;
+    if op.starts_with('(') || op.starts_with(')') || op.starts_with(";;") {
+        return None;
+    }
+    let with_arg = op == "call" || op.starts_with("local.") || op.starts_with("global.");
+    Some(match (with_arg, w.next()) {
+        (true, Some(a)) => format!("{op} {a}"),
+        _ => op.to_string(),
+    })
+}
+
+/// A row index (1-based line) from a y in SVG coordinates.
+fn line_at(y: f32) -> u32 {
+    (((y - 30.5) / LS).round().max(0.0) as u32) + 1
+}
+
 pub fn build(
     out: &ModuleOut,
     geom: &[LineGeom],
@@ -426,6 +574,7 @@ pub fn build(
     let mut titles: HashMap<u32, Vec<String>> = HashMap::new();
     let mut notes: HashMap<u32, Vec<String>> = HashMap::new();
     let mut quiets: HashMap<u32, Vec<String>> = HashMap::new();
+    let mut extra = Extra::default();
 
     for f in &out.funcs {
         build_func(
@@ -438,6 +587,7 @@ pub fn build(
             &mut titles,
             &mut notes,
             &mut quiets,
+            &mut extra,
         );
         // the header badge
         if let Some(lp) = scene
@@ -511,6 +661,22 @@ pub fn build(
         v.dedup();
         if let Some(lp) = scene.lines.get_mut(l.saturating_sub(1) as usize) {
             lp.quiet = Some(renumber(&v.join("; "), disp));
+        }
+    }
+    for (l, v) in extra.explains {
+        if let Some(lp) = scene.lines.get_mut(l.saturating_sub(1) as usize) {
+            lp.explain = Some(renumber(&v.join("\n"), disp));
+        }
+    }
+    for l in extra.never {
+        if let Some(lp) = scene.lines.get_mut(l.saturating_sub(1) as usize) {
+            lp.never = true;
+        }
+    }
+    for (l, mut v) in extra.lanes {
+        v.dedup();
+        if let Some(lp) = scene.lines.get_mut(l.saturating_sub(1) as usize) {
+            lp.lane = Some(renumber(&format!("fact lane: {}", v.join("\n")), disp));
         }
     }
     scene.under = under;
@@ -634,6 +800,7 @@ fn build_func(
     titles: &mut HashMap<u32, Vec<String>>,
     notes: &mut HashMap<u32, Vec<String>>,
     quiets: &mut HashMap<u32, Vec<String>>,
+    extra: &mut Extra,
 ) {
     // the cup a failed run check refutes (at most one)
     let failed_cup = failure.and_then(|fl| {
@@ -805,6 +972,29 @@ fn build_func(
             let _ = write!(t, "\nwraps: {wraps}");
         }
         titles.entry(*pl).or_default().push(t);
+        // the account drawn beside the line (§3 contract, made legible): what it proves, from
+        // what, and why
+        let hyp_desc: Vec<(String, String)> = hyps
+            .iter()
+            .zip(hyp_lines)
+            .map(|(h, l)| {
+                let ch = f.chips.get(*h as usize);
+                (
+                    ch.map(|c| c.text.clone()).unwrap_or_else(|| "?".into()),
+                    origin_desc(ch.map(|c| c.origin).unwrap_or("fact"), *l),
+                )
+            })
+            .collect();
+        let block = prove_block(f, ctx, goals, &hyp_desc);
+        titles.entry(*pl).or_default().push(block.join("\n"));
+        extra.explains.insert(
+            *pl,
+            block
+                .iter()
+                .take(4)
+                .map(|l| clip(l, EXPLAIN_CHARS))
+                .collect(),
+        );
     }
 
     // failed proves: sockets for the hypotheses taken, wired from their chips, rimmed darkred
@@ -843,6 +1033,39 @@ fn build_func(
                 });
             }
         }
+        // what it tried to prove and from what (the darkred note says why it failed)
+        let tag = format!("the prove at line {pl} failed");
+        if let Some(c) = f
+            .cups
+            .iter()
+            .find(|c| c.diag.as_deref().is_some_and(|d| d.contains(&tag)))
+        {
+            let tried: Vec<String> = hyps
+                .iter()
+                .enumerate()
+                .map(|(j, (t, l))| {
+                    let o = f
+                        .chips
+                        .iter()
+                        .find(|ch| ch.line == *l && ch.text == *t)
+                        .map(|ch| ch.origin)
+                        .unwrap_or("fact");
+                    format!("{} {t} — {}", circled(j), origin_desc(o, *l))
+                })
+                .collect();
+            let block = [
+                format!(
+                    "⊢ {} — {}, not proved",
+                    c.goal,
+                    consumer_desc(c, ctx.op(c.line))
+                ),
+                format!("tried {}", tried.join("; ")),
+            ];
+            titles.entry(*pl).or_default().push(block.join("\n"));
+            extra
+                .explains
+                .insert(*pl, block.iter().map(|l| clip(l, EXPLAIN_CHARS)).collect());
+        }
     }
 
     // place the drawn chips: lower row, right to left from the code
@@ -868,6 +1091,20 @@ fn build_func(
             text: ch.text.clone(),
             origin: ch.origin,
         });
+    }
+
+    // the lane, readable on hover: each drawn chip's proposition on every row its ribbon covers
+    for c in &chips {
+        let last = c
+            .targets
+            .iter()
+            .map(|t| line_at(t.y))
+            .chain(c.fray)
+            .fold(c.line, u32::max);
+        let what = format!("⟨{}⟩ — {}", c.text, origin_desc(c.origin, c.line));
+        for l in c.line..=last {
+            extra.lanes.entry(l).or_default().push(what.clone());
+        }
     }
 
     // trunks: one per chip; trunks at the same x whose spans overlap get side-by-side slots
@@ -1032,6 +1269,23 @@ fn build_func(
 
     over.push_str(&sockets);
 
+    // lines the kernel shows never run (a decided branch): greyed, with a quiet margin note on
+    // the first one that has no prove account beside it
+    for r in &f.never_runs {
+        extra.never.extend(r.from..=r.to);
+        let at = (r.from..=r.to)
+            .find(|l| !extra.explains.contains_key(l))
+            .unwrap_or(r.from);
+        quiets
+            .entry(at)
+            .or_default()
+            .insert(0, format!("never runs: {}", r.why));
+        titles.entry(r.from).or_default().push(format!(
+            "line {} to line {} never run: {}",
+            r.from, r.to, r.why
+        ));
+    }
+
     // the cups themselves
     for (i, c) in f.cups.iter().enumerate() {
         let (x, y, h) = cup_pos[i];
@@ -1148,6 +1402,61 @@ mod tests {
         );
     }
 
+    /// The user's program: `prove 1` after an always-taken `br_if` says what it proves, from
+    /// what, and why; the lines after the br_if are greyed with a margin note; the lane reads.
+    #[test]
+    fn prove_line_is_legible() {
+        let p = format!(
+            "{}/public/examples/v2/prove-explain.wat",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let src = std::fs::read_to_string(&p).unwrap();
+        let out =
+            crate::v2::kernel::check_module_with(&crate::v2::ast::Module::parse(&src), true, true);
+        let geom: Vec<LineGeom> = src
+            .lines()
+            .map(|t| LineGeom {
+                indent: Some(1),
+                frac_right: None,
+                op: op_name(t.trim()),
+            })
+            .collect();
+        let s = build(&out, &geom, None, &|k| k);
+        let block = s.lines[13]
+            .explain
+            .clone()
+            .expect("an account on the prove line");
+        let rows: Vec<&str> = block.lines().collect();
+        assert_eq!(rows[0], "⊢ False — feeds unreachable (line 15)");
+        assert_eq!(
+            rows[1],
+            "using ① and(mul($x, 2), 1) ≠ 0 — br_if on line 13 not taken"
+        );
+        assert_eq!(
+            rows[2],
+            "your hypotheses contradict each other: this line can never run"
+        );
+        assert!(rows[3].starts_with("why: mul($x, 2) is even"), "{block}");
+        assert!(s.lines[13].never && s.lines[14].never && !s.lines[12].never);
+        assert_eq!(
+            s.lines[14].quiet.as_deref(),
+            Some("never runs: br_if on line 13 always branches")
+        );
+        assert!(
+            s.lines[12].lane.as_deref().is_some_and(
+                |l| l.contains("⟨and(mul($x, 2), 1) ≠ 0⟩ — br_if on line 13 not taken")
+            )
+        );
+    }
+
+    #[test]
+    fn names_consumer_lines() {
+        assert_eq!(op_name("i32.add").as_deref(), Some("i32.add"));
+        assert_eq!(op_name("call $f").as_deref(), Some("call $f"));
+        assert_eq!(op_name("local.set $x").as_deref(), Some("local.set $x"));
+        assert_eq!(op_name(")"), None);
+    }
+
     #[test]
     fn every_example_builds_a_scene() {
         for ex in [
@@ -1159,12 +1468,17 @@ mod tests {
         ] {
             let p = format!("{}/public/examples/v2/{ex}.wat", env!("CARGO_MANIFEST_DIR"));
             let src = std::fs::read_to_string(&p).unwrap();
-            let out = crate::v2::kernel::check_module(&crate::v2::ast::Module::parse(&src), true);
+            let out = crate::v2::kernel::check_module_with(
+                &crate::v2::ast::Module::parse(&src),
+                true,
+                true,
+            );
             let n = src.lines().count();
             let geom = vec![
                 LineGeom {
                     indent: Some(1),
-                    frac_right: None
+                    frac_right: None,
+                    op: None,
                 };
                 n
             ];

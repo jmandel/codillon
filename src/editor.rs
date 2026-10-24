@@ -612,6 +612,7 @@ impl Editor {
             .map(|(i, l)| crate::proof_view::LineGeom {
                 indent: l.info().indent,
                 frac_right: edges.get(&i).copied(),
+                op: crate::proof_view::op_name(l.instr().get()),
             })
             .collect();
         // kernel lines are 1-based editor lines; the gutter numbers only some of them
@@ -719,7 +720,8 @@ impl Editor {
             })
             .collect();
         let module = crate::v2::ast::Module::parse_lines(&texts);
-        let out = crate::v2::kernel::check_module(&module, !self.link.strict);
+        // with explanations (why each prove holds, lines that never run): drawn by proof_view
+        let out = crate::v2::kernel::check_module_with(&module, !self.link.strict, true);
         let plan = Rc::new(crate::v2::runtime::RuntimePlan::new(&module, &out));
         let state = Rc::new(V2State {
             out: std::cell::RefCell::new(out),
