@@ -413,12 +413,60 @@ pub fn mutants<S: AsRef<str>>(lines: &[S], owners: &[Owner]) -> Vec<Mutant> {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Fate {
-    /// the spec rejects it: a harness reached ⊥, a check failed, or it trapped or ran away
+    /// the SPEC rejects it: a harness reached ⊥, a spec-derived check failed (a contract
+    /// refinement, a result refinement, a harness ⊥), or it trapped
     Killed(String),
+    /// only the implementation's own invariants (block/loop facts, refined body locals, lemma
+    /// premises) noticed: for adequacy this is a survivor, the spec cannot tell it apart
+    OwnOnly(String),
+    /// it ran out of steps on some input (likely a broken loop): neither killed nor survived
+    RunsAway(String),
     /// no harness run told it apart; `proven`: the kernel still fully proves it (a definite gap)
     Survived { proven: bool },
     /// the mutant is not a valid program
     Invalid(String),
+}
+
+impl Fate {
+    /// The spec does not tell this mutant apart (§7.2): survived, or only the body's own checks did.
+    pub fn survives(&self) -> bool {
+        matches!(self, Fate::Survived { .. } | Fate::OwnOnly(_))
+    }
+}
+
+/// Is this cup derived from the spec (a contract or a trap), not from the implementation's own
+/// proof structure? Spec: harness ⊥, result refinements, refinements of call arguments, of
+/// parameters and of globals (all on student-owned headers and declarations), trap cups.
+/// Own: block/loop facts, refined body locals, lemma premises, measures.
+pub fn spec_cup(m: &Module, c: &super::out::CupOut, func: usize) -> bool {
+    let f = &m.funcs[func];
+    match c.kind {
+        CupKind::False => f.is_harness(),
+        CupKind::ResultRefinement => true,
+        CupKind::Bounds
+        | CupKind::DivByZero
+        | CupKind::DivOverflow
+        | CupKind::Conversion
+        | CupKind::CallIndirect => true,
+        CupKind::Refinement { .. } => {
+            let ins = f.body.iter().find(|(l, _)| *l == c.line).map(|x| &x.1);
+            let nparams = f.value_params().count();
+            match ins {
+                Some(Ins::Call(_) | Ins::GlobalSet(_)) => true,
+                Some(Ins::LocalSet(n) | Ins::LocalTee(n)) => {
+                    super::eval::resolve_local(&value_locals(m, func), n)
+                        .is_some_and(|i| i < nparams)
+                }
+                _ => false,
+            }
+        }
+        CupKind::BlockFact { .. }
+        | CupKind::LoopEntry
+        | CupKind::BackEdge
+        | CupKind::LocalInit
+        | CupKind::FactParam { .. }
+        | CupKind::Measure => false,
+    }
 }
 
 /// The harnesses and their inputs (precondition witnesses), with each run's step count on the
@@ -467,27 +515,43 @@ pub fn fate<S: AsRef<str>>(lines: &[S], mt: &Mutant, bench: &Bench) -> Fate {
         return Fate::Invalid(format!("line {l}: {e}"));
     }
     let out = check_module(&m, true);
-    let plan = RuntimePlan::new(&m, &out);
-    for (h, args, steps) in &bench.runs {
-        let Some(f) = m.func_index(h) else { continue };
-        let mut it = Interp::for_run(&m, Some(&plan));
-        it.budget = steps.saturating_mul(10).max(20_000);
-        match it.call(f, args) {
-            Ok(_) => {}
-            Err(EvalErr::CheckFailed { line, .. }) => {
-                return Fate::Killed(format!(
-                    "{h}{}: check at line {line} fails",
-                    show_args(args)
-                ));
+    // first with the spec's checks only (own invariants are not part of the spec, B4)
+    let mut spec_out = out.clone();
+    for f in spec_out.funcs.iter_mut() {
+        let fi = f.func as usize;
+        for c in f.cups.iter_mut() {
+            if c.verdict == Verdict::RuntimeChecked && !spec_cup(&m, c, fi) {
+                c.verdict = Verdict::Proven; // not compiled into this run
             }
-            Err(EvalErr::Trap(t)) => {
-                return Fate::Killed(format!("{h}{}: traps ({t})", show_args(args)));
-            }
-            Err(EvalErr::Budget) => {
-                return Fate::Killed(format!("{h}{}: runs away", show_args(args)));
-            }
-            Err(EvalErr::Unsupported(u)) => return Fate::Invalid(u),
         }
+    }
+    let run = |plan: &RuntimePlan| -> Option<Result<String, String>> {
+        for (h, args, steps) in &bench.runs {
+            let Some(f) = m.func_index(h) else { continue };
+            let mut it = Interp::for_run(&m, Some(plan));
+            it.budget = steps.saturating_mul(10).max(20_000);
+            let at = format!("{h}{}", show_args(args));
+            match it.call(f, args) {
+                Ok(_) => {}
+                Err(EvalErr::CheckFailed { line, .. }) => {
+                    return Some(Ok(format!("{at}: check at line {line} fails")));
+                }
+                Err(EvalErr::Trap(t)) => return Some(Ok(format!("{at}: traps ({t})"))),
+                Err(EvalErr::Budget) => return Some(Err(format!("{at}: runs away"))),
+                Err(EvalErr::Unsupported(u)) => return Some(Err(u)),
+            }
+        }
+        None
+    };
+    match run(&RuntimePlan::new(&m, &spec_out)) {
+        Some(Ok(why)) => return Fate::Killed(why),
+        Some(Err(why)) if why.ends_with("runs away") => return Fate::RunsAway(why),
+        Some(Err(why)) => return Fate::Invalid(why),
+        None => {}
+    }
+    // the spec passes every input: did only the body's own invariants notice?
+    if let Some(Ok(why)) = run(&RuntimePlan::new(&m, &out)) {
+        return Fate::OwnOnly(why);
     }
     let func = out.func_at(mt.line);
     let proven = func.is_some_and(|f| f.verified)

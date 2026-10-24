@@ -228,30 +228,80 @@ fn mutation_testing_is_deterministic_and_finds_survivors() {
     let a = run_mutation("isqrt");
     let b = run_mutation("isqrt");
     assert_eq!(a, b);
-    // the isqrt survivors are equivalent mutants the kernel still proves (65535 → 65536, …)
+    // the isqrt survivors include equivalent mutants the kernel still proves (65535 → 65536, …)
     assert!(a.iter().any(|(m, f)| m.line == 37
         && m.to == "i32.const 65536"
         && *f == Fate::Survived { proven: true }));
-    assert!(
-        a.iter()
-            .filter(|(_, f)| matches!(f, Fate::Killed(_)))
-            .count()
-            >= 12
-    );
     // a vacuous harness kills nothing
     let v = run_mutation("gcd-vacuous");
-    assert!(!v.is_empty() && v.iter().all(|(_, f)| matches!(f, Fate::Survived { .. })));
-    // gcd's harness kills all but the signed remainder (equal on its inputs)
-    let g = run_mutation("gcd");
-    let surv: Vec<_> = g
-        .iter()
-        .filter(|(_, f)| matches!(f, Fate::Survived { .. }))
-        .collect();
-    assert!(surv.len() <= 2, "{surv:?}");
+    assert!(!v.is_empty() && v.iter().all(|(_, f)| f.survives()));
     eprintln!(
         "mutation timing (debug or release build): {:?}",
         t.elapsed()
     );
+}
+
+/// Review 19 B4 (probe `fable_adequacy`): a kill must come from the spec — a harness ⊥, a
+/// contract or result refinement, a trap — never from the implementation's own block/loop
+/// invariants. Prints every example's adequacy numbers.
+#[test]
+fn b4_kills_come_from_the_spec_not_own_invariants() {
+    for ex in [
+        "gcd",
+        "gcd-vacuous",
+        "parity",
+        "isqrt",
+        "hashtable",
+        "primality",
+    ] {
+        let lines = example(ex);
+        let m = super::ast::Module::parse_lines(&lines);
+        let out = super::kernel::check_module(&m, true);
+        let res = run_mutation(ex);
+        let (mut spec, mut own, mut away, mut surv, mut proven, mut invalid) = (0, 0, 0, 0, 0, 0);
+        for (mt, f) in &res {
+            match f {
+                Fate::Killed(why) => {
+                    spec += 1;
+                    // a killing check is never one of the body's own invariant cups
+                    if let Some(l) = why
+                        .split("check at line ")
+                        .nth(1)
+                        .and_then(|r| r.split(' ').next())
+                        .and_then(|x| x.parse::<u32>().ok())
+                    {
+                        let fo = out.func_at(l).unwrap();
+                        let cups: Vec<_> = fo
+                            .cups
+                            .iter()
+                            .filter(|c| {
+                                c.line == l && c.verdict == super::out::Verdict::RuntimeChecked
+                            })
+                            .collect();
+                        assert!(
+                            cups.iter().any(|c| spec_cup(&m, c, fo.func as usize))
+                                || cups.is_empty(),
+                            "{ex} {mt:?}: killed by an own invariant at {l}"
+                        );
+                    }
+                }
+                Fate::OwnOnly(_) => own += 1,
+                Fate::RunsAway(_) => away += 1,
+                Fate::Survived { proven: p } => {
+                    surv += 1;
+                    proven += *p as u32;
+                }
+                Fate::Invalid(_) => invalid += 1,
+            }
+        }
+        eprintln!(
+            "ADEQ {ex}: {} mutants: killed by spec {spec}, only own invariants {own}, runs away {away}, survived {surv} ({proven} still proven), invalid {invalid}",
+            res.len()
+        );
+        if ex == "gcd-vacuous" {
+            assert_eq!(spec, 0);
+        }
+    }
 }
 
 #[test]
