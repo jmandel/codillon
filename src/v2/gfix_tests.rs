@@ -240,3 +240,69 @@ fn f2_a_local_refinement_may_not_read_memory() {
         errors(&out)
     );
 }
+
+// ---------------- F3: refined globals: initializer, module-wide set cups, only `v` ----------------
+
+const F3: &str = r#"(global $g (mut (i32 | (i32.ne v 0))) (i32.const 0))
+(func $f (export "f") (param $x i32) (result i32)
+  i32.const 1
+  global.get $g
+  i32.div_u
+)
+(global $h (mut (i32 | (i32.ne v 0))) (i32.const 1))
+(func $setter (export "setter") (param $x i32)
+  local.get $x
+  global.set $h
+)
+(func $reader (export "reader") (result i32)
+  i32.const 1
+  global.get $h
+  i32.div_u
+)
+(global $k (mut (i32 | (i32.lt_u v $x))) (i32.const 1))
+(func $lie (export "lie") (param $x i32) (result i32)
+  i32.const 1
+  local.get $x
+  i32.div_u
+)"#;
+
+#[test]
+fn f3_refined_globals_rest_on_their_initializer_and_every_set() {
+    let m = Module::parse(F3);
+    let out = check_module(&m, true);
+    // $g's initializer 0 violates `v ≠ 0`: a module error, and the division is not proven
+    assert!(out.errors.iter().any(|(l, e)| *l == 1 && e.contains("initializer")), "{:?}", out.errors);
+    not_proven_at(&out, 5);
+    assert!(!verified(&out, "$f"));
+    // $setter's unproven global.set (line 10) is a check $reader's division rests on
+    let c = out.cups().find(|c| c.line == 15).unwrap();
+    assert_eq!(c.depends_on_checks.to_vec(), vec![10]);
+    assert!(!verified(&out, "$reader"));
+    // $k's refinement names a local: rejected, so $lie gets nothing from it
+    assert!(out.errors.iter().any(|(l, e)| *l == 17 && e.contains("only `v`")), "{:?}", out.errors);
+    not_proven_at(&out, 21);
+    // gradual: the check in $setter catches the bad write before $reader can divide by it
+    let (r, _) = super::tests::instrumented_run(F3, "setter", &[0]);
+    assert!(
+        matches!(r, Err(super::eval::EvalErr::CheckFailed { line: 10, .. })),
+        "{r:?}"
+    );
+}
+
+#[test]
+fn f3_a_good_initializer_and_proven_sets_stay_verified() {
+    let src = r#"(global $h (mut (i32 | (i32.ne v 0))) (i32.const 1))
+(func $setter (export "setter")
+  i32.const 7
+  global.set $h
+)
+(func $reader (export "reader") (result i32)
+  i32.const 1
+  global.get $h
+  i32.div_u
+)"#;
+    let out = check(src);
+    assert!(out.errors.is_empty(), "{:?}", out.errors);
+    assert!(verified(&out, "$setter"));
+    assert!(verified(&out, "$reader"));
+}

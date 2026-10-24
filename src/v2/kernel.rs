@@ -22,6 +22,8 @@ pub enum Dep {
     Group(u32),
     /// an assumption: (origin line, is an instructor axiom)
     Assume(u32, bool),
+    /// a runtime check on that line of another function (a refined global's unproven `global.set`)
+    Check(u32),
 }
 
 #[derive(Clone, Debug)]
@@ -98,6 +100,10 @@ pub struct ModCtx<'m> {
     /// assumption origins of each checked lemma's results (R33)
     pub lemma_assumes: HashMap<usize, Vec<Dep>>,
     pub gradual: bool,
+    /// per global: what its refinement rests on beyond this function's own `global.set` cups — the
+    /// initializer (R14) and every other function's unproven `global.set` cups (R9); `None` when
+    /// the global has no usable refinement
+    pub global_deps: Vec<Option<Vec<Dep>>>,
 }
 
 /// The solver's view of the module: unfolding and evaluation.
@@ -752,18 +758,38 @@ impl<'a, 'm> Pass<'a, 'm> {
             .or_else(|| n.parse().ok().filter(|i: &usize| *i < gs.len()))
     }
 
+    /// A refined global's refinement about its current value, and what it rests on (R9, R14).
+    fn global_fact(&mut self, i: usize) -> Option<(Atom, Vec<Dep>)> {
+        let mut deps = self.cx.global_deps.get(i)?.clone()?;
+        let r = self.cx.m.globals[i].ty.refine.clone()?;
+        let a = self.inst_atom(&r, &vec![], Some(self.globals[i]));
+        if let Some(g) = self.global_groups[i] {
+            deps.push(Dep::Group(g));
+        }
+        Some((a, deps))
+    }
+
+    /// R14 for globals: does the initializer satisfy the refinement (evaluated, R28)?
+    fn global_init_holds(&mut self, i: usize) -> bool {
+        let g = &self.cx.m.globals[i];
+        let (Some(r), Some(init)) = (g.ty.refine.clone(), g.init) else {
+            return false;
+        };
+        let v = self.terms.konst(g.ty.ty, init);
+        match self.inst_atom(&r, &vec![], Some(v)) {
+            Atom::True => true,
+            Atom::False => false,
+            a => matches!(self.eval_atom(&a), Some(Ok((true, _)))),
+        }
+    }
+
     fn fresh_globals(&mut self, line: u32) {
         for (i, g) in self.cx.m.globals.iter().enumerate() {
             if g.mutable {
                 let name = g.name.clone().unwrap_or_else(|| format!("global {i}"));
                 self.globals[i] = self.terms.leaf(g.ty.ty, name, None);
                 self.birth(self.globals[i], line, Capture::Global(i as u32));
-                if let Some(r) = g.ty.refine.clone() {
-                    let b = self.cur_bind();
-                    let a = self.inst_atom(&r, &b, Some(self.globals[i]));
-                    let deps = self.global_groups[i]
-                        .map(|g| vec![Dep::Group(g)])
-                        .unwrap_or_default();
+                if let Some((a, deps)) = self.global_fact(i) {
                     self.enter(a, line, "global refinement", deps);
                 }
             }
@@ -933,13 +959,8 @@ impl<'a, 'm> Pass<'a, 'm> {
             }
             self.globals.push(t);
         }
-        for (i, g) in cx.m.globals.iter().enumerate() {
-            if let Some(r) = g.ty.refine.clone() {
-                let b = self.cur_bind();
-                let a = self.inst_atom(&r, &b, Some(self.globals[i]));
-                let deps = self.global_groups[i]
-                    .map(|g| vec![Dep::Group(g)])
-                    .unwrap_or_default();
+        for i in 0..cx.m.globals.len() {
+            if let Some((a, deps)) = self.global_fact(i) {
                 self.enter(a, hl, "global refinement", deps);
             }
         }
@@ -1453,9 +1474,10 @@ impl<'a, 'm> Pass<'a, 'm> {
                     return;
                 };
                 let mut reqs = vec![];
-                if let Some(e) = self.cx.m.globals[i].ty.refine.clone() {
-                    let b = self.cur_bind();
-                    let a = self.inst_atom(&e, &b, Some(t));
+                if let Some(e) = self.cx.m.globals[i].ty.refine.clone()
+                    && self.cx.global_deps[i].is_some()
+                {
+                    let a = self.inst_atom(&e, &vec![], Some(t));
                     reqs.push(CupReq {
                         kind: CupKind::Refinement { param: i as u32 },
                         operand: Some(0),
@@ -1969,13 +1991,8 @@ impl<'a, 'm> Pass<'a, 'm> {
             }
         }
         for i in gphis {
-            if let (Some(r), Some(g)) = (
-                self.cx.m.globals[i].ty.refine.clone(),
-                self.global_groups[i],
-            ) {
-                let b = self.cur_bind();
-                let a = self.inst_atom(&r, &b, Some(self.globals[i]));
-                self.enter(a, line, "refined global at join (R8)", vec![Dep::Group(g)]);
+            if let Some((a, deps)) = self.global_fact(i) {
+                self.enter(a, line, "refined global at join (R8)", deps);
             }
         }
         let b = self.cur_bind();
@@ -2230,15 +2247,8 @@ impl<'a, 'm> Pass<'a, 'm> {
                 None,
             );
             self.birth(self.globals[i], line, Capture::Global(i as u32));
-            if let (Some(r), Some(g)) = (gl.ty.refine.clone(), self.global_groups[i]) {
-                let b = self.cur_bind();
-                let a = self.inst_atom(&r, &b, Some(self.globals[i]));
-                self.enter(
-                    a,
-                    line,
-                    "refined global at loop head (R8)",
-                    vec![Dep::Group(g)],
-                );
+            if let Some((a, deps)) = self.global_fact(i) {
+                self.enter(a, line, "refined global at loop head (R8)", deps);
             }
         }
         if bumps {
@@ -2433,6 +2443,9 @@ impl<'a, 'm> Pass<'a, 'm> {
                 Dep::Assume(l, ax) => {
                     assumes.insert((l, ax));
                 }
+                Dep::Check(l) => {
+                    checks.insert(l);
+                }
             }
         }
         (checks, assumes)
@@ -2517,7 +2530,10 @@ pub fn check_module(m: &Module, gradual: bool) -> super::out::ModuleOut {
         mem,
         lemma_assumes: HashMap::new(),
         gradual,
+        global_deps: vec![None; m.globals.len()],
     };
+    let mut errors = m.errors.clone();
+    global_preflight(&mut cx, &mut errors);
     // lemma order: callees first (depth-first over lemma lines)
     let mut order: Vec<usize> = vec![];
     fn visit(m: &Module, f: usize, seen: &mut Vec<bool>, order: &mut Vec<usize>) {
@@ -2544,22 +2560,31 @@ pub fn check_module(m: &Module, gradual: bool) -> super::out::ModuleOut {
         .copied()
         .filter(|f| m.funcs[*f].is_lemma() || m.funcs[*f].is_axiom())
         .collect();
-    let mut outs: Vec<Option<super::out::FuncOut>> = vec![None; m.funcs.len()];
-    for f in lemmas
-        .iter()
-        .copied()
-        .chain((0..m.funcs.len()).filter(|f| !lemmas.contains(f)))
-    {
-        if m.funcs[f].imported {
-            continue;
+    let mut outs: Vec<Option<super::out::FuncOut>>;
+    loop {
+        outs = vec![None; m.funcs.len()];
+        cx.lemma_assumes.clear();
+        for f in lemmas
+            .iter()
+            .copied()
+            .chain((0..m.funcs.len()).filter(|f| !lemmas.contains(f)))
+        {
+            if m.funcs[f].imported {
+                continue;
+            }
+            let mut p = Pass::new(&cx, f);
+            p.run();
+            let (out, deps) = p.finish();
+            if m.funcs[f].is_lemma() {
+                cx.lemma_assumes.insert(f, deps);
+            }
+            outs[f] = Some(out);
         }
-        let mut p = Pass::new(&cx, f);
-        p.run();
-        let (out, deps) = p.finish();
-        if m.funcs[f].is_lemma() {
-            cx.lemma_assumes.insert(f, deps);
+        // R9 across functions: a refined global's refinement rests on every unproven `global.set`
+        // of it anywhere in the module (monotone: repeat until nothing new is learned)
+        if !global_sets_feed_back(&mut cx, &outs) {
+            break;
         }
-        outs[f] = Some(out);
     }
     // VERIFIED: strict-clean and every callee verified (greatest fixed point)
     let mut ver: Vec<bool> = outs
@@ -2592,7 +2617,7 @@ pub fn check_module(m: &Module, gradual: bool) -> super::out::ModuleOut {
     }
     let mut res = super::out::ModuleOut {
         funcs: vec![],
-        errors: m.errors.clone(),
+        errors,
     };
     for (f, o) in outs.into_iter().enumerate() {
         if let Some(mut o) = o {
@@ -2601,6 +2626,117 @@ pub fn check_module(m: &Module, gradual: bool) -> super::out::ModuleOut {
         }
     }
     res
+}
+
+/// R9/R14 for globals, before any pass: a refinement may name only `v` (it is a module-wide
+/// invariant, not about any function's locals) and may not read memory; the initializer must
+/// satisfy it, or every function's copy of it is an assumption.
+fn global_preflight(cx: &mut ModCtx, errors: &mut Vec<(u32, String)>) {
+    let any = (0..cx.m.funcs.len()).find(|f| !cx.m.funcs[*f].imported);
+    let mut deps = vec![None; cx.m.globals.len()];
+    for (i, g) in cx.m.globals.iter().enumerate() {
+        let Some(r) = &g.ty.refine else { continue };
+        let name = g.name.clone().unwrap_or_else(|| format!("global {i}"));
+        if let Some(n) = expr_vars(r).first() {
+            errors.push((
+                g.line,
+                format!("{name}'s refinement names {n}: a global's refinement may name only `v`"),
+            ));
+            continue;
+        }
+        if expr_reads_mem(cx, r) {
+            errors.push((
+                g.line,
+                format!("{name}'s refinement may not read memory: a store would falsify it unseen"),
+            ));
+            continue;
+        }
+        deps[i] = Some(vec![]);
+    }
+    cx.global_deps = deps.clone();
+    if let Some(f) = any {
+        let mut p = Pass::new(cx, f);
+        for (i, g) in cx.m.globals.iter().enumerate() {
+            if deps[i].is_none() {
+                continue;
+            }
+            if !p.global_init_holds(i) {
+                let name = g.name.clone().unwrap_or_else(|| format!("global {i}"));
+                if g.init.is_some() {
+                    errors.push((
+                        g.line,
+                        format!("{name}'s initializer does not satisfy its refinement (R14)"),
+                    ));
+                }
+                deps[i] = Some(vec![Dep::Assume(g.line, false)]);
+            }
+        }
+    }
+    cx.global_deps = deps;
+}
+
+/// Add every function's unproven `global.set` cups to that global's dependencies; true if any
+/// were new.
+fn global_sets_feed_back(cx: &mut ModCtx, outs: &[Option<super::out::FuncOut>]) -> bool {
+    let mut changed = false;
+    for o in outs.iter().flatten() {
+        let func = &cx.m.funcs[o.func as usize];
+        for c in &o.cups {
+            let CupKind::Refinement { param } = c.kind else {
+                continue;
+            };
+            let is_set = func.body.iter().any(|(l, ins)| {
+                *l == c.line
+                    && matches!(ins, Ins::GlobalSet(n) if global_index_of(cx.m, n) == Some(param as usize))
+            });
+            if !is_set {
+                continue;
+            }
+            let Some(Some(deps)) = cx.global_deps.get_mut(param as usize) else {
+                continue;
+            };
+            let mut new: Vec<Dep> = vec![];
+            if c.feed == Feed::Unfed {
+                new.push(Dep::Check(c.line));
+            }
+            new.extend(c.depends_on_checks.iter().map(|l| Dep::Check(*l)));
+            new.extend(
+                c.assumptions
+                    .iter()
+                    .map(|o| Dep::Assume(o.line, o.kind == "axiom")),
+            );
+            for d in new {
+                if !deps.iter().any(|x| same_dep(x, &d)) {
+                    deps.push(d);
+                    changed = true;
+                }
+            }
+        }
+    }
+    changed
+}
+
+fn same_dep(a: &Dep, b: &Dep) -> bool {
+    match (a, b) {
+        (Dep::Check(x), Dep::Check(y)) => x == y,
+        (Dep::Assume(x, p), Dep::Assume(y, q)) => x == y && p == q,
+        _ => false,
+    }
+}
+
+fn global_index_of(m: &Module, n: &str) -> Option<usize> {
+    m.globals
+        .iter()
+        .position(|g| g.name.as_deref() == Some(n))
+        .or_else(|| n.parse::<usize>().ok())
+}
+
+fn expr_vars(e: &Expr) -> Vec<String> {
+    match e {
+        Expr::Var(x) => vec![x.clone()],
+        Expr::Op(_, a) | Expr::Call(_, a) => a.iter().flat_map(expr_vars).collect(),
+        _ => vec![],
+    }
 }
 
 /// Does the proposition call a function that reads memory (R12)?
