@@ -641,3 +641,27 @@ fn b4_measure_without_result_never_drops_the_cup() {
         assert!(!f.verified, "{} must not be VERIFIED", f.name);
     }
 }
+
+#[test]
+fn editor_examples_run_their_main() {
+    // public/examples/v2: each example wrapped with a $main (first function) for the editor
+    let fails = ["parity-bug-gate", "gcd-bug-guard", "hashtable-stale"];
+    for ex in EXAMPLES {
+        let p = format!("{}/public/examples/v2/{ex}.wat", env!("CARGO_MANIFEST_DIR"));
+        let src = std::fs::read_to_string(&p).unwrap();
+        let m = Module::parse(&src);
+        assert!(m.errors.is_empty(), "{ex}: {:?}", m.errors);
+        assert_eq!(m.funcs[0].name(), "$main", "{ex}");
+        let erased = erase_text(&src);
+        wat::parse_str(format!("(module {erased})")).unwrap_or_else(|e| panic!("{ex}: {e}"));
+        let out = check_module(&m, true);
+        let plan = RuntimePlan::new(&m, &out);
+        let mut it = Interp::for_run(&m, Some(&plan));
+        let r = it.call(0, &[]);
+        if fails.contains(&ex) {
+            assert!(matches!(r, Err(EvalErr::CheckFailed { .. })), "{ex}: {r:?}");
+        } else {
+            assert!(r.is_ok(), "{ex}: {r:?}");
+        }
+    }
+}
