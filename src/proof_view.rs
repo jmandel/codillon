@@ -981,6 +981,16 @@ fn build_func(
             verdict_word(c, failed_here),
             how(c, disp)
         ));
+        if failed_here
+            && let Some(d) = &c.diag
+            && let Some(p) = d.find("; ⟨")
+        {
+            // the run refuted a cup a stale fact could have fed: say which fact went stale
+            notes
+                .entry(c.line)
+                .or_default()
+                .push(d[p + 2..].to_string());
+        }
         match lk {
             Look::Refuted if !failed_here => {
                 let w = match &c.witness {

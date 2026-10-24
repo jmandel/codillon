@@ -484,7 +484,10 @@ impl CodeLine {
         let commentary = if let Some(msg) = &self.info.runtime_error
             && !msg.is_empty()
         {
-            Some(msg.to_string())
+            Some(match &self.info.proof.note {
+                Some(note) => format!("{msg} — {note}"),
+                None => msg.to_string(),
+            })
         } else if let LineKind::Malformed(reason) = &self.info.kind {
             Some(reason.to_string())
         } else if let Activity::Inactive(reason) = &self.info.active

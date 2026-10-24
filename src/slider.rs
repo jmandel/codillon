@@ -147,6 +147,8 @@ impl Slider {
             TerminationType::Success if last_is_pill => ("slider-tick check-fail-slider-tick", ""),
             TerminationType::Success => ("slider-tick", ""),
             TerminationType::TooManySteps => ("slider-tick bad-slider-tick", ">\u{a0}"),
+            // the run stopped at a failed check: an outlined darkred pill, not a trap's filled one
+            _ if last_is_pill => ("slider-tick bad-slider-tick check-fail-slider-tick", ""),
             _ => ("slider-tick bad-slider-tick", ""),
         };
 
