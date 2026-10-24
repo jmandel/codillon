@@ -164,6 +164,8 @@ impl Env for PassEnv<'_, '_> {
 }
 
 pub struct Pass<'a, 'm> {
+    /// body lines control never reaches (R22)
+    dead_lines: Vec<u32>,
     pub cx: &'a ModCtx<'m>,
     pub f: usize,
     pub terms: Terms,
@@ -820,6 +822,7 @@ impl<'a, 'm> Pass<'a, 'm> {
             func.is_lemma() || func.is_axiom() || cx.info[f].is_pred || cx.info[f].is_measure;
         let nh = handle_names.len();
         Pass {
+            dead_lines: vec![],
             cx,
             f,
             terms: Terms::new(fnames),
@@ -2278,7 +2281,17 @@ impl<'a, 'm> Pass<'a, 'm> {
         self.entry();
         let tab = super::eval::block_table(&func.body);
         for (pc, (line, ins)) in func.body.iter().enumerate() {
+            let before = self.dead.is_some();
             self.step(pc, *line, ins, &tab);
+            // `end`/`else` are reached when some edge reaches them; any other line when control
+            // falls into it
+            let dead = match ins {
+                Ins::End | Ins::Else => self.dead.is_some(),
+                _ => before,
+            };
+            if dead {
+                self.dead_lines.push(*line);
+            }
         }
         // R15 at the closing `)`
         let line = func.end_line;
@@ -2514,6 +2527,7 @@ impl<'a, 'm> Pass<'a, 'm> {
             slot_ids: self.slot_ids,
             births: self.births,
             func: self.f as u32,
+            dead_lines: self.dead_lines,
         };
         (out, deps)
     }

@@ -225,6 +225,22 @@ pub struct SessionStart {
     pub funcs: BTreeSet<String>,
     assumes: Vec<String>,
     imports: usize,
+    /// indices into `zone` of the student lines that are dead code at session start
+    dead0: BTreeSet<usize>,
+}
+
+/// Indices into the zone of its lines that control never reaches.
+fn dead_zone(zone: &[(u32, String, String)], out: &ModuleOut) -> BTreeSet<usize> {
+    let dead: BTreeSet<u32> = out
+        .funcs
+        .iter()
+        .flat_map(|f| f.dead_lines.iter().copied())
+        .collect();
+    zone.iter()
+        .enumerate()
+        .filter(|(_, z)| dead.contains(&z.0))
+        .map(|(i, _)| i)
+        .collect()
 }
 
 fn func_text(m: &Module, lines: &[String], name: &str) -> Option<Vec<String>> {
@@ -259,9 +275,12 @@ impl SessionStart {
         let m = Module::parse_lines(lines);
         let bodies = student_bodies(&m);
         let owners = classify(lines, &bodies);
+        let z = zone(lines, &owners);
+        let dead0 = dead_zone(&z, &check_module(&m, false));
         SessionStart {
+            dead0,
             lines: lines.to_vec(),
-            zone: zone(lines, &owners),
+            zone: z,
             funcs: m.funcs.iter().map(|f| f.name()).collect(),
             assumes: assume_lines(lines),
             imports: lines
@@ -476,6 +495,20 @@ impl SessionStart {
             })
             .collect();
         let out = check_module(&m, false);
+        if boundary.is_empty() {
+            // a locked line the round makes unreachable is as good as deleted: its cups would be
+            // fed by dead code (R22) and say nothing (review 20 F7)
+            let now = zone(lines, &self.owners(lines));
+            for i in dead_zone(&now, &out).difference(&self.dead0) {
+                boundary.push(Reason {
+                    line: now[*i].0,
+                    msg: format!(
+                        "makes locked line {} (`{}`) unreachable",
+                        now[*i].0, now[*i].1
+                    ),
+                });
+            }
+        }
         let touched = self.touched(lines);
         // every function whose body is the LLM's must be strict-clean, touched or not: leaving an
         // unproven target alone is not an implementation of it (review 20 F6)

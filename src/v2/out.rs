@@ -205,6 +205,8 @@ pub struct FuncOut {
     pub births: Vec<Birth>,
     /// module function index
     pub func: u32,
+    /// body lines control never reaches (R22)
+    pub dead_lines: Vec<u32>,
 }
 
 #[derive(Clone, Debug, Default)]

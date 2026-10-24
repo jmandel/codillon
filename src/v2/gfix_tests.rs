@@ -458,3 +458,37 @@ fn f5_adequacy_reports_a_harness_that_never_finishes() {
     assert!(b.runs_away[0].starts_with("$isqrt_harness("));
 }
 
+
+// ---------------- F7: a locked line made dead is a boundary violation ----------------
+
+#[test]
+fn f7_returning_before_a_locked_line_is_rejected() {
+    use super::vericode::SessionStart;
+    let start: Vec<String> = r#"(func $main
+  i32.const 5
+  call $f
+  drop
+)
+(func $f (export "f") (param $x i32) (result i32)
+  block $b (fact (i32.lt_u $x 100)) ;; @own
+    nop
+  end
+  local.get $x
+)"#
+    .lines()
+    .map(String::from)
+    .collect();
+    let s = SessionStart::new(&start);
+    assert!(!s.judge(&start).accepted, "x < 100 is not provable");
+    let sub = replace(&start, 7, 7, &["  local.get $x", "  return", start[6].as_str()]);
+    let j = s.judge(&sub);
+    assert!(!j.accepted, "{}", j.summary());
+    assert!(
+        j.boundary.iter().any(|r| r.line == 9 && r.msg.contains("unreachable")),
+        "{:?}",
+        j.boundary
+    );
+    // a line already dead at the start is not the round's doing
+    let s2 = SessionStart::new(&sub);
+    assert!(s2.judge(&sub).boundary.is_empty());
+}
