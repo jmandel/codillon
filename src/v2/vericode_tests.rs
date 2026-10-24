@@ -416,7 +416,12 @@ fn live_loop_with_a_mock_transport() {
     let mut sent = vec![];
     let mut kinds = vec![];
     for (i, t) in v["turns"].as_array().unwrap().iter().enumerate() {
-        let body = live.next_body("test/model").expect("a round");
+        let body = live
+            .next_body(&ModelChoice {
+                model: "test/model".into(),
+                fast: false,
+            })
+            .expect("a round");
         assert_eq!(body["model"], "test/model");
         let req: serde_json::Value =
             serde_json::from_str(body["messages"][1]["content"].as_str().unwrap()).unwrap();
@@ -447,7 +452,7 @@ fn live_loop_with_a_mock_transport() {
             "accepted"
         ]
     );
-    assert!(live.done && live.next_body("m").is_none());
+    assert!(live.done && live.next_body(&ModelChoice::default()).is_none());
     // after the first round the request carries the failing cups with lane snapshots
     let cups = sent[1]["cups"].as_array().unwrap();
     assert!(
@@ -493,7 +498,7 @@ fn live_loop_handles_bad_replies() {
     let s = parse_script(&session_text("parity")).unwrap();
     // an API error
     let mut live = Live::new(&s.start, &s.task, 3);
-    live.next_body("m").unwrap();
+    live.next_body(&ModelChoice::default()).unwrap();
     let o = live.on_reply(r#"{"error": {"message": "No auth credentials found", "code": 401}}"#);
     assert_eq!(
         o.error.as_deref(),
@@ -502,7 +507,7 @@ fn live_loop_handles_bad_replies() {
     assert!(!o.applied && live.done && live.lines == s.start);
     // prose without JSON, and edits outside the module
     let mut live = Live::new(&s.start, &s.task, 3);
-    live.next_body("m").unwrap();
+    live.next_body(&ModelChoice::default()).unwrap();
     assert!(
         live.on_reply(&chat_reply("I cannot do that."))
             .error
@@ -510,7 +515,7 @@ fn live_loop_handles_bad_replies() {
             .contains("no JSON")
     );
     let mut live = Live::new(&s.start, &s.task, 3);
-    live.next_body("m").unwrap();
+    live.next_body(&ModelChoice::default()).unwrap();
     let o = live.on_reply(&chat_reply(
         r#"{"edits": [{"replace_lines": [900, 901], "with": []}]}"#,
     ));
@@ -518,10 +523,10 @@ fn live_loop_handles_bad_replies() {
     // max rounds
     let mut live = Live::new(&s.start, &s.task, 2);
     for _ in 0..2 {
-        live.next_body("m").unwrap();
+        live.next_body(&ModelChoice::default()).unwrap();
         live.on_reply(&chat_reply(r#"{"edits": [], "note": "nothing"}"#));
     }
-    assert!(live.next_body("m").is_none());
+    assert!(live.next_body(&ModelChoice::default()).is_none());
 }
 
 // ---------------- review 19 blocking findings (probes A13, A16, A19) ----------------
@@ -597,6 +602,20 @@ fn b2_duplicate_function_names_are_rejected() {
 #[test]
 fn default_model_is_the_chosen_one() {
     assert_eq!(super::llm::DEFAULT_MODEL, "anthropic/claude-opus-5.5");
-    let b = super::llm::chat_body(super::llm::DEFAULT_MODEL, &serde_json::json!({}));
+    use super::llm::*;
+    let b = chat_body(&ModelChoice::default(), &serde_json::json!({}));
     assert_eq!(b["model"], "anthropic/claude-opus-5.5");
+    assert!(b.get("provider").is_none());
+    // the fast preset routes for throughput and stays within its 65.5K output limit
+    let (_, _, id, fast) = PRESETS[1];
+    assert_eq!(id, "deepseek/deepseek-v4.1-flash-1017");
+    let b = chat_body(
+        &ModelChoice {
+            model: id.into(),
+            fast,
+        },
+        &serde_json::json!({}),
+    );
+    assert_eq!(b["provider"]["sort"], "throughput");
+    assert!(b["max_tokens"].as_u64().unwrap() <= 65_500);
 }

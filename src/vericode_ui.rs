@@ -17,6 +17,8 @@ pub const SESSIONS: [(&str, &str); 3] = [
 ];
 const KEY_STORE: &str = "codillon_openrouter_key";
 const MODEL_STORE: &str = "codillon_openrouter_model";
+const PRESET_STORE: &str = "codillon_openrouter_preset";
+const FAST_STORE: &str = "codillon_openrouter_fast";
 const SLICE_MS: f64 = 18.0;
 
 /// One played round, as the transcript shows it.
@@ -104,11 +106,48 @@ pub fn stored_key() -> Option<String> {
         .filter(|k| !k.trim().is_empty())
 }
 
-pub fn stored_model() -> String {
+fn get(k: &str) -> Option<String> {
     storage()
-        .and_then(|s| s.get_item(MODEL_STORE).ok().flatten())
+        .and_then(|s| s.get_item(k).ok().flatten())
         .filter(|m| !m.trim().is_empty())
-        .unwrap_or_else(|| llm::DEFAULT_MODEL.to_string())
+}
+
+/// The custom model id (the free-text field).
+pub fn stored_custom() -> String {
+    get(MODEL_STORE).unwrap_or_default()
+}
+
+/// The active preset key (one of llm::PRESETS, or "custom"), and the model it asks for.
+pub fn stored_choice() -> (String, llm::ModelChoice) {
+    let preset = get(PRESET_STORE).unwrap_or_else(|| llm::PRESETS[0].0.to_string());
+    if let Some((_, _, id, fast)) = llm::PRESETS.iter().find(|p| p.0 == preset) {
+        return (
+            preset,
+            llm::ModelChoice {
+                model: id.to_string(),
+                fast: *fast,
+            },
+        );
+    }
+    let custom = stored_custom();
+    if custom.is_empty() {
+        return (llm::PRESETS[0].0.into(), llm::ModelChoice::default());
+    }
+    (
+        "custom".into(),
+        llm::ModelChoice {
+            model: custom,
+            fast: get(FAST_STORE).as_deref() == Some("1"),
+        },
+    )
+}
+
+fn input_checked(id: &str) -> bool {
+    web_sys::window()
+        .and_then(|w| w.document())
+        .and_then(|d| d.get_element_by_id(id))
+        .and_then(|e| e.dyn_into::<web_sys::HtmlInputElement>().ok())
+        .is_some_and(|i| i.checked())
 }
 
 fn now() -> f64 {
@@ -375,6 +414,22 @@ impl Editor {
         }
     }
 
+    /// Keep what is typed in the custom model field and its throughput box.
+    fn vc_save_custom(&self) {
+        let Some(s) = storage() else { return };
+        let model = input_value("vc-model");
+        if !model.trim().is_empty() {
+            let _ = s.set_item(MODEL_STORE, model.trim());
+        }
+        if web_sys::window()
+            .and_then(|w| w.document())
+            .and_then(|d| d.get_element_by_id("vc-fast"))
+            .is_some()
+        {
+            let _ = s.set_item(FAST_STORE, if input_checked("vc-fast") { "1" } else { "0" });
+        }
+    }
+
     pub(super) fn vc_act(&mut self, act: &str, arg: &str) {
         match act {
             "close" => self.vc_set_mode(false),
@@ -421,14 +476,25 @@ impl Editor {
             }
             "save-key" => {
                 let key = input_value("vc-key");
-                let model = input_value("vc-model");
+                if let Some(s) = storage()
+                    && !key.trim().is_empty()
+                {
+                    let _ = s.set_item(KEY_STORE, key.trim());
+                }
+                self.vc_save_custom();
+            }
+            "preset" => {
+                if arg == "custom" {
+                    self.vc_save_custom();
+                }
                 if let Some(s) = storage() {
-                    if !key.trim().is_empty() {
-                        let _ = s.set_item(KEY_STORE, key.trim());
-                    }
-                    if !model.trim().is_empty() {
-                        let _ = s.set_item(MODEL_STORE, model.trim());
-                    }
+                    let _ = s.set_item(PRESET_STORE, arg);
+                }
+            }
+            "save-model" => {
+                self.vc_save_custom();
+                if let Some(s) = storage() {
+                    let _ = s.set_item(PRESET_STORE, "custom");
                 }
             }
             "forget-key" => {
@@ -576,7 +642,7 @@ impl Editor {
         vc.busy = true;
         let holder = self.holder();
         wasm_bindgen_futures::spawn_local(async move {
-            let model = stored_model();
+            let choice = stored_choice().1;
             loop {
                 let body = {
                     let mut ed = holder.borrow_mut();
@@ -584,7 +650,7 @@ impl Editor {
                         .vc
                         .as_mut()
                         .and_then(|v| v.live.as_mut())
-                        .and_then(|l| l.next_body(&model));
+                        .and_then(|l| l.next_body(&choice));
                     ed.vc_render();
                     next
                 };

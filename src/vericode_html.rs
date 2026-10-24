@@ -2,7 +2,7 @@
 // (condensed sans labels, purple for proofs, darkred only for violations, dashed gray for what is
 // merely unproven). Pure string building from the state; the editor installs it.
 
-use super::vericode_ui::{SESSIONS, VcState, stored_key, stored_model};
+use super::vericode_ui::{SESSIONS, VcState, stored_choice, stored_custom, stored_key};
 use crate::proof_view::esc;
 use crate::v2::adequacy::Fate;
 use crate::v2::vericode::Owner;
@@ -290,25 +290,60 @@ The kernel alone judges a submission: accepted only if every function it touched
 
     // ---- the optional live LLM ----
     h.push_str("<h3>LLM <span class=\"vc-dim\">optional</span></h3>");
-    match stored_key() {
+    let key = stored_key();
+    match &key {
         None => h.push_str(&format!(
             "<p class=\"vc-dim\">No key: nothing is sent anywhere. To try a live session, paste your own OpenRouter key; it is kept in this browser's localStorage and sent only to openrouter.ai.</p>\
-<div class=\"vc-form\"><input id=\"vc-key\" type=\"password\" placeholder=\"sk-or-…\" autocomplete=\"off\" spellcheck=\"false\">\
-<input id=\"vc-model\" type=\"text\" value=\"{}\" spellcheck=\"false\">{}</div>",
-            esc(&stored_model()),
-            act("save-key", "", "save", "")
+<div class=\"vc-form\"><input id=\"vc-key\" type=\"password\" placeholder=\"sk-or-…\" autocomplete=\"off\" spellcheck=\"false\">{}</div>",
+            act("save-key", "", "save key", "")
         )),
         Some(k) => {
             let tail: String = k.chars().rev().take(4).collect::<Vec<_>>().into_iter().rev().collect();
             h.push_str(&format!(
-                "<p class=\"vc-dim\">key ••••{} (this browser only) {}</p><div class=\"vc-form\"><input id=\"vc-model\" type=\"text\" value=\"{}\" spellcheck=\"false\">{}</div><div class=\"vc-row\">{}</div>",
+                "<p class=\"vc-dim\">key ••••{} (this browser only) {}</p>",
                 esc(&tail),
                 act("forget-key", "", "forget", "vc-link"),
-                esc(&stored_model()),
-                act("save-key", "", "set model", ""),
-                act("ask", "", "Ask LLM to fill the body/proofs", if vc.busy { "vc-off" } else { "vc-primary" })
             ));
         }
+    }
+    // model presets and a custom id
+    let (active, choice) = stored_choice();
+    h.push_str("<ul class=\"vc-presets\">");
+    for (k, label, id, fast) in crate::v2::llm::PRESETS {
+        h.push_str(&format!(
+            "<li data-act=\"preset\" data-arg=\"{k}\" class=\"{}\"><span class=\"vc-radio\"></span>{label} <code>{id}</code>{}</li>",
+            if active == k { "vc-active" } else { "" },
+            if fast { " <span class=\"vc-dim\">· fastest provider</span>" } else { "" }
+        ));
+    }
+    h.push_str(&format!(
+        "<li data-act=\"preset\" data-arg=\"custom\" class=\"{}\"><span class=\"vc-radio\"></span>Custom…</li></ul>\
+<div class=\"vc-form\"><input id=\"vc-model\" type=\"text\" placeholder=\"vendor/model-id\" value=\"{}\" spellcheck=\"false\">\
+<label class=\"vc-check\"><input id=\"vc-fast\" type=\"checkbox\"{}> prefer fastest throughput</label>{}</div>",
+        if active == "custom" { "vc-active" } else { "" },
+        esc(&stored_custom()),
+        if active == "custom" && choice.fast { " checked" } else { "" },
+        act("save-model", "", "use custom model", "")
+    ));
+    h.push_str(&format!(
+        "<p class=\"vc-dim\">model: <code>{}</code>{}</p>",
+        esc(&choice.model),
+        if choice.fast {
+            " · provider sorted by throughput"
+        } else {
+            ""
+        }
+    ));
+    if key.is_some() {
+        h.push_str(&format!(
+            "<div class=\"vc-row\">{}</div>",
+            act(
+                "ask",
+                "",
+                "Ask LLM to fill the body/proofs",
+                if vc.busy { "vc-off" } else { "vc-primary" }
+            )
+        ));
     }
     if let Some(e) = &vc.llm_error {
         h.push_str(&format!("<p class=\"vc-verdict vc-bad\">{}</p>", esc(e)));

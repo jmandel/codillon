@@ -9,6 +9,35 @@ use super::vericode::{Edit, Judgement, SessionStart, apply_edits, locked_ranges}
 use serde_json::{Value, json};
 
 pub const DEFAULT_MODEL: &str = "anthropic/claude-opus-5.5";
+/// Output cap per round (within every preset's limit; DeepSeek V4.1 Flash allows 65.5K).
+pub const MAX_TOKENS: u32 = 32_000;
+
+/// The model presets of the settings: (key, label, OpenRouter id, prefer fastest throughput).
+pub const PRESETS: [(&str, &str, &str, bool); 2] = [
+    ("opus", "Claude Opus 5.5", DEFAULT_MODEL, false),
+    (
+        "deepseek-flash",
+        "DeepSeek V4.1 Flash (fast)",
+        "deepseek/deepseek-v4.1-flash-1017",
+        true,
+    ),
+];
+
+/// The model a live session asks: an OpenRouter id, and whether to route for throughput.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ModelChoice {
+    pub model: String,
+    pub fast: bool,
+}
+
+impl Default for ModelChoice {
+    fn default() -> Self {
+        ModelChoice {
+            model: DEFAULT_MODEL.into(),
+            fast: false,
+        }
+    }
+}
 pub const ENDPOINT: &str = "https://openrouter.ai/api/v1/chat/completions";
 pub const MAX_ROUNDS: u32 = 6;
 
@@ -118,16 +147,21 @@ pub fn request(
     v
 }
 
-/// The OpenRouter chat body for one round.
-pub fn chat_body(model: &str, req: &Value) -> Value {
-    json!({
-        "model": model,
+/// The OpenRouter chat body for one round (with provider routing for throughput if asked).
+pub fn chat_body(choice: &ModelChoice, req: &Value) -> Value {
+    let mut b = json!({
+        "model": choice.model,
         "temperature": 0,
+        "max_tokens": MAX_TOKENS,
         "messages": [
             { "role": "system", "content": SYSTEM_PROMPT },
             { "role": "user", "content": req.to_string() },
         ],
-    })
+    });
+    if choice.fast {
+        b["provider"] = json!({ "sort": "throughput" });
+    }
+    b
 }
 
 /// The assistant's text from an OpenRouter reply (or the API's error message).
@@ -323,7 +357,7 @@ impl Live {
     }
 
     /// The next round's chat body, or None when the session is over.
-    pub fn next_body(&mut self, model: &str) -> Option<Value> {
+    pub fn next_body(&mut self, choice: &ModelChoice) -> Option<Value> {
         if self.done || self.round >= self.max_rounds {
             self.done = true;
             return None;
@@ -337,7 +371,7 @@ impl Live {
             self.max_rounds,
             self.last.as_ref(),
         );
-        Some(chat_body(model, &req))
+        Some(chat_body(choice, &req))
     }
 
     /// Take the model's reply (the HTTP body) and play it as a round.

@@ -661,7 +661,7 @@ impl Editor {
             .map(|e| e.get_bounding_client_rect().right())
             .filter(|r| *r > 0.0)
             .unwrap_or(1400.0) as f32
-            - 220.0;
+            - 120.0;
         for (i, l) in self.text().iter().enumerate() {
             let indent = l.info().indent.unwrap_or(0);
             let end =
