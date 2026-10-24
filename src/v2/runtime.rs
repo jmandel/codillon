@@ -149,6 +149,35 @@ fn atom_terms(a: &Atom, v: &mut Vec<TermId>) {
     }
 }
 
+/// For each body line of function `f`, the block arms open at it (outermost first): an arm is
+/// named by the line that opened it (`block`/`loop`/`if`, or `else`).
+fn scopes_of(m: &Module, f: usize) -> HashMap<u32, Vec<u32>> {
+    use super::ast::Ins;
+    let mut open: Vec<u32> = vec![];
+    let mut at = HashMap::new();
+    for (line, ins) in &m.funcs[f].body {
+        match ins {
+            Ins::Block(..) => {
+                at.insert(*line, open.clone());
+                open.push(*line);
+            }
+            Ins::Else => {
+                open.pop();
+                at.insert(*line, open.clone());
+                open.push(*line);
+            }
+            Ins::End => {
+                open.pop();
+                at.insert(*line, open.clone());
+            }
+            _ => {
+                at.insert(*line, open.clone());
+            }
+        }
+    }
+    at
+}
+
 impl RuntimePlan {
     /// The plan for a checked module: one check per runtime-checked cup on an executable line.
     pub fn new(m: &Module, out: &ModuleOut) -> RuntimePlan {
@@ -166,7 +195,22 @@ impl RuntimePlan {
         };
         for fo in &out.funcs {
             let f = fo.func as usize;
-            let born: HashSet<TermId> = fo.births.iter().map(|b| b.term).collect();
+            let scopes = scopes_of(m, f);
+            let scope_at = |l: u32| -> &[u32] {
+                scopes.get(&l).map(|v| v.as_slice()).unwrap_or(&[])
+            };
+            // a capture is usable by a check only if it is written on every path to the check:
+            // its line comes first and every block arm open there is still open at the check.
+            // Opaque leaves (params, φs, globals, impure results) are born only where they are
+            // defined, so they always qualify; a pure call or a load of the same canonical term may
+            // also occur later or in a sibling arm, where its shadow is not yet written.
+            let dominated = |t: TermId, line: u32| -> bool {
+                fo.births.iter().any(|b| {
+                    b.term == t
+                        && (b.line == fo.header_line
+                            || (b.line < line && scope_at(line).starts_with(scope_at(b.line))))
+                })
+            };
             let mut fp = FuncPlan {
                 func: fo.func,
                 header_line: fo.header_line,
@@ -185,6 +229,15 @@ impl RuntimePlan {
                 if let Some(g) = &c.guard {
                     atom_terms(g, &mut roots);
                 }
+                let born: HashSet<TermId> = fo
+                    .births
+                    .iter()
+                    .map(|b| b.term)
+                    .filter(|t| {
+                        !matches!(fo.terms.key(*t), Key::Call(..) | Key::Load(..))
+                            || dominated(*t, c.line)
+                    })
+                    .collect();
                 let mut sends = vec![];
                 let mut seen = HashSet::new();
                 for r in roots {

@@ -306,3 +306,53 @@ fn f3_a_good_initializer_and_proven_sets_stay_verified() {
     assert!(verified(&out, "$setter"));
     assert!(verified(&out, "$reader"));
 }
+
+// ---------------- F4: R35 captures only of values born on every path to the check ----------------
+
+const F4: &str = r#"(func $pos (param $a i32) (result i32)
+  local.get $a
+  i32.const 0
+  i32.gt_s
+)
+(func $need (param $a (i32 | (call $pos v))) (result i32)
+  local.get $a
+)
+(func $f (export "f") (param $x i32) (result i32)
+  local.get $x
+  call $need
+  drop
+  local.get $x
+  call $pos
+)
+(func $g (export "g") (param $x i32) (param $c i32) (result i32)
+  local.get $c
+  if
+    local.get $x
+    call $pos
+    drop
+  else
+    local.get $x
+    call $need
+    drop
+  end
+  i32.const 0
+)"#;
+
+#[test]
+fn f4_a_check_never_reads_a_capture_from_later_or_a_sibling_arm() {
+    use super::eval::EvalErr;
+    // $pos($x) is computed again on line 14 (later) and line 20 (the other arm): the checks on
+    // lines 11 and 24 must evaluate it, not read a shadow that was never written
+    let (r, _) = super::tests::instrumented_run(F4, "f", &[5]);
+    assert_eq!(r.unwrap(), vec![1]);
+    let (r, _) = super::tests::instrumented_run(F4, "f", &[-1]);
+    assert!(matches!(r, Err(EvalErr::CheckFailed { line: 11, .. })), "{r:?}");
+    let (r, _) = super::tests::instrumented_run(F4, "g", &[5, 0]);
+    assert_eq!(r.unwrap(), vec![0]);
+    let (r, _) = super::tests::instrumented_run(F4, "g", &[-1, 0]);
+    assert!(matches!(r, Err(EvalErr::CheckFailed { line: 24, .. })), "{r:?}");
+    // negated: a 0 shadow would make ¬$pos($x) pass for x = 5
+    let neg = F4.replace("(call $pos v)", "(i32.eqz (call $pos v))");
+    let (r, _) = super::tests::instrumented_run(&neg, "f", &[5]);
+    assert!(matches!(r, Err(EvalErr::CheckFailed { line: 11, .. })), "{r:?}");
+}
