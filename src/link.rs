@@ -86,12 +86,18 @@ impl LinkParams {
 }
 
 // Example names are restricted so that a fragment can only fetch from `examples/`.
+/// An example name: one optional directory segment (`v2/parity`), each segment of
+/// `[A-Za-z0-9-_.]` not starting with `.` (so no `..`, no absolute paths).
 fn is_example_name(s: &str) -> bool {
+    let segs: Vec<&str> = s.split('/').collect();
     !s.is_empty()
         && s.len() <= 80
-        && s.chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
-        && !s.starts_with('.')
+        && segs.len() <= 2
+        && segs.iter().all(|seg| {
+            !seg.is_empty()
+                && !seg.starts_with('.')
+                && seg.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+        })
 }
 
 pub fn fnv1a64(bytes: &[u8]) -> u64 {
@@ -210,7 +216,11 @@ mod tests {
         assert!(!p.embed);
         // no path traversal through example names
         assert_eq!(LinkParams::parse("#ex=../secret").source, None);
-        assert_eq!(LinkParams::parse("#ex=a/b").source, None);
+        assert!(LinkParams::parse("#ex=v2/parity").source.is_some());
+        assert_eq!(LinkParams::parse("#ex=a/b/c").source, None);
+        assert_eq!(LinkParams::parse("#ex=../x").source, None);
+        assert_eq!(LinkParams::parse("#ex=v2/..").source, None);
+        assert_eq!(LinkParams::parse("#ex=/x").source, None);
         assert_eq!(LinkParams::parse("#step=bogus").step, None);
     }
 
