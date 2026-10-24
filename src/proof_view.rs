@@ -46,6 +46,13 @@ pub struct LineProof {
     pub quiet: Option<String>,
     /// header badge: (text, class suffix: "verified" | "gradual")
     pub badge: Option<(String, &'static str)>,
+    /// the code runs past the window's right edge: commentary is pinned to the edge (review 19 §1)
+    pub wide: bool,
+    /// vericoding mode: a student-owned line (locked while the implementation is written)
+    pub locked: bool,
+    /// vericoding commentary: (text, tone) with tone "lock" (a refused edit), "reject" (a
+    /// rejected submission, darkred) or "mutant" (a surviving mutant)
+    pub vnote: Option<(String, &'static str)>,
 }
 
 #[derive(Default)]
@@ -59,6 +66,18 @@ pub struct Scene {
 pub struct RunFailure {
     pub line: u32,
     pub message: String,
+}
+
+/// §8's runtime-check mark: a small gray stopwatch ("checked when run"), never a bomb (a bomb
+/// means a check failed in this run).
+fn stopwatch(cx: f32, cy: f32) -> String {
+    format!(
+        "<g class=\"pv-watch\"><circle cx=\"{cx:.1}\" cy=\"{cy:.1}\" r=\"3.1\"/>\
+<path d=\"M{cx:.1} {:.1}v-1.4M{:.1} {:.1}h2.2M{cx:.1} {cy:.1}l1.5 -1.5\"/></g>",
+        cy - 3.1,
+        cx - 1.1,
+        cy - 4.5
+    )
 }
 
 pub fn y_mid(line: u32) -> f32 {
@@ -168,10 +187,8 @@ fn draw_cup(o: &mut String, m: &CupMark) {
         Look::Checked => {
             let _ = write!(
                 o,
-                "<path d=\"{d}\" fill=\"url(#fade-up)\" stroke=\"#777\" stroke-width=\"1.2\" stroke-dasharray=\"2.2 1.6\"/>\
-<text x=\"{:.1}\" y=\"{:.1}\" class=\"pv-bomb\" opacity=\"0.5\">💣</text>",
-                x + h + 3.5,
-                y - h + 2.5
+                "<path d=\"{d}\" fill=\"url(#fade-up)\" stroke=\"#777\" stroke-width=\"1.2\" stroke-dasharray=\"2.2 1.6\"/>{}",
+                stopwatch(x + h + 4.0, y - h + 0.5)
             );
         }
         Look::GhostUnfed => {
@@ -398,7 +415,24 @@ pub fn build(
                 .iter()
                 .filter(|c| c.verdict == Verdict::RuntimeChecked && !c.ghost)
                 .count();
-            lp.badge = Some(if f.verified {
+            // the instructor axioms a VERIFIED function rests on, so a hatched cup under the seal reads
+            let axioms: std::collections::BTreeSet<u32> = f
+                .cups
+                .iter()
+                .flat_map(|c| c.assumptions.iter())
+                .filter(|o| o.kind == "axiom")
+                .map(|o| o.line)
+                .collect();
+            lp.badge = Some(if f.verified && !axioms.is_empty() {
+                (
+                    format!(
+                        "VERIFIED · {} axiom{}",
+                        axioms.len(),
+                        if axioms.len() == 1 { "" } else { "s" }
+                    ),
+                    "verified",
+                )
+            } else if f.verified {
                 ("VERIFIED".into(), "verified")
             } else if checks == 1 {
                 ("1 runtime check".into(), "gradual")
@@ -920,7 +954,15 @@ fn build_func(
             "<path d=\"{}\" class=\"pv-chip\"/>",
             diamond(c.x, c.y, CHIP)
         );
-        let _ = c.line;
+        if c.origin == "axiom" || c.origin == "assume" {
+            // §8: a small `A` on a chip born of an axiom or an assume
+            let _ = write!(
+                over,
+                "<text x=\"{:.1}\" y=\"{:.1}\" class=\"pv-a\">A</text>",
+                c.x - CHIP - 1.5,
+                c.y - 2.0
+            );
+        }
         titles.entry(c.line).or_default().push(format!(
             "fact ⟨{}⟩ enters the lane ({}){}",
             c.text,

@@ -642,6 +642,20 @@ impl Editor {
             }
         }
         scene.under.insert_str(0, &washes);
+        // lines whose code runs past the window: their commentary is pinned to the right edge
+        let room = web_sys::window()
+            .and_then(|w| w.inner_width().ok())
+            .and_then(|v| v.as_f64())
+            .unwrap_or(1400.0) as f32
+            - 240.0;
+        for (i, l) in self.text().iter().enumerate() {
+            let indent = l.info().indent.unwrap_or(0);
+            let end =
+                crate::proof_view::code_x(indent) + measure_code(l.instr().get()).unwrap_or(0.0);
+            if let Some(lp) = scene.lines.get_mut(i) {
+                lp.wide = end > room;
+            }
+        }
         self.image_mut().set_proof_layers(&scene.under, &scene.over);
         for (i, lp) in scene.lines.into_iter().enumerate() {
             self.line_mut(i).set_proof(lp);

@@ -39,6 +39,9 @@ div.textentry {
     counter-reset: codelines;
     display: grid;
     grid-auto-rows: var(--codillon-line-spacing);
+    /* one column as wide as the window, not as the widest line: commentary then floats at
+       the visible right edge even when some line (v2 fact clauses) is wider (review 19 §1) */
+    grid-template-columns: minmax(0, 1fr);
 }
 
 div.textentry:focus {
@@ -445,6 +448,25 @@ span.comment[data-commentary]::after {
     box-sizing: border-box;
 }
 
+/* code wider than the window (v2 fact clauses): the commentary is pinned to the window's
+   right edge, over the code's off-screen tail, instead of floating past it (review 19 §1) */
+.line.wide-line {
+    position: relative;
+}
+
+.line.wide-line > span.comment[data-commentary] {
+    position: absolute;
+    right: 0;
+    top: 0;
+    width: min(46vw, 640px);
+    contain: none;
+}
+
+.line.wide-line > span.comment[data-commentary]::after {
+    background-color: #fffff0;
+    max-width: 100%;
+}
+
 /* ---- v2 proofs (design 16 §8) ---- */
 
 /* proof lines (prove, lemma, unfold, assume): quiet, like v1's spec lines; still numbered */
@@ -557,6 +579,22 @@ span.comment[data-commentary][data-tone="quiet"]::after {
 .pv-bomb {
     font-size: 10px;
     text-anchor: middle;
+}
+
+/* the `A` on an axiom- or assume-born fact chip (§8) */
+.pv-a {
+    font-family: 'MLMSansDemiCond10-Regular';
+    font-size: 7.5px;
+    fill: #483D8B;
+    text-anchor: end;
+}
+
+/* runtime-checked cup: a small stopwatch tick (design 16 §8), quiet gray */
+.pv-watch {
+    fill: #fffff0;
+    stroke: #807a96;
+    stroke-width: 0.9;
+    stroke-linecap: round;
 }
 
 /* a spec clause inside a code line, e.g. `block $done (fact …)` */

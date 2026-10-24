@@ -382,6 +382,17 @@ impl CodeLine {
             }
         }
         .to_string();
+        let prefix = prefix
+            + if self.info.proof.wide {
+                " wide-line"
+            } else {
+                ""
+            }
+            + if self.info.proof.locked {
+                " locked-line"
+            } else {
+                ""
+            };
 
         use BrowserAnimation::*;
         fn ab(x: bool) -> &'static str {
@@ -498,12 +509,23 @@ impl CodeLine {
             && !reason.is_empty()
         {
             Some(reason.to_string())
+        } else if let Some((t, "reject")) = &self.info.proof.vnote {
+            Some(t.clone())
         } else {
             self.info.proof.note.clone()
         };
-        // a quiet note (a runtime-checked cup) when there is nothing darkred to say
+        // a vericoding note (lock, mutant) or a quiet note (a runtime-checked cup) when there is
+        // nothing darkred to say
+        let vtone = match (&commentary, &self.info.proof.vnote) {
+            (None, Some((_, tone))) => Some(*tone),
+            (Some(_), Some((_, "reject"))) => Some("reject"),
+            _ => None,
+        };
         let quiet = if commentary.is_none() {
-            self.info.proof.quiet.clone()
+            match &self.info.proof.vnote {
+                Some((t, _)) => Some(t.clone()),
+                None => self.info.proof.quiet.clone(),
+            }
         } else {
             None
         };
@@ -518,10 +540,10 @@ impl CodeLine {
                 comment.remove_attribute("title");
             }
         }
-        if quiet.is_some() {
-            comment.set_attribute("data-tone", "quiet");
-        } else {
-            comment.remove_attribute("data-tone");
+        match vtone {
+            Some(t) => comment.set_attribute("data-tone", t),
+            None if quiet.is_some() => comment.set_attribute("data-tone", "quiet"),
+            None => comment.remove_attribute("data-tone"),
         }
         let instr = &mut self.contents.get_mut().0;
         match &self.info.proof.title {
