@@ -20,3 +20,7 @@ pub mod vericode;
 mod tests;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod vericode_tests;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod fable_probes;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod review_adv;
