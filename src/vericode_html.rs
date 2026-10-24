@@ -98,7 +98,7 @@ The kernel alone judges a submission: accepted only if every function it touched
                 i + 1,
                 t.who,
                 esc(&t.note),
-                rn(&t.edits),
+                esc(&super::vericode_ui::edits_text(&t.edits, disp)),
                 kind_class(t.kind),
                 if t.kind == "accepted" { "◆ " } else { "" },
                 rn(&t.summary)

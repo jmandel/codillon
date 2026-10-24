@@ -593,3 +593,10 @@ fn b2_duplicate_function_names_are_rejected() {
         j.boundary
     );
 }
+
+#[test]
+fn default_model_is_the_chosen_one() {
+    assert_eq!(super::llm::DEFAULT_MODEL, "anthropic/claude-opus-5.5");
+    let b = super::llm::chat_body(super::llm::DEFAULT_MODEL, &serde_json::json!({}));
+    assert_eq!(b["model"], "anthropic/claude-opus-5.5");
+}

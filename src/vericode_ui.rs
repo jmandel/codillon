@@ -23,7 +23,7 @@ const SLICE_MS: f64 = 18.0;
 pub struct TurnLog {
     pub who: &'static str,
     pub note: String,
-    pub edits: String,
+    pub edits: Vec<(u32, u32, usize)>,
     pub kind: &'static str,
     pub summary: String,
     pub reasons: Vec<(u32, String)>,
@@ -151,16 +151,23 @@ fn body_class(on: bool) {
     }
 }
 
-fn edits_desc(edits: &[crate::v2::vericode::Edit]) -> String {
-    let v: Vec<String> = edits
+/// The edits of a round, as (first line, last line, lines written) in the numbering they were
+/// made against (shown with the gutter's numbers).
+fn edits_desc(edits: &[crate::v2::vericode::Edit]) -> Vec<(u32, u32, usize)> {
+    edits.iter().map(|e| (e.a, e.b, e.with.len())).collect()
+}
+
+/// Render edits with the gutter's numbers.
+pub fn edits_text(e: &[(u32, u32, usize)], disp: &dyn Fn(u32) -> u32) -> String {
+    let v: Vec<String> = e
         .iter()
-        .map(|e| {
-            if e.b < e.a {
-                format!("insert {} line(s) at {}", e.with.len(), e.a)
-            } else if e.a == e.b {
-                format!("line {} → {} line(s)", e.a, e.with.len())
+        .map(|&(a, b, n)| {
+            if b < a {
+                format!("insert {n} line(s) before line {}", disp(a))
+            } else if a == b {
+                format!("line {} → {n} line(s)", disp(a))
             } else {
-                format!("lines {}–{} → {} line(s)", e.a, e.b, e.with.len())
+                format!("lines {}–{} → {n} line(s)", disp(a), disp(b))
             }
         })
         .collect();
@@ -171,7 +178,12 @@ fn edits_desc(edits: &[crate::v2::vericode::Edit]) -> String {
     }
 }
 
-fn turn_log(who: &'static str, note: &str, edits: String, o: &RoundOutcome) -> TurnLog {
+fn turn_log(
+    who: &'static str,
+    note: &str,
+    edits: Vec<(u32, u32, usize)>,
+    o: &RoundOutcome,
+) -> TurnLog {
     let kind = llm::verdict_kind(o);
     let (summary, reasons) = match (&o.judgement, &o.error) {
         (_, Some(e)) => (format!("could not apply: {e}"), vec![]),

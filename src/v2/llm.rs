@@ -8,7 +8,7 @@ use super::out::Verdict;
 use super::vericode::{Edit, Judgement, SessionStart, apply_edits, locked_ranges};
 use serde_json::{Value, json};
 
-pub const DEFAULT_MODEL: &str = "anthropic/claude-sonnet-4.5";
+pub const DEFAULT_MODEL: &str = "anthropic/claude-opus-5.5";
 pub const ENDPOINT: &str = "https://openrouter.ai/api/v1/chat/completions";
 pub const MAX_ROUNDS: u32 = 6;
 

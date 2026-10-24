@@ -654,11 +654,14 @@ impl Editor {
         }
         scene.under.insert_str(0, &washes);
         // lines whose code runs past the window: their commentary is pinned to the right edge
+        // (the room is the code column's: the window less the vericoding panel, if any)
         let room = web_sys::window()
-            .and_then(|w| w.inner_width().ok())
-            .and_then(|v| v.as_f64())
+            .and_then(|w| w.document())
+            .and_then(|d| d.query_selector(".textentry").ok().flatten())
+            .map(|e| e.get_bounding_client_rect().right())
+            .filter(|r| *r > 0.0)
             .unwrap_or(1400.0) as f32
-            - 240.0;
+            - 220.0;
         for (i, l) in self.text().iter().enumerate() {
             let indent = l.info().indent.unwrap_or(0);
             let end =

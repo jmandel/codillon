@@ -458,7 +458,7 @@ span.comment[data-commentary]::after {
     position: absolute;
     right: 0;
     top: 0;
-    width: min(46vw, 640px);
+    width: min(34vw, 460px);
     contain: none;
 }
 
