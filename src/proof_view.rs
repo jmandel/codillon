@@ -485,7 +485,7 @@ fn origin_desc(origin: &str, line: u32) -> String {
         "prove" => format!("proved on line {line}"),
         "evaluation" => format!("evaluated on line {line}"),
         "call result" => format!("result of the call on line {line}"),
-        "entry (parameter refinement)" => format!("parameter refinement, line {line}"),
+        "entry (parameter refinement)" => format!("the parameter's type, line {line}"),
         "entry (fact parameter)" => format!("fact parameter, line {line}"),
         "loop invariant" => format!("loop invariant, line {line}"),
         "loop parameter" => format!("loop parameter, line {line}"),
@@ -1303,7 +1303,7 @@ fn build_func(
     // every drawn chip says what it is, on its own line (research/24 §4)
     for c in &chips {
         extra.labels.entry(c.line).or_default().push(format!(
-            "gives {}{}",
+            "gives {}{}{}",
             clip(&c.text, 56),
             match c.origin {
                 "br_if fall-through" => " if not taken",
@@ -1313,6 +1313,10 @@ fn build_func(
                 "loop invariant" => " (loop invariant)",
                 "entry (parameter refinement)" | "entry (fact parameter)" => " (parameter)",
                 _ => "",
+            },
+            match c.fray {
+                Some(m) => format!(" — stale after line {m}"),
+                None => String::new(),
             }
         ));
     }

@@ -1404,13 +1404,9 @@ impl<'a, 'm> Pass<'a, 'm> {
             }
         }
         self.locals[i] = t;
+        // later cups, accounts and stale hints read the old value as `x@L`; the fact's own text
+        // stays as it read on its birth line, where the editor marks it stale (review B2)
         self.refresh_view(line);
-        // a fact that frays here is re-rendered in the new view, so the old value reads `x@L`
-        for f in 0..self.facts.len() {
-            if self.fray.get(&(f as FactId)) == Some(&line) {
-                self.fact_text[f] = self.terms.show_atom(&self.facts[f].atom);
-            }
-        }
     }
 
     fn mentions(

@@ -592,6 +592,11 @@ fn propositions_print_in_infix_with_versions() {
         .iter()
         .find(|ch| ch.line == 300 && ch.frayed_at == Some(304))
         .unwrap();
-    assert!(chip.text.contains("i@"), "{}", chip.text);
-    assert_ne!(chip.text, "u(i) < 8");
+    // the chip reads as on its birth line; the hint names the old value by its version
+    assert_eq!(chip.text, "u(i) < 8");
+    let d = c.diag.as_deref().unwrap();
+    assert!(
+        d.contains("⟨u(i@") && d.contains("is about the old i (set at line 304)"),
+        "{d}"
+    );
 }

@@ -1724,6 +1724,27 @@ impl Editor {
         let _ =
             doc.add_event_listener_with_callback("selectionchange", cb.as_ref().unchecked_ref());
         cb.forget(); // lives as long as the page
+        // `#cursor=N` (a link or a screenshot): show line N's account as if the caret were there
+        let hash = web_sys::window()
+            .and_then(|w| w.location().hash().ok())
+            .unwrap_or_default();
+        if let Some(n) = hash
+            .split(['#', '&'])
+            .find_map(|p| p.strip_prefix("cursor="))
+            .and_then(|v| v.parse::<usize>().ok())
+        {
+            let e = self.holder();
+            vericode_ui::set_timeout(
+                move || {
+                    let mut ed = e.borrow_mut();
+                    if n >= 1 && n <= ed.text().len() {
+                        ed.line_mut(n - 1).set_cursor(true);
+                        ed.cursor_line = Some(n - 1);
+                    }
+                },
+                1500,
+            );
+        }
     }
 
     fn mark_cursor_line(&mut self) {

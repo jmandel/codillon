@@ -94,7 +94,12 @@ impl Terms {
         match &term.key {
             Key::Const(ty, b) => (
                 match ty {
-                    ValTy::I32 | ValTy::I64 => num(*b as u128),
+                    // a small negative number reads as one (−1, a tombstone); an unsigned
+                    // comparison prints its constants unsigned (see `reading`)
+                    ValTy::I32 | ValTy::I64 => match self.signed_const(t) {
+                        Some(c) if (-65536..0).contains(&c) => format!("−{}", c.unsigned_abs()),
+                        _ => num(*b as u128),
+                    },
                     ValTy::F32 => f32::from_bits(*b as u32).to_string(),
                     ValTy::F64 => f64::from_bits(*b).to_string(),
                 },
@@ -161,8 +166,8 @@ impl Terms {
                 Some(_) => self.show(t),
                 None => format!("s({})", self.show(t)),
             }
-        } else if self.is_const(t) {
-            self.show(t)
+        } else if let Some(c) = self.as_const(t) {
+            num(c as u128)
         } else {
             format!("u({})", self.show(t))
         }
