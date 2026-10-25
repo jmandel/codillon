@@ -679,7 +679,7 @@ impl Editor {
         // the labels then stop short of it
         let notes = notes_width(right, self.link.embed);
         let label_right = right - notes.map_or(16.0, |w| w + 24.0);
-        let mut prev_below = false;
+        let (mut prev_below, mut prev_comment) = (false, false);
         for (i, l) in self.text().iter().enumerate() {
             let indent = l.info().indent.unwrap_or(0);
             let end =
@@ -694,22 +694,38 @@ impl Editor {
                 };
             if let Some(lp) = scene.lines.get_mut(i) {
                 lp.wide = end > room;
+                // a long code comment pushes the commentary onto the top of the next row
+                let commented = lp.note.is_some() || lp.quiet.is_some();
+                let pushed = commented && end_all > label_right - 200.0;
+                // a wide line's commentary sits in the gap below it, over the top of the next
+                // row: the next row's label goes below that row instead
+                let (gap_busy, gap_comment) = (prev_below, prev_comment);
+                // the line above's commentary covers the right of this row: a quiet note here
+                // would print under it, and the label already says "checked when run"
+                if gap_comment && lp.label.is_some() {
+                    lp.quiet = None;
+                }
                 // the label right of the code wraps to two lines at most; if it would need
                 // more (or there is no room at all) it goes in the gap below the line
                 if let Some(t) = &lp.label {
                     let w = measure_in(t, "13pt MLMSansDemiCond10-Regular").unwrap_or(0.0);
                     let avail = label_right - end_all - 30.0;
                     // a two-line label would meet the label in the gap above it: below too
+                    // a line with commentary keeps its row for the commentary
                     lp.label_below = lp.wide
+                        || lp.note.is_some()
+                        || lp.quiet.is_some()
                         || avail < 140.0
                         || w > 1.85 * avail
-                        || (prev_below && w > 0.95 * avail);
+                        || gap_comment
+                        || (gap_busy && w > 0.95 * avail);
                     lp.label_fit = (
                         measure_in(t, "10pt MLMSansDemiCond10-Regular").unwrap_or(0.0) + 14.0,
                         label_right - te_left,
                     );
                 }
                 prev_below = lp.label.is_some() && lp.label_below;
+                prev_comment = (lp.wide || pushed) && commented;
             }
         }
         self.vc_decorate(&mut scene);

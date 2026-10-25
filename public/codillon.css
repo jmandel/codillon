@@ -649,7 +649,7 @@ body.show-proofs .line > span.comment[data-label]::before {
 .line > span.debug[data-label-below]::after {
     content: attr(data-label-below);
     position: absolute;
-    top: -11px;
+    top: -9px;
     left: var(--lbl-dx, 0px);
     width: max-content;
     max-width: var(--lbl-max, calc(100vw - 330px));
