@@ -181,7 +181,10 @@ fn frayed_fact_is_not_used() {
     let c = f.cups.iter().find(|c| c.line == 10).unwrap();
     assert_eq!(c.feed, Feed::Unfed, "{:?}", c.diag);
     let d = c.diag.as_deref().unwrap();
-    assert!(d.contains("is about the old $x"), "{d}");
+    assert!(
+        d.contains("⟨u(x₀) < 5⟩ (line 6) is about the old x (set at line 8)"),
+        "{d}"
+    );
 }
 
 /// A fact about the old value *is* used when the new value is computed from it: after
@@ -539,4 +542,56 @@ fn dump_cups_json() {
         "CUPS_JSON {}",
         json!({"cups": cups, "line_errors": errs, "funcs": funcs})
     );
+}
+
+/// Print every account of an example (editor mode): `EX=even-shift cargo test --release --lib
+/// dump_accounts -- --ignored --nocapture`
+#[test]
+#[ignore]
+fn dump_accounts() {
+    let ex = std::env::var("EX").unwrap_or("even-shift".into());
+    let p = format!("{}/public/examples/v2/{ex}.wat", env!("CARGO_MANIFEST_DIR"));
+    let src = std::fs::read_to_string(&p).unwrap();
+    let out = check_module_with(&Module::parse(&src), true, true);
+    for f in &out.funcs {
+        for c in &f.cups {
+            let Some(e) = &c.explain else { continue };
+            println!(
+                "L{} {} needs ⟨{}⟩ by {} ex_falso={}",
+                c.line,
+                c.kind.name(),
+                c.goal,
+                c.feed.by(),
+                e.ex_falso
+            );
+            for l in &e.lines {
+                println!("    {l}");
+            }
+        }
+    }
+}
+
+/// The infix printer (research/24 §4, review B2): student-readable forms, and old values of a
+/// local never print like the current one.
+#[test]
+fn propositions_print_in_infix_with_versions() {
+    let out = check_module(&Module::parse(&testdata("even-shift")), false);
+    let goals: Vec<&str> = out.cups().map(|c| c.goal.as_str()).collect();
+    assert!(goals.contains(&"(x>>1)·2 − x = 0"), "{goals:?}");
+    assert!(goals.contains(&"(x >>ₛ 1)·2 − x = 0"), "{goals:?}");
+    let pe = "(func $f (param $x i32)\n  local.get $x\n  i32.const 2\n  i32.mul\n  i32.const 1\n  i32.and\n  i32.eqz\n  br_if 0\n  unreachable\n)\n";
+    let out = check_module(&Module::parse(pe), false);
+    assert!(out.funcs[0].chips.iter().any(|c| c.text == "(x·2)&1 ≠ 0"));
+    // hashtable-stale: the guard is about the loop-head i, the bounds cup about the new i
+    let out = check_module(&Module::parse(&testdata("hashtable-stale")), true);
+    let c = out.cups().find(|c| c.line == 309).unwrap();
+    assert_eq!(c.goal, "u(i<<2) ≤ 28");
+    let f = out.func_at(309).unwrap();
+    let chip = f
+        .chips
+        .iter()
+        .find(|ch| ch.line == 300 && ch.frayed_at == Some(304))
+        .unwrap();
+    assert!(chip.text.contains("i@"), "{}", chip.text);
+    assert_ne!(chip.text, "u(i) < 8");
 }

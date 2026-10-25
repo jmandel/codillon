@@ -441,13 +441,13 @@ impl<'a> Solver<'a> {
         if q0 == q1 {
             if q0 != 0 && lo != hi {
                 self.wraps
-                    .push(format!("{} wraps by {q0}·2^{w}", self.terms.render(t)));
+                    .push(format!("{} wraps by {q0}·2^{w}", self.terms.show(t)));
             } else if lo != hi
                 && (lo < 0 || hi > 0)
                 && !matches!(self.terms.key(t), Key::Op(IOp::ExtendI32U, ..))
             {
                 self.wraps
-                    .push(format!("{} does not wrap", self.terms.render(t)));
+                    .push(format!("{} does not wrap", self.terms.show(t)));
             }
             let lin = exact.add_c(mul(-q0, wv)?)?;
             return Ok(Tr {
@@ -460,7 +460,7 @@ impl<'a> Solver<'a> {
             let q = if self.choose()? { q1 } else { q0 };
             self.t_split(|s| {
                 let w = if q != 0 { "wraps" } else { "does not wrap" };
-                format!("{} {w}", s.terms.render(t))
+                format!("{} {w}", s.terms.show(t))
             });
             let lin = exact.add_c(mul(-q, wv)?)?;
             self.le0(lin.scale(-1)?)?;
@@ -560,7 +560,7 @@ impl<'a> Solver<'a> {
                 self.t_split(|s| {
                     format!(
                         "{} is {}",
-                        s.terms.render(c),
+                        s.terms.show(c),
                         if br { "true" } else { "false" }
                     )
                 });
@@ -774,7 +774,7 @@ impl<'a> Solver<'a> {
             }
             o if o.is_cmp() => {
                 let b = self.choose()?;
-                self.t_split(|s| format!("{} = {}", s.terms.render(t), b as u8));
+                self.t_split(|s| format!("{} = {}", s.terms.show(t), b as u8));
                 self.truthy(t, b)?;
                 let v = b as i128;
                 Ok(Tr {
@@ -804,13 +804,13 @@ impl<'a> Solver<'a> {
                 hi: a.hi - pow2(w),
             }
         } else if self.choose()? {
-            self.t_split(|s| format!("{} is negative", s.terms.render(t)));
+            self.t_split(|s| format!("{} is negative", s.terms.show(t)));
             self.le(&Lin::konst(half), &a.lin)?;
             let lin = a.lin.add_c(-pow2(w))?;
             let (lo, hi) = self.range(&lin)?;
             Tr { lin, lo, hi }
         } else {
-            self.t_split(|s| format!("{} is non-negative", s.terms.render(t)));
+            self.t_split(|s| format!("{} is non-negative", s.terms.show(t)));
             self.le(&a.lin, &Lin::konst(half - 1))?;
             let (lo, hi) = self.range(&a.lin)?;
             Tr { lin: a.lin, lo, hi }
@@ -851,7 +851,7 @@ impl<'a> Solver<'a> {
                 self.t_split(|s| {
                     format!(
                         "{} is {}",
-                        s.terms.render(c),
+                        s.terms.show(c),
                         if br { "true" } else { "false" }
                     )
                 });
@@ -863,7 +863,7 @@ impl<'a> Solver<'a> {
                     return if (v != 0) == pol {
                         Ok(())
                     } else {
-                        Err(self.t_fail(|s| format!("{} evaluates to {v}", s.terms.render(t))))
+                        Err(self.t_fail(|s| format!("{} evaluates to {v}", s.terms.show(t))))
                     };
                 }
                 if self.depth < UNFOLD_DEPTH
@@ -911,7 +911,7 @@ impl<'a> Solver<'a> {
                 if pol {
                     let b = self.choose()?;
                     let d = if b { y } else { x };
-                    self.t_split(|s| s.terms.render_atom(d));
+                    self.t_split(|s| s.terms.show_atom(d));
                     self.assert(d, true)
                 } else {
                     self.assert(x, false)?;
@@ -1119,22 +1119,36 @@ impl<'a> Solver<'a> {
         }
     }
 
+    /// A factor of a product, parenthesized unless it is a single name or number.
+    fn factor(&self, s: String) -> String {
+        if s.chars().all(|c| c.is_alphanumeric() || "_@₀".contains(c)) {
+            s
+        } else {
+            format!("({s})")
+        }
+    }
+
     pub fn render_var(&self, v: VarId) -> String {
+        if let Some(l) = self.letter(v) {
+            return l;
+        }
         match &self.vars[v as usize].desc {
-            VarDesc::Term(t) => format!("u({})", self.terms.render(*t)),
+            VarDesc::Term(t) => self.terms.show(*t),
             VarDesc::Mono(f) => f
                 .iter()
-                .map(|x| self.render_var(*x))
+                .map(|x| self.factor(self.render_var(*x)))
                 .collect::<Vec<_>>()
                 .join("·"),
             VarDesc::TermMono(f) => f
                 .iter()
-                .map(|x| self.terms.render(*x))
+                .map(|x| self.factor(self.terms.show(*x)))
                 .collect::<Vec<_>>()
                 .join("·"),
-            VarDesc::Wrap(t) => format!("wrap({})", self.terms.render(*t)),
-            VarDesc::Div(t) | VarDesc::SDiv(t) => format!("quot({})", self.terms.render(*t)),
-            VarDesc::Res(t) => format!("u({})", self.terms.render(*t)),
+            VarDesc::Wrap(t) => format!("the carry of {}", self.terms.show(*t)),
+            VarDesc::Div(t) | VarDesc::SDiv(t) => {
+                format!("the quotient in {}", self.terms.show(*t))
+            }
+            VarDesc::Res(t) => self.terms.show(*t),
         }
     }
 

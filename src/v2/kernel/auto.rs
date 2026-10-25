@@ -254,7 +254,7 @@ impl<'a, 'm> Pass<'a, 'm> {
 
 fn model_text(m: &[(String, i128)]) -> String {
     m.iter()
-        .map(|(v, x)| format!("{v}={x}"))
+        .map(|(v, x)| format!("{v} = {x}"))
         .collect::<Vec<_>>()
         .join(", ")
 }

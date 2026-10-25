@@ -46,6 +46,86 @@ pub(super) struct Trace {
     /// the goal is False (its negation adds nothing)
     goal_false: bool,
     cases: Vec<Case>,
+    /// the procedure's unknowns named as letters, with their defining ranges, in order of first
+    /// use: (variable, letter, definition)
+    pub(super) letters: std::cell::RefCell<Vec<(VarId, String, String)>>,
+    /// names the letters must not take (the program's)
+    pub(super) avoid: Vec<String>,
+}
+
+const LETTERS: [&str; 12] = ["a", "h", "k", "m", "q", "t", "w", "z", "p", "j", "e", "g"];
+
+impl Solver<'_> {
+    /// The letter for a quotient or carry unknown of a traced run, defined on first use.
+    pub(super) fn letter(&self, v: VarId) -> Option<String> {
+        let t = self.trace.as_ref()?;
+        let desc = &self.vars[v as usize].desc;
+        if !matches!(desc, VarDesc::Div(_) | VarDesc::SDiv(_) | VarDesc::Wrap(_)) {
+            return None;
+        }
+        if let Some(x) = t.letters.borrow().iter().find(|x| x.0 == v) {
+            return Some(x.1.clone());
+        }
+        let taken: Vec<String> = t.letters.borrow().iter().map(|x| x.1.clone()).collect();
+        let l = LETTERS
+            .iter()
+            .map(|s| s.to_string())
+            .find(|s| !taken.contains(s) && !t.avoid.contains(s))
+            .unwrap_or_else(|| format!("u{}", taken.len()));
+        let def = self.definition(desc, &l);
+        t.letters.borrow_mut().push((v, l.clone(), def));
+        Some(l)
+    }
+
+    /// What a letter stands for, in the program's terms.
+    fn definition(&self, d: &VarDesc, l: &str) -> String {
+        let sh = |t: TermId| self.terms.show(t);
+        let arg_c = |t: TermId| -> Option<(TermId, i128, IOp)> {
+            let Key::Op(op, w, a) = self.terms.key(t) else {
+                return None;
+            };
+            let c = self.terms.as_const(*a.get(1)?)? as i128;
+            let c = match op {
+                IOp::ShrU | IOp::ShrS => 1i128 << (c as u32 % w.bits()),
+                IOp::And => c + 1,
+                _ => c,
+            };
+            Some((a[0], c, *op))
+        };
+        let k = |c: i128| if c == 1 { String::new() } else { num(c) };
+        match d {
+            VarDesc::Div(t) | VarDesc::SDiv(t) => match arg_c(*t) {
+                Some((x, c, IOp::RemU | IOp::And)) => format!(
+                    "{} = {}{l} + {}, with 0 ≤ {} ≤ {}",
+                    sh(x),
+                    k(c),
+                    sh(*t),
+                    sh(*t),
+                    num(c - 1)
+                ),
+                Some((x, c, op)) => {
+                    let xr = if op == IOp::ShrS {
+                        format!("s({})", sh(x))
+                    } else {
+                        sh(x)
+                    };
+                    format!(
+                        "{} = {l}, so {}{l} ≤ {xr} ≤ {}{l} + {}",
+                        sh(*t),
+                        k(c),
+                        k(c),
+                        num(c - 1)
+                    )
+                }
+                None => format!("{l} is the quotient in {}", sh(*t)),
+            },
+            VarDesc::Wrap(t) => {
+                let w = self.terms.ty(*t).bits();
+                format!("{l} = how many times {} wraps past 2{}", sh(*t), sup(w))
+            }
+            _ => String::new(),
+        }
+    }
 }
 
 fn sup(n: u32) -> String {
@@ -117,6 +197,7 @@ pub fn explain(
     let hs: Vec<Atom> = used.iter().map(|j| hyps[*j].clone()).collect();
     let ex_falso = !hs.is_empty() && (*goal == Atom::False || valid(terms, env, &hs, &Atom::False));
     let g = if ex_falso { Atom::False } else { goal.clone() };
+    let avoid = program_names(terms);
     let mut s = Solver::new(terms, env);
     s.trace = Some(Box::new(Trace {
         labels: used
@@ -129,17 +210,12 @@ pub fn explain(
             })
             .collect(),
         goal_false: g == Atom::False,
+        avoid,
         ..Default::default()
     }));
     let out = s.prove(&hs, &g);
     let t = s.trace.take().unwrap_or_default();
-    let who = if t.labels.is_empty() {
-        "the negated goal".to_string()
-    } else if ex_falso {
-        t.labels.concat()
-    } else {
-        format!("{} and the negated goal", t.labels.concat())
-    };
+    let who = t.labels.concat();
     let mut lines = vec![];
     if !matches!(out, Outcome::Valid { .. }) {
         // cannot happen for a valid prove (the subset was checked), but never invent a reason
@@ -150,54 +226,37 @@ pub fn explain(
         };
     }
     let mut cases: Vec<&Case> = t.cases.iter().filter(|c| !c.trivial).collect();
-    let trivial = t.cases.len() - cases.len();
     if cases.is_empty() {
         cases = t.cases.iter().collect();
     }
     cases.sort_by_key(|c| rank(c));
     let mut seen: Vec<String> = vec![];
     for c in &cases {
-        let line = if !c.notes.is_empty() {
-            format!("{} — contradicts {who}", c.notes.join(", "))
-        } else if c.splits.is_empty() {
-            c.close.clone()
-        } else {
-            // the last two splits made the case; earlier ones are context
-            let n = c.splits.len();
-            let lead = if n > 2 { "…, " } else { "" };
-            format!(
-                "case {lead}{}: {}",
-                c.splits[n.saturating_sub(2)..].join(", "),
-                c.close
-            )
-        };
+        let line = plain_case(c, ex_falso, &who);
         if !seen.contains(&line) {
             seen.push(line);
         }
     }
-    let shown = seen.len().min(2);
+    let defs: Vec<String> = t.letters.borrow().iter().map(|x| x.2.clone()).collect();
+    if !defs.is_empty() {
+        lines.push(format!("Let {}.", defs.join("; ")));
+    }
+    let shown = seen.len().min(3 - lines.len());
     lines.extend(seen.iter().take(shown).cloned());
     let rest = seen.len() - shown;
-    let mut tail = vec![];
-    if rest > 0 {
-        tail.push(format!(
-            "{rest} more case{}",
-            if rest == 1 { "" } else { "s" }
-        ));
-    }
-    if trivial > 0 && trivial < t.cases.len() {
-        tail.push(format!(
-            "{trivial} case{} ruled out by ranges",
-            if trivial == 1 { "" } else { "s" }
-        ));
-    }
-    if !tail.is_empty()
+    if rest > 0
         && let Some(l) = lines.last_mut()
     {
-        let _ = std::fmt::Write::write_fmt(l, format_args!(" (+{})", tail.join(", ")));
+        let _ = std::fmt::Write::write_fmt(
+            l,
+            format_args!(
+                " ({rest} more case{} the same way)",
+                if rest == 1 { "" } else { "s" }
+            ),
+        );
     }
     if lines.is_empty() && t.cases.is_empty() {
-        lines.push("every case is infeasible".into());
+        lines.push("every case is impossible".into());
     }
     Explanation {
         used,
@@ -274,10 +333,10 @@ impl Solver<'_> {
     /// A variable whose interval (after the pre-pass) is empty.
     pub(super) fn t_empty(&self, d: &VarDesc) -> String {
         let what = match d {
-            VarDesc::Term(t) | VarDesc::Res(t) => format!("u({})", self.terms.render(*t)),
-            VarDesc::Wrap(t) => format!("the wrap of {}", self.terms.render(*t)),
+            VarDesc::Term(t) | VarDesc::Res(t) => format!("u({})", self.terms.show(*t)),
+            VarDesc::Wrap(t) => format!("the wrap of {}", self.terms.show(*t)),
             VarDesc::Div(t) | VarDesc::SDiv(t) => {
-                format!("the quotient in {}", self.terms.render(*t))
+                format!("the quotient in {}", self.terms.show(*t))
             }
             VarDesc::Mono(_) | VarDesc::TermMono(_) => "a product".into(),
         };
@@ -298,11 +357,16 @@ impl Solver<'_> {
     /// A linear form with the procedure's variable names.
     pub(super) fn lin_str(&self, l: &Lin) -> String {
         let mut s = String::new();
-        for (v, k) in &l.ts {
+        let mut ts = l.ts.clone();
+        ts.sort_by_key(|(_, k)| *k < 0);
+        for (v, k) in &ts {
             let name = self.render_var(*v);
             let a = k.unsigned_abs() as i128;
+            let single = name.chars().count() == 1 || name.ends_with('₀');
             let coef = if a == 1 {
                 String::new()
+            } else if single {
+                num(a)
             } else {
                 format!("{}·", num(a))
             };
@@ -382,7 +446,7 @@ impl Solver<'_> {
             return;
         }
         let r = |s: &Self, t: TermId| {
-            let n = s.terms.render(t);
+            let n = s.terms.show(t);
             if signed { format!("s({n})") } else { n }
         };
         let (ra, rb) = (r(self, a), r(self, b));
@@ -474,7 +538,7 @@ impl Solver<'_> {
                     continue;
                 }
                 let r = tr.lin.c.rem_euclid(g);
-                let name = self.terms.render(t);
+                let name = self.terms.show(t);
                 let what = if g == 2 {
                     if r == 0 { "even" } else { "odd" }.to_string()
                 } else {
@@ -506,4 +570,72 @@ impl Solver<'_> {
             trivial: t.trivial,
         });
     }
+}
+
+/// Names the letters must avoid: every local and leaf name the student sees.
+fn program_names(terms: &Terms) -> Vec<String> {
+    let mut v: Vec<String> = terms.view.values().cloned().collect();
+    for t in &terms.terms {
+        if let Some(n) = &t.name {
+            v.push(n.trim_start_matches('$').to_string());
+        }
+    }
+    v
+}
+
+/// A split in plain words: the hypothesis label and the negated-goal marker go.
+fn plain_split(s: &str) -> String {
+    if let Some(r) = s.strip_prefix("¬goal: ") {
+        return r.to_string();
+    }
+    match s.split_once(": ") {
+        Some((l, r)) if l.chars().all(|c| !c.is_ascii()) => format!("{r} ({l})"),
+        _ => s.to_string(),
+    }
+}
+
+/// A closing reason in plain words, solver vocabulary glossed.
+fn plain_close(s: &str) -> String {
+    if let Some(r) = s.strip_prefix("needs ")
+        && let Some((e, rest)) = r.split_once(" ≥ ")
+        && let Some((lo, hi)) = rest.split_once(" and ≤ ")
+    {
+        return format!("then {e} would be ≥ {lo} and ≤ {hi} at once, which is impossible");
+    }
+    s.replace(
+        "Fourier–Motzkin: the linear constraints have no common solution",
+        "the inequalities cannot all hold (Fourier–Motzkin: adding inequalities to cancel the unknowns one by one leaves 0 ≤ −1)",
+    )
+    .replace(
+        "the bounds of the hypotheses and the negated goal leave",
+        "if the goal failed, the facts' bounds would leave",
+    )
+    .replace("the hypotheses' bounds leave", "the facts' bounds leave")
+    .replace("¬goal needs", "the goal failing needs")
+    .replace("here the goal reduces to true", "here the goal is simply true")
+    .replace(" no value", " no possible value")
+}
+
+/// One closed case as a sentence.
+fn plain_case(c: &Case, ex_falso: bool, who: &str) -> String {
+    if !c.notes.is_empty() {
+        let n = c.notes.join(", ");
+        return if ex_falso {
+            format!("{n}, which contradicts {who}.")
+        } else if who.is_empty() {
+            format!("{n}, so the goal cannot fail.")
+        } else {
+            format!("{n}; with {who} the goal cannot fail.")
+        };
+    }
+    let close = plain_close(&c.close);
+    if c.splits.is_empty() {
+        return format!("{}{}.", close[..1].to_uppercase(), &close[1..]);
+    }
+    let n = c.splits.len();
+    let sp: Vec<String> = c.splits[n.saturating_sub(2)..]
+        .iter()
+        .map(|s| plain_split(s))
+        .collect();
+    format!("If {}: {close}.", sp.join(" and "))
 }

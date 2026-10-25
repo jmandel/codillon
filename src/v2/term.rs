@@ -40,6 +40,8 @@ pub struct Terms {
     leaves: u32,
     /// function names, for rendering calls
     pub fnames: Vec<String>,
+    /// the printer's naming view (pretty.rs): values bound to locals, by display name
+    pub view: HashMap<TermId, String>,
 }
 
 pub fn mask(ty: ValTy) -> u64 {

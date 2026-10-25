@@ -361,7 +361,7 @@ mod solver_units {
         // x < x + 1 is false at x = 2^32 − 1 (the wrap stays in the problem)
         let x1 = t.op(IOp::Add, ValTy::I32, &[x, one]);
         match prove(&mut t, &[], &lt(x, x1)) {
-            Outcome::NotImplied(m) => assert!(m.contains(&("u($x)".into(), 4294967295)), "{m:?}"),
+            Outcome::NotImplied(m) => assert!(m.contains(&("x".into(), 4294967295)), "{m:?}"),
             r => panic!("{r:?}"),
         }
         // …but holds when the interval pre-pass removes the wrap: u(x) < 8
@@ -887,7 +887,7 @@ fn stale_hint_and_fraying() {
     let out = check_module(&Module::parse(&testdata("hashtable-stale", "wat")), true);
     let c = out.cups().find(|c| c.line == 309).unwrap();
     let d = c.diag.clone().unwrap();
-    assert!(d.contains("is about the old $i (set at line 304)"), "{d}");
+    assert!(d.contains("is about the old i (set at line 304)"), "{d}");
     let f = out.func_at(309).unwrap();
     assert!(
         f.chips

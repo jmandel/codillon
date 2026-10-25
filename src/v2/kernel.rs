@@ -215,6 +215,14 @@ pub struct Pass<'a, 'm> {
     fray: HashMap<FactId, u32>,
     /// reachable `assume` lines (§4.1: not strict-clean)
     assume_lines: Vec<u32>,
+    /// the printer's versions (pretty.rs, review B2): where each value was first bound to a local
+    first_bind: HashMap<TermId, (usize, u32)>,
+    /// per local, the pass step at which it was last bound (the most recent copy names a value)
+    bound_at: Vec<u32>,
+    prev_locals: Vec<TermId>,
+    view_clock: u32,
+    /// each fact's text as a student reads it (rendered at birth, again where it frays)
+    fact_text: Vec<String>,
     /// R5a: solver cases enumerated by automatic feeding in this pass (research/24 §5)
     auto_calls: u32,
     /// feeds found to rest on contradictory facts (vericoding only): while all of a set's facts
@@ -366,6 +374,7 @@ impl<'a, 'm> Pass<'a, 'm> {
         kind: &'static str,
         deps: Vec<Dep>,
     ) -> FactId {
+        self.fact_text.push(self.terms.show_atom(&atom));
         self.facts.push(Fact {
             atom,
             line,
@@ -503,7 +512,7 @@ impl<'a, 'm> Pass<'a, 'm> {
             .map(|e| {
                 format!(
                     "{} @{}",
-                    self.terms.render_atom(&self.facts[e.fact as usize].atom),
+                    self.terms.show_atom(&self.facts[e.fact as usize].atom),
                     e.line
                 )
             })
@@ -512,7 +521,7 @@ impl<'a, 'm> Pass<'a, 'm> {
     }
 
     fn new_cup(&mut self, line: u32, r: &CupReq) -> CupId {
-        let goal = self.terms.render_atom(&r.atom);
+        let goal = self.terms.show_atom(&r.atom);
         self.cups.push(CupOut {
             line,
             operand: r.operand,
@@ -649,7 +658,7 @@ impl<'a, 'm> Pass<'a, 'm> {
                     let msg = match other {
                         Outcome::NotImplied(m) => {
                             let cm: Vec<String> =
-                                m.iter().map(|(n, v)| format!("{n}={v}")).collect();
+                                m.iter().map(|(n, v)| format!("{n} = {v}")).collect();
                             format!(
                                 "not implied by {hl}: {}",
                                 if cm.is_empty() {
@@ -755,7 +764,7 @@ impl<'a, 'm> Pass<'a, 'm> {
                 .map(|e| {
                     (
                         e.line,
-                        self.terms.render_atom(&self.facts[e.fact as usize].atom),
+                        self.terms.show_atom(&self.facts[e.fact as usize].atom),
                     )
                 })
                 .collect();
@@ -988,6 +997,11 @@ impl<'a, 'm> Pass<'a, 'm> {
             fray: HashMap::new(),
             auto_calls: 0,
             assume_lines: vec![],
+            first_bind: HashMap::new(),
+            bound_at: vec![],
+            prev_locals: vec![],
+            view_clock: 0,
+            fact_text: vec![],
             contras: vec![],
             ghost,
             line: func.header_line,
@@ -1287,6 +1301,57 @@ impl<'a, 'm> Pass<'a, 'm> {
         }
     }
 
+    /// A local's name as the printer shows it (no `$`).
+    fn local_name(&self, i: usize) -> String {
+        self.locs[i]
+            .0
+            .as_deref()
+            .map(|n| n.trim_start_matches('$').to_string())
+            .unwrap_or_else(|| format!("local{i}"))
+    }
+
+    /// Record first bindings of the locals' current values, then rebuild the printer's view:
+    /// each local's current value by its name, older values as `x@line` (`x₀` for a parameter's
+    /// entry value). Called after every binding change (review B2).
+    fn refresh_view(&mut self, line: u32) {
+        if self.bound_at.len() < self.locals.len() {
+            self.bound_at.resize(self.locals.len(), 0);
+            self.prev_locals.resize(self.locals.len(), TermId::MAX);
+        }
+        for i in 0..self.locals.len() {
+            let t = self.locals[i];
+            if t != self.prev_locals[i] {
+                self.view_clock += 1;
+                self.bound_at[i] = self.view_clock;
+                self.prev_locals[i] = t;
+            }
+            if !self.terms.is_const(t) && !self.first_bind.contains_key(&t) {
+                self.first_bind.insert(t, (i, line));
+            }
+        }
+        let header = self.cx.m.funcs[self.f].header_line;
+        let nparams = self.entry.len();
+        let mut v: HashMap<TermId, String> = HashMap::new();
+        for (t, (i, l)) in &self.first_bind {
+            let n = self.local_name(*i);
+            let s = if *i < nparams && *l == header {
+                format!("{n}₀")
+            } else {
+                format!("{n}@{l}")
+            };
+            v.insert(*t, s);
+        }
+        let mut order: Vec<usize> = (0..self.locals.len()).collect();
+        order.sort_by_key(|&i| self.bound_at[i]);
+        for i in order {
+            let t = self.locals[i];
+            if !self.terms.is_const(t) {
+                v.insert(t, self.local_name(i));
+            }
+        }
+        self.terms.view = v;
+    }
+
     fn set_local(&mut self, line: u32, i: usize, t: TermId) {
         let mut reqs = vec![];
         let mut groups = vec![];
@@ -1339,6 +1404,13 @@ impl<'a, 'm> Pass<'a, 'm> {
             }
         }
         self.locals[i] = t;
+        self.refresh_view(line);
+        // a fact that frays here is re-rendered in the new view, so the old value reads `x@L`
+        for f in 0..self.facts.len() {
+            if self.fray.get(&(f as FactId)) == Some(&line) {
+                self.fact_text[f] = self.terms.show_atom(&self.facts[f].atom);
+            }
+        }
     }
 
     fn mentions(
@@ -1389,13 +1461,10 @@ impl<'a, 'm> Pass<'a, 'm> {
                 })
             {
                 let f = &self.facts[e.fact as usize];
-                let name = self.locs[i]
-                    .0
-                    .clone()
-                    .unwrap_or_else(|| format!("local {i}"));
+                let name = self.local_name(i);
                 return Some(format!(
                     "⟨{}⟩ (line {}) is about the old {name} (set at line {line})",
-                    self.terms.render_atom(&f.atom),
+                    self.terms.show_atom(&f.atom),
                     f.line
                 ));
             }
@@ -2459,6 +2528,7 @@ impl<'a, 'm> Pass<'a, 'm> {
             return;
         }
         self.entry();
+        self.refresh_view(func.header_line);
         let tab = super::eval::block_table(&func.body);
         for (pc, (line, ins)) in func.body.iter().enumerate() {
             let before = self.dead.is_some();
@@ -2470,7 +2540,16 @@ impl<'a, 'm> Pass<'a, 'm> {
             {
                 self.false_ctx_lines.push(*line);
             }
+            let born = self.facts.len();
             self.step(pc, *line, ins, &tab);
+            // bindings made by this line (φ at joins and loop heads) are versioned at this line,
+            // and the facts it entered read in that view
+            self.refresh_view(*line);
+            for f in born..self.facts.len() {
+                if self.fray.get(&(f as FactId)).is_none() {
+                    self.fact_text[f] = self.terms.show_atom(&self.facts[f].atom);
+                }
+            }
             // `end`/`else` are reached when some edge reaches them; any other line when control
             // falls into it
             let dead = match ins {
@@ -2703,7 +2782,7 @@ impl<'a, 'm> Pass<'a, 'm> {
             .enumerate()
             .map(|(i, f)| super::out::ChipOut {
                 line: f.line,
-                text: self.terms.render_atom(&f.atom),
+                text: self.fact_text[i].clone(),
                 origin: f.kind,
                 frayed_at: self.fray.get(&(i as FactId)).copied(),
             })
