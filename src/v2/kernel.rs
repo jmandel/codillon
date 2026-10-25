@@ -2170,7 +2170,7 @@ impl<'a, 'm> Pass<'a, 'm> {
                 None => {
                     let t = self
                         .terms
-                        .leaf(fr.bt.results[j].ty, &format!("result@{line}"), None);
+                        .leaf(fr.bt.results[j].ty, format!("result@{line}"), None);
                     if nres == 1 {
                         self.birth(t, line, Capture::Top);
                     }
@@ -2459,7 +2459,7 @@ impl<'a, 'm> Pass<'a, 'm> {
         // with a single top-of-stack copy, and checks reading them are reported as unevaluable
         let np = bt.params.len();
         for (j, r) in bt.params.iter().enumerate() {
-            let t = self.terms.leaf(r.ty, &format!("param@{line}"), None);
+            let t = self.terms.leaf(r.ty, format!("param@{line}"), None);
             self.stack.push(t);
             if j + 1 == np {
                 self.birth(t, line, Capture::Top);
@@ -2548,7 +2548,7 @@ impl<'a, 'm> Pass<'a, 'm> {
             // and the facts it entered read in that view
             self.refresh_view(*line);
             for f in born..self.facts.len() {
-                if self.fray.get(&(f as FactId)).is_none() {
+                if !self.fray.contains_key(&(f as FactId)) {
                     self.fact_text[f] = self.terms.show_atom(&self.facts[f].atom);
                 }
             }
