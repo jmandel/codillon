@@ -663,3 +663,33 @@ fn a20_dual_role_functions_are_rejected() {
     let j = s.judge(&t);
     assert!(j.crossed() && !j.accepted);
 }
+
+/// Review 25 S3: a reachable instructor `assume` makes a function not VERIFIED even when R5a
+/// proves every cup without it; the judge must say so (no harness needed to surface it).
+#[test]
+fn the_judge_rejects_a_reachable_assume() {
+    let start: Vec<String> =
+        "(func $f (export \"f\") (param $x i32) (result (i32 | (i32.lt_u v (i32.const 8))))
+  assume (fact (i32.lt_u $x 8))
+  i32.const 1
+)"
+        .lines()
+        .map(String::from)
+        .collect();
+    let mut sub = start.clone();
+    sub[2] = "  i32.const 0".into();
+    let j = SessionStart::new(&start).judge(&sub);
+    let f = &j.out.funcs[0];
+    assert!(!f.strict_clean && !f.verified);
+    assert!(!j.accepted, "{}", j.summary());
+    assert!(
+        j.strict
+            .iter()
+            .any(|r| r.line == 2 && r.msg.contains("reachable assume")),
+        "{:?}",
+        j.strict
+            .iter()
+            .map(|r| (r.line, &r.msg))
+            .collect::<Vec<_>>()
+    );
+}

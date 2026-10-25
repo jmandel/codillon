@@ -182,7 +182,8 @@ fn frayed_fact_is_not_used() {
     assert_eq!(c.feed, Feed::Unfed, "{:?}", c.diag);
     let d = c.diag.as_deref().unwrap();
     assert!(
-        d.contains("⟨u(x₀) < 5⟩ (line 6) is about the old x (set at line 8)"),
+        // the fact prints as its chip does, in its birth line's view (review 25 B1)
+        d.contains("⟨u(x) < 5⟩ (line 6) is about the old x (set at line 8)"),
         "{d}"
     );
 }
@@ -592,11 +593,12 @@ fn propositions_print_in_infix_with_versions() {
         .iter()
         .find(|ch| ch.line == 300 && ch.frayed_at == Some(304))
         .unwrap();
-    // the chip reads as on its birth line; the hint names the old value by its version
+    // the chip reads as on its birth line, and the hint prints the fact the same way (review
+    // 25 B1), saying it is about the old i
     assert_eq!(chip.text, "u(i) < 8");
     let d = c.diag.as_deref().unwrap();
     assert!(
-        d.contains("⟨u(i@") && d.contains("is about the old i (set at line 304)"),
+        d.contains("⟨u(i) < 8⟩ (line 300) is about the old i (set at line 304)"),
         "{d}"
     );
 }

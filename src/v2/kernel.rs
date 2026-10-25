@@ -1457,6 +1457,22 @@ impl<'a, 'm> Pass<'a, 'm> {
         }
     }
 
+    /// Does the atom mention `old` other than inside `new`?
+    fn atom_mentions_outside(&self, a: &Atom, old: TermId, new: TermId) -> bool {
+        let p = |_: &Key, x: TermId| x == old;
+        let mut seen = vec![new];
+        match a {
+            Atom::Cmp { a, b, .. } => {
+                self.mentions(*a, &p, &mut seen) || self.mentions(*b, &p, &mut seen)
+            }
+            Atom::Bool { t, .. } => self.mentions(*t, &p, &mut seen),
+            Atom::Or(x, y) => {
+                self.atom_mentions_outside(x, old, new) || self.atom_mentions_outside(y, old, new)
+            }
+            _ => false,
+        }
+    }
+
     fn atom_mentions(&self, a: &Atom, p: &dyn Fn(&Key, TermId) -> bool) -> bool {
         let mut seen = vec![];
         match a {
@@ -1473,7 +1489,13 @@ impl<'a, 'm> Pass<'a, 'm> {
     /// goal's value replaced.
     fn stale_hint(&self, goal: &Atom) -> Option<String> {
         for &(i, old, new, line) in self.sets.iter().rev() {
-            if !self.atom_mentions(goal, &|_, x| x == new) {
+            // a goal about the new value, and not about the old one apart from inside the new
+            // (with `i := x` after `i := x + 1` the new value is part of the old: a goal about
+            // `x + 1` is about the old value, review 25 S2; with `i := i + 1` a goal about the
+            // new `i + 1` mentions the old `i` only inside the new value, and is stale)
+            if !self.atom_mentions(goal, &|_, x| x == new)
+                || self.atom_mentions_outside(goal, old, new)
+            {
                 continue;
             }
             if let Some(e) =
@@ -1485,8 +1507,7 @@ impl<'a, 'm> Pass<'a, 'm> {
                 let name = self.local_name(i);
                 return Some(format!(
                     "⟨{}⟩ (line {}) is about the old {name} (set at line {line})",
-                    self.terms.show_atom(&f.atom),
-                    f.line
+                    self.fact_text[e.fact as usize], f.line
                 ));
             }
         }
@@ -2856,6 +2877,7 @@ impl<'a, 'm> Pass<'a, 'm> {
             ex_falso: e.ex_falso,
             lines: e.lines,
             hyp_text,
+            unfolded: e.unfolded,
         }
     }
 

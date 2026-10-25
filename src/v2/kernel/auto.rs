@@ -281,6 +281,10 @@ fn auto_failure(n: usize, first: Option<Outcome>, near: Option<(Outcome, u32)>) 
             ),
         }),
         Outcome::Inexact(s) => Some(s),
+        // no fact about these values: the solver's countermodel shows a failing input
+        Outcome::NotImplied(m) if n == 0 && !m.is_empty() => {
+            Some(format!("it fails for {}", model_text(&m)))
+        }
         Outcome::NotImplied(m) if n > 0 && !m.is_empty() => Some(format!(
             "{} about these values allow{} {}",
             facts(n),

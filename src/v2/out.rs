@@ -177,6 +177,8 @@ pub struct ProveExplain {
     /// each hypothesis given, as a student reads it: a predicate fact with its meaning,
     /// `x is even (x&1 = 0)` (parallel to the feed's `hyps`)
     pub hyp_text: Vec<String>,
+    /// the functions whose definitions the proof unfolded
+    pub unfolded: Vec<String>,
 }
 
 /// Body lines the kernel shows can never run, because a branch condition is decided by the

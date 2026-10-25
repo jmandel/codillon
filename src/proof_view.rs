@@ -550,6 +550,9 @@ fn prove_block(f: &FuncOut, ctx: &Ctx, goals: &[usize], hyps: &[(String, String)
             .collect();
         out.push(format!("using {}", parts.join("; ")));
     }
+    if let Some(u) = unfolded_line(&e) {
+        out.push(u);
+    }
     if e.ex_falso {
         out.push(if e.used.len() == 1 {
             "your hypothesis cannot hold: this line can never run".into()
@@ -565,6 +568,20 @@ fn prove_block(f: &FuncOut, ctx: &Ctx, goals: &[usize], hyps: &[(String, String)
         });
     }
     out
+}
+
+/// The definitions a proof unfolded, as a continuation of its `using` row: a fact about a call
+/// can rest on what the called function computes.
+fn unfolded_line(e: &crate::v2::out::ProveExplain) -> Option<String> {
+    if e.unfolded.is_empty() {
+        return None;
+    }
+    let names: Vec<String> = e.unfolded.iter().map(|n| format!("${n}")).collect();
+    Some(format!(
+        "        and what {} compute{} (unfolded)",
+        names.join(", "),
+        if names.len() == 1 { "s" } else { "" }
+    ))
 }
 
 /// The cup's facts contradict each other (it is fed ex falso).
@@ -714,6 +731,9 @@ fn cup_account(f: &FuncOut, ctx: &Ctx, c: &CupOut) -> Vec<String> {
                     parts.join("; "),
                     if all { "; each is needed" } else { "" }
                 ));
+            }
+            if let Some(u) = unfolded_line(&e) {
+                out.push(u);
             }
             if e.ex_falso {
                 out.push(if e.used.len() == 1 {

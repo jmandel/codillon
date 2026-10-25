@@ -674,6 +674,7 @@ pub fn strict_reasons(m: &Module, out: &ModuleOut, touched: &[String]) -> Vec<Re
     for f in &out.funcs {
         let func = &m.funcs[f.func as usize];
         let is_touched = touched.contains(&f.name);
+        let before = r.len();
         if is_touched {
             for c in f.cups.iter().filter(|c| !strict_ok(c)) {
                 let why = match c.verdict {
@@ -700,6 +701,29 @@ pub fn strict_reasons(m: &Module, out: &ModuleOut, touched: &[String]) -> Vec<Re
                     line: f.header_line,
                     msg: format!("{} calls a function that is not VERIFIED", f.name),
                 });
+            }
+            // not strict-clean with every cup clean and no line error: a reachable `assume`
+            // (§4.1) is the reason, even when no cup rests on it (review 25 S3)
+            if !f.strict_clean && r.len() == before {
+                let assumes: Vec<u32> = func
+                    .body
+                    .iter()
+                    .filter(|(_, i)| matches!(i, super::ast::Ins::Assume(_)))
+                    .map(|(l, _)| *l)
+                    .collect();
+                for l in if assumes.is_empty() {
+                    vec![f.header_line]
+                } else {
+                    assumes
+                } {
+                    r.push(Reason {
+                        line: l,
+                        msg: format!(
+                            "{} assumes a fact here, so it is not VERIFIED (a reachable assume)",
+                            f.name
+                        ),
+                    });
+                }
             }
         }
         if func.is_harness() {

@@ -1163,6 +1163,18 @@ impl<'a> Solver<'a> {
             })
             .map(|(v, x)| (self.render_var(*v), *x))
             .collect();
+        // a value the pre-pass pinned to one point (from the facts and the negated goal) became
+        // a constant and has no variable: it is part of the countermodel too (review 25 S1)
+        let mut pinned: Vec<(TermId, i128)> = self
+            .bounds
+            .iter()
+            .filter(|(t, (lo, hi))| lo == hi && !self.terms.is_const(**t))
+            .map(|(t, (lo, _))| (*t, *lo))
+            .collect();
+        pinned.sort();
+        for (t, x) in pinned {
+            out.push((self.terms.show(t), x));
+        }
         out.sort();
         out.dedup();
         out

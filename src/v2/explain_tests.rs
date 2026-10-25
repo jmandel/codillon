@@ -299,3 +299,110 @@ fn a_fact_keeps_its_birth_names_in_accounts() {
     }
     assert!(seen, "the back edge's y ≠ 0 names its move to x");
 }
+
+fn diags(src: &str) -> Vec<(u32, String)> {
+    explained(src)
+        .cups()
+        .filter_map(|c| c.diag.clone().map(|d| (c.line, d)))
+        .collect()
+}
+
+/// Review 25 S1: a countermodel survives values the pre-pass pins to a point (any goal with an
+/// `add`), and a cup with no facts at all shows the failing input.
+#[test]
+fn countermodels_are_shown() {
+    let d = diags(&example("hashtable-stale"));
+    assert!(
+        d.iter().any(|(_, m)| m.contains("allows i@301 = 7")),
+        "{d:?}"
+    );
+    let d = diags(&example("parity-missing-proof"));
+    assert!(
+        d.iter().any(|(_, m)| m.contains("it fails for x = 1")),
+        "{d:?}"
+    );
+    let src = "(func $h8 (param $a (i32 | (i32.lt_u v (i32.const 8)))))
+(func $f (param $x (i32 | (i32.lt_u v (i32.const 8))))
+  local.get $x
+  i32.const 1
+  i32.add
+  call $h8
+)";
+    let d = diags(src);
+    assert!(d.iter().any(|(_, m)| m.contains("x = 7")), "{d:?}");
+}
+
+/// Review 25 S2 (its probe P1): after `i := i + 1` and `i := x`, a cup about the old `i + 1`
+/// gets no stale hint naming the later set, though the new value `x` is part of it.
+#[test]
+fn no_stale_hint_on_a_goal_about_the_old_value() {
+    let src = "(func $h8 (param $a (i32 | (i32.lt_u v (i32.const 8)))))
+(func $le8 (param $a (i32 | (i32.le_u v (i32.const 8)))))
+(func $f (param $x i32)
+  (local $i i32)
+  local.get $x
+  local.set $i
+  local.get $i
+  i32.const 8
+  i32.ge_u
+  br_if 0
+  local.get $i
+  i32.const 1
+  i32.add
+  local.set $i
+  local.get $i
+  call $le8
+  local.get $i
+  call $h8
+  local.get $i
+  local.get $x
+  local.set $i
+  call $h8
+)";
+    let lines: Vec<&str> = src.lines().collect();
+    let last_set = lines
+        .iter()
+        .rposition(|l| l.trim() == "local.set $i")
+        .unwrap()
+        + 1;
+    let d = diags(src);
+    assert!(
+        !d.iter()
+            .any(|(_, m)| m.contains(&format!("set at line {last_set})"))),
+        "{d:?}"
+    );
+}
+
+#[test]
+#[ignore]
+fn dump_diags() {
+    for ex in [
+        "parity-missing-proof",
+        "hashtable-stale",
+        "isqrt-missing-invariant",
+        "gcd-bug-guard",
+    ] {
+        let out = explained(&example(ex));
+        for c in out.cups() {
+            if let Some(d) = &c.diag {
+                println!("{ex} L{}: {d}", c.line);
+            }
+        }
+    }
+}
+
+/// Parity's harness: the never-runs line is proved from the failed check alone, because the
+/// proof unfolds what the called functions compute; the account names them.
+#[test]
+fn accounts_name_the_definitions_they_unfold() {
+    let out = explained(&example("parity"));
+    let c = out
+        .cups()
+        .find(|c| c.line == 57 && c.explain.is_some())
+        .expect("the harness's unreachable");
+    let e = c.explain.as_ref().unwrap();
+    assert!(e.ex_falso && e.used.len() == 1, "{e:?}");
+    for f in ["hon_ok", "half_or_neg1"] {
+        assert!(e.unfolded.iter().any(|u| u == f), "{:?}", e.unfolded);
+    }
+}

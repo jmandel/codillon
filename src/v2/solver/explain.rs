@@ -19,6 +19,34 @@ pub struct Explanation {
     pub ex_falso: bool,
     /// at most three short lines, in the kernel's rendering of terms
     pub lines: Vec<String>,
+    /// the functions whose definitions the proof unfolded (a fact about a call can rest on what
+    /// the called function computes, not only on facts in scope)
+    pub unfolded: Vec<String>,
+}
+
+/// An `Env` that records which functions' bodies the procedure unfolds.
+struct Unfolds<'e> {
+    inner: &'e mut dyn Env,
+    funcs: Vec<u32>,
+}
+
+impl Env for Unfolds<'_> {
+    fn unfold(&mut self, terms: &mut Terms, call: TermId) -> Option<TermId> {
+        let r = self.inner.unfold(terms, call);
+        if r.is_some()
+            && let Key::Call(fi, ..) = terms.key(call)
+            && !self.funcs.contains(fi)
+        {
+            self.funcs.push(*fi);
+        }
+        r
+    }
+    fn eval_call(&mut self, terms: &Terms, call: TermId) -> Option<u64> {
+        self.inner.eval_call(terms, call)
+    }
+    fn is_real(&self, t: TermId) -> bool {
+        self.inner.is_real(t)
+    }
 }
 
 /// A constraint `Σ kᵢxᵢ ≤ n/g` as (the kᵢ, divided by their gcd g; n; g).
@@ -200,6 +228,18 @@ pub fn explain(
     let hs: Vec<Atom> = used.iter().map(|j| hyps[*j].clone()).collect();
     let ex_falso = !hs.is_empty() && (*goal == Atom::False || valid(terms, env, &hs, &Atom::False));
     let g = if ex_falso { Atom::False } else { goal.clone() };
+    let unfolded: Vec<String> = {
+        let mut rec = Unfolds {
+            inner: env,
+            funcs: vec![],
+        };
+        let _ = Solver::new(terms, &mut rec).prove(&hs, &g);
+        rec.funcs
+            .iter()
+            .filter_map(|fi| terms.fnames.get(*fi as usize))
+            .map(|n| n.trim_start_matches('$').to_string())
+            .collect()
+    };
     let used_labels: Vec<String> = used
         .iter()
         .map(|j| {
@@ -215,6 +255,7 @@ pub fn explain(
             used,
             ex_falso,
             lines,
+            unfolded,
         };
     }
     let avoid = program_names(terms);
@@ -235,6 +276,7 @@ pub fn explain(
             used,
             ex_falso,
             lines,
+            unfolded,
         };
     }
     let mut cases: Vec<&Case> = t.cases.iter().filter(|c| !c.trivial).collect();
@@ -274,6 +316,7 @@ pub fn explain(
         used,
         ex_falso,
         lines,
+        unfolded,
     }
 }
 
