@@ -551,7 +551,11 @@ fn prove_block(f: &FuncOut, ctx: &Ctx, goals: &[usize], hyps: &[(String, String)
         out.push(format!("using {}", parts.join("; ")));
     }
     if e.ex_falso {
-        out.push("your hypotheses contradict each other: this line can never run".into());
+        out.push(if e.used.len() == 1 {
+            "your hypothesis cannot hold: this line can never run".into()
+        } else {
+            "your hypotheses contradict each other: this line can never run".into()
+        });
     }
     for (i, l) in e.lines.iter().enumerate() {
         out.push(if i == 0 {
@@ -580,17 +584,38 @@ fn lines_word(ls: &[u32]) -> String {
 }
 
 /// The always-on label of one proof cup: what it needs and how it is met.
-fn cup_label(c: &CupOut) -> String {
+fn cup_label(f: &FuncOut, c: &CupOut) -> String {
     let g = clip(&c.goal, 56);
+    // an automatically fed cup names the birth lines of the facts its proof needs
+    let auto_lines: Vec<u32> = match &c.feed {
+        Feed::Auto {
+            hyps, hyp_lines, ..
+        } => hyps
+            .iter()
+            .zip(hyp_lines)
+            .enumerate()
+            .filter(|(j, _)| {
+                c.explain
+                    .as_ref()
+                    .is_none_or(|e| e.used.contains(&(*j as u8)))
+            })
+            .map(|(_, (h, l))| f.chips.get(*h as usize).map_or(*l, |ch| ch.line))
+            .collect(),
+        _ => vec![],
+    };
     let how = match &c.feed {
         _ if c.verdict == Verdict::Refuted => "✗ false".to_string(),
         Feed::Lookup { origin_line, .. } => format!("✓ fact of line {origin_line}"),
-        Feed::Auto { hyp_lines, .. } if ex_falso(c) => format!(
-            "⊥ the facts of {} contradict each other: this line never runs",
-            lines_word(hyp_lines)
+        Feed::Auto { .. } if ex_falso(c) && auto_lines.len() == 1 => format!(
+            "⊥ the fact of {} cannot hold: this line never runs",
+            lines_word(&auto_lines)
         ),
-        Feed::Auto { hyp_lines, .. } if hyp_lines.is_empty() => "✓ true for every value".into(),
-        Feed::Auto { hyp_lines, .. } => format!("✓ from {}", lines_word(hyp_lines)),
+        Feed::Auto { .. } if ex_falso(c) => format!(
+            "⊥ the facts of {} contradict each other: this line never runs",
+            lines_word(&auto_lines)
+        ),
+        Feed::Auto { .. } if auto_lines.is_empty() => "✓ true for every value".into(),
+        Feed::Auto { .. } => format!("✓ from {}", lines_word(&auto_lines)),
         Feed::Prove { prove_line, .. } if ex_falso(c) => {
             format!("⊥ by the prove on line {prove_line}: its facts contradict each other")
         }
@@ -628,7 +653,11 @@ fn cup_brief(c: &CupOut) -> Option<String> {
             let e = c.explain.as_ref()?;
             let why = e.lines.join(" ");
             if e.ex_falso {
-                format!("Never runs: its facts contradict each other. {why}")
+                if e.used.len() == 1 {
+                    format!("Never runs: its fact cannot hold. {why}")
+                } else {
+                    format!("Never runs: its facts contradict each other. {why}")
+                }
             } else if why.is_empty() {
                 return None;
             } else {
@@ -669,14 +698,29 @@ fn cup_account(f: &FuncOut, ctx: &Ctx, c: &CupOut) -> Vec<String> {
                             .cloned()
                             .or_else(|| ch.map(|c| c.text.clone()))
                             .unwrap_or_else(|| "?".into());
-                        let o = origin_desc(ch.map(|c| c.origin).unwrap_or("fact"), *l);
-                        format!("{} {t} — {o}", circled(j))
+                        let o = origin_desc(
+                            ch.map(|c| c.origin).unwrap_or("fact"),
+                            ch.map_or(*l, |c| c.line),
+                        );
+                        // as the prove account does: a fact the proof turned out not to need
+                        let unused = c.explain.is_some() && !e.used.contains(&(j as u8));
+                        let mark = if unused { " (not needed)" } else { "" };
+                        format!("{} {t} — {o}{mark}", circled(j))
                     })
                     .collect();
-                out.push(format!("using {} (found automatically)", parts.join("; ")));
+                let all = hyps.len() == e.used.len() || c.explain.is_none();
+                out.push(format!(
+                    "using {} (found automatically{})",
+                    parts.join("; "),
+                    if all { "; each is needed" } else { "" }
+                ));
             }
             if e.ex_falso {
-                out.push("these facts cannot all hold together, so this line never runs".into());
+                out.push(if e.used.len() == 1 {
+                    "this fact cannot hold, so this line never runs".into()
+                } else {
+                    "these facts cannot all hold together, so this line never runs".into()
+                });
             }
             for (i, l) in e.lines.iter().enumerate() {
                 out.push(if i == 0 {
@@ -1189,14 +1233,29 @@ fn build_func(
         titles.entry(*pl).or_default().push(t);
         // the account drawn beside the line (§3 contract, made legible): what it proves, from
         // what, and why
+        // each fact as its chip prints it, from where it was born (a handle's `local.get` only
+        // brings it back to the top of the lane)
+        let words = goals
+            .first()
+            .and_then(|g| f.cups[*g].explain.as_ref())
+            .map(|e| e.hyp_text.clone())
+            .unwrap_or_default();
         let hyp_desc: Vec<(String, String)> = hyps
             .iter()
             .zip(hyp_lines)
-            .map(|(h, l)| {
+            .enumerate()
+            .map(|(j, (h, l))| {
                 let ch = f.chips.get(*h as usize);
                 (
-                    ch.map(|c| c.text.clone()).unwrap_or_else(|| "?".into()),
-                    origin_desc(ch.map(|c| c.origin).unwrap_or("fact"), *l),
+                    words
+                        .get(j)
+                        .cloned()
+                        .or_else(|| ch.map(|c| c.text.clone()))
+                        .unwrap_or_else(|| "?".into()),
+                    origin_desc(
+                        ch.map(|c| c.origin).unwrap_or("fact"),
+                        ch.map_or(*l, |c| c.line),
+                    ),
                 )
             })
             .collect();
@@ -1555,7 +1614,11 @@ fn build_func(
             verdict_word(c, failed_here),
             how(c, disp)
         ));
-        extra.labels.entry(c.line).or_default().push(cup_label(c));
+        extra
+            .labels
+            .entry(c.line)
+            .or_default()
+            .push(cup_label(f, c));
         if let Some(b) = cup_brief(c) {
             extra.briefs.entry(c.line).or_default().push(b);
         }
@@ -1680,12 +1743,10 @@ mod tests {
         assert_eq!(rows[0], "needs False — unreachable (line 14)");
         assert_eq!(
             rows[1],
-            "using ① (x·2)&1 ≠ 0 — br_if on line 13 not taken (found automatically)"
+            "using ① (x·2)&1 ≠ 0 — br_if on line 13 not taken (found automatically; each is needed)"
         );
-        assert_eq!(
-            rows[2],
-            "these facts cannot all hold together, so this line never runs"
-        );
+        // one fact: it cannot hold (review 25 S4), not "they contradict each other"
+        assert_eq!(rows[2], "this fact cannot hold, so this line never runs");
         assert!(rows[3].starts_with("why: "), "{block}");
         // always on: the br_if line says what it gives, the unreachable line what it needs, in words
         assert_eq!(
@@ -1694,7 +1755,7 @@ mod tests {
         );
         let l = s.lines[13].label.clone().unwrap();
         assert!(
-            l.starts_with("needs False ⊥") && l.contains("never runs"),
+            l.starts_with("needs False ⊥") && l.contains("the fact of line 13 cannot hold"),
             "{l}"
         );
         assert!(s.lines[13].never && !s.lines[12].never);
@@ -1716,6 +1777,31 @@ mod tests {
         assert_eq!(op_name("call $f").as_deref(), Some("call $f"));
         assert_eq!(op_name("local.set $x").as_deref(), Some("local.set $x"));
         assert_eq!(op_name(")"), None);
+    }
+
+    /// A prove's facts are attributed to their birth lines, not to the `local.get` of a fact
+    /// handle that brought them back to the top of the lane (primality's `prove 7`).
+    #[test]
+    fn prove_facts_name_their_birth_lines() {
+        let p = format!(
+            "{}/public/examples/v2/primality.wat",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let src = std::fs::read_to_string(&p).unwrap();
+        let out =
+            crate::v2::kernel::check_module_with(&crate::v2::ast::Module::parse(&src), true, true);
+        let geom = vec![LineGeom::default(); src.lines().count()];
+        let s = build(&out, &geom, None, &|k| k);
+        let pl = src
+            .lines()
+            .position(|l| l.trim().starts_with("prove 7"))
+            .unwrap();
+        let block = s.lines[pl].explain.clone().expect("the prove's account");
+        let using = block.lines().find(|l| l.starts_with("using")).unwrap();
+        for handle in [pl - 2, pl - 1, pl] {
+            assert!(!using.contains(&format!("line {handle}")), "{using}");
+        }
+        assert!(using.contains("else-arm, line 125"), "{using}");
     }
 
     #[test]

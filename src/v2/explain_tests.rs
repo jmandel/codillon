@@ -268,3 +268,34 @@ fn dump_accounts() {
         }
     }
 }
+
+/// Review 25 B1: a fact prints as its chip does (in the view of its birth line) wherever it
+/// appears; where the account's own view names one of its values differently, it says so.
+#[test]
+fn a_fact_keeps_its_birth_names_in_accounts() {
+    let out = explained(&example("gcd"));
+    let mut seen = false;
+    for f in &out.funcs {
+        for c in &f.cups {
+            let (Some(e), Feed::Auto { hyps, .. } | Feed::Prove { hyps, .. }) =
+                (&c.explain, &c.feed)
+            else {
+                continue;
+            };
+            for (j, h) in hyps.iter().enumerate() {
+                let chip = &f.chips[*h as usize];
+                let t = &e.hyp_text[j];
+                assert!(
+                    t.starts_with(&chip.text) || t.contains(&chip.text),
+                    "{t} vs {}",
+                    chip.text
+                );
+                if chip.text == "y ≠ 0" && t.contains("[y of line") {
+                    assert!(t.contains("is x here"), "{t}");
+                    seen = true;
+                }
+            }
+        }
+    }
+    assert!(seen, "the back edge's y ≠ 0 names its move to x");
+}

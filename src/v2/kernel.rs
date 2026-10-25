@@ -221,8 +221,14 @@ pub struct Pass<'a, 'm> {
     bound_at: Vec<u32>,
     prev_locals: Vec<TermId>,
     view_clock: u32,
-    /// each fact's text as a student reads it (rendered at birth, again where it frays)
+    /// each fact's text as a student reads it (rendered in the view of its birth line)
     fact_text: Vec<String>,
+    /// editor only (explain): each fact in words, and the names its values had, in the same
+    /// view as `fact_text` (review 25 B1: a fact prints the same everywhere)
+    fact_words_text: Vec<String>,
+    fact_names: Vec<Vec<(TermId, String)>>,
+    /// editor only: for an explained cup, the names of its facts' values in the cup's view
+    cup_names: HashMap<usize, HashMap<TermId, String>>,
     /// R5a: solver cases enumerated by automatic feeding in this pass (research/24 §5)
     auto_calls: u32,
     /// feeds found to rest on contradictory facts (vericoding only): while all of a set's facts
@@ -374,14 +380,28 @@ impl<'a, 'm> Pass<'a, 'm> {
         kind: &'static str,
         deps: Vec<Dep>,
     ) -> FactId {
-        self.fact_text.push(self.terms.show_atom(&atom));
+        self.fact_text.push(String::new());
+        self.fact_words_text.push(String::new());
+        self.fact_names.push(vec![]);
         self.facts.push(Fact {
             atom,
             line,
             kind,
             deps,
         });
-        (self.facts.len() - 1) as FactId
+        let f = self.facts.len() - 1;
+        self.render_fact(f);
+        f as FactId
+    }
+
+    /// Render fact f in the current view (its text, and for the editor its words and names).
+    fn render_fact(&mut self, f: usize) {
+        let atom = self.facts[f].atom.clone();
+        self.fact_text[f] = self.terms.show_atom(&atom);
+        if self.cx.explain {
+            self.fact_words_text[f] = self.fact_words(&atom);
+            self.fact_names[f] = self.named_ids(&atom);
+        }
     }
 
     pub fn enter(&mut self, atom: Atom, line: u32, kind: &'static str, deps: Vec<Dep>) -> FactId {
@@ -638,6 +658,7 @@ impl<'a, 'm> Pass<'a, 'm> {
                 Outcome::Valid { wraps } => {
                     if self.cx.explain {
                         self.cups[c].explain = Some(self.explain_prove(&atoms, &r.atom));
+                        self.note_cup_names(c, hyps.iter().map(|e| e.fact));
                     }
                     self.cups[c].feed = Feed::Prove {
                         prove_line: p.line,
@@ -698,6 +719,7 @@ impl<'a, 'm> Pass<'a, 'm> {
                             .map(|e| self.facts[e.fact as usize].atom.clone())
                             .collect();
                         self.cups[c].explain = Some(self.explain_prove(&atoms, &r.atom));
+                        self.note_cup_names(c, used.iter().map(|e| e.fact));
                     }
                     self.cups[c].feed = Feed::Auto {
                         hyps: used.iter().map(|e| e.fact).collect(),
@@ -1002,6 +1024,9 @@ impl<'a, 'm> Pass<'a, 'm> {
             prev_locals: vec![],
             view_clock: 0,
             fact_text: vec![],
+            fact_words_text: vec![],
+            fact_names: vec![],
+            cup_names: HashMap::new(),
             contras: vec![],
             ghost,
             line: func.header_line,
@@ -2545,7 +2570,7 @@ impl<'a, 'm> Pass<'a, 'm> {
             self.refresh_view(*line);
             for f in born..self.facts.len() {
                 if !self.fray.contains_key(&(f as FactId)) {
-                    self.fact_text[f] = self.terms.show_atom(&self.facts[f].atom);
+                    self.render_fact(f);
                 }
             }
             // `end`/`else` are reached when some edge reaches them; any other line when control
@@ -2774,6 +2799,9 @@ impl<'a, 'm> Pass<'a, 'm> {
         } else {
             vec![]
         };
+        if self.cx.explain {
+            self.fix_hyp_text();
+        }
         let chips = self
             .facts
             .iter()
@@ -2828,6 +2856,88 @@ impl<'a, 'm> Pass<'a, 'm> {
             ex_falso: e.ex_falso,
             lines: e.lines,
             hyp_text,
+        }
+    }
+
+    /// The values in an atom that the current view names, with those names (the printer shows
+    /// a named value by its name, so the walk stops there).
+    fn named_ids(&self, a: &Atom) -> Vec<(TermId, String)> {
+        let mut stack: Vec<TermId> = vec![];
+        let mut atoms = vec![a];
+        while let Some(a) = atoms.pop() {
+            match a {
+                Atom::Cmp { a, b, .. } => stack.extend([*a, *b]),
+                Atom::Bool { t, .. } => stack.push(*t),
+                Atom::Or(x, y) => atoms.extend([&**x, &**y]),
+                Atom::True | Atom::False => {}
+            }
+        }
+        let mut out: Vec<(TermId, String)> = vec![];
+        let mut seen = std::collections::HashSet::new();
+        while let Some(t) = stack.pop() {
+            if !seen.insert(t) {
+                continue;
+            }
+            if let Some(n) = self.terms.view.get(&t) {
+                out.push((t, n.clone()));
+                continue;
+            }
+            match self.terms.key(t) {
+                Key::Op(_, _, x) | Key::Float(_, x) => stack.extend(x.iter().copied()),
+                Key::Call(_, x, _) => stack.extend(x.iter().copied()),
+                Key::Load(.., addr, _) => stack.push(*addr),
+                Key::Ite(c, x, y) => stack.extend([*c, *x, *y]),
+                Key::Const(..) | Key::Leaf(_) => {}
+            }
+        }
+        out.sort();
+        out
+    }
+
+    /// Remember how cup c's view names the values of the facts it uses (review 25 B1).
+    fn note_cup_names(&mut self, c: usize, facts: impl Iterator<Item = FactId>) {
+        let mut m = HashMap::new();
+        for f in facts {
+            for (t, _) in &self.fact_names[f as usize] {
+                if let Some(n) = self.terms.view.get(t) {
+                    m.insert(*t, n.clone());
+                }
+            }
+        }
+        self.cup_names.insert(c, m);
+    }
+
+    /// Each explained cup's facts as their chips print them (in their birth view), each with
+    /// a note where the cup's own view names one of its values differently: `y ≠ 0 [y of
+    /// line 119 is x here]` (review 25 B1).
+    fn fix_hyp_text(&mut self) {
+        for (c, names) in std::mem::take(&mut self.cup_names) {
+            let fids: Vec<FactId> = match &self.cups[c].feed {
+                Feed::Auto { hyps, .. } | Feed::Prove { hyps, .. } => hyps.to_vec(),
+                _ => continue,
+            };
+            let texts: Vec<String> = fids
+                .iter()
+                .map(|f| {
+                    let f = *f as usize;
+                    let born_at = self.facts[f].line;
+                    let mut t = self.fact_words_text[f].clone();
+                    let moved: Vec<String> = self.fact_names[f]
+                        .iter()
+                        .filter_map(|(id, born)| {
+                            let now = names.get(id)?;
+                            (now != born).then(|| format!("{born} of line {born_at} is {now} here"))
+                        })
+                        .collect();
+                    if !moved.is_empty() {
+                        t = format!("{t} [{}]", moved.join("; "));
+                    }
+                    t
+                })
+                .collect();
+            if let Some(e) = self.cups[c].explain.as_mut() {
+                e.hyp_text = texts;
+            }
         }
     }
 
