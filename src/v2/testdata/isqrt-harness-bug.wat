@@ -27,12 +27,10 @@
 (func $isqrt (export "isqrt") (param $n i32) (result (i32 | (call $is_isqrt (i64.extend_i32_u v) (i64.extend_i32_u $n))))
   (local $r (i32 | (i32.le_u v 65535)))
   block $done (fact (call $is_isqrt (i64.extend_i32_u $r) (i64.extend_i32_u $n)))
-    prove 0
     loop $grow (fact (call $sq_le (i64.extend_i32_u $r) (i64.extend_i32_u $n)))
       local.get $r
       i32.const 65535
       i32.ge_u
-      prove 2
       br_if $done
       local.get $r
       i64.extend_i32_u
@@ -46,14 +44,11 @@
       local.get $n
       i64.extend_i32_u
       i64.gt_u
-      prove 2
       br_if $done
       local.get $r
       i32.const 1
       i32.add
-      prove 2
       local.set $r
-      prove 3
       br $grow
     end
   end
@@ -85,6 +80,5 @@
   local.get $n
   call $is_isqrt32
   br_if 0
-  prove 2
   unreachable
 )

@@ -1,233 +1,204 @@
 {
-  "source": "isqrt-harness-bug.wat",
-  "mode": "gradual",
-  "summary": "Spec bug: the harness's own arithmetic overflows. The implementation's cups are all proven exactly as in isqrt.wat; only the harness False cup fails, and a run refutes it at n = 2³²−1.",
-  "cups": [
+ "source": "isqrt-harness-bug.wat",
+ "mode": "gradual",
+ "summary": "Spec bug: the harness's own arithmetic overflows. The implementation's cups are all proven exactly as in isqrt.wat; only the harness False cup fails, and a run refutes it at n = 2³²−1.",
+ "cups": [
+  {
+   "line": 28,
+   "operand": null,
+   "kind": "LocalInit",
+   "goal": "u(0) ≤ 65535",
+   "verdict": "proven",
+   "feed": {
+    "by": "eval"
+   },
+   "why": "R14 + R28: all-constant atom."
+  },
+  {
+   "line": 30,
+   "operand": null,
+   "kind": "LoopEntry",
+   "goal": "$sq_le(ext_u(0), ext_u($n))",
+   "verdict": "proven",
+   "feed": {
+    "by": "auto",
+    "hyps": []
+   },
+   "why": "unfold $sq_le: 0·0 = 0 ≤ ext_u(n). [R5a] fed automatically (no prove line): the goal holds with no hypothesis."
+  },
+  {
+   "line": 34,
+   "operand": null,
+   "kind": "BlockFact",
+   "goal": "$is_isqrt(ext_u(#r), ext_u($n)) at the taken edge (#r = loop-head φ)",
+   "verdict": "proven",
+   "feed": {
+    "by": "auto",
+    "hyps": [
+     {
+      "fact": "u(65535) ≤ u($r)",
+      "line": 34,
+      "origin": "br_if taken edge (R20, extra hypothesis)"
+     },
+     {
+      "fact": "$sq_le(ext_u($r), ext_u($n))",
+      "line": 30,
+      "origin": "refined local re-entered at loop head (R8)"
+     }
+    ]
+   },
+   "why": "intervals pin u(r) = 65535 (§3.3), so r² and (r+1)² = 2³² are constants; ext_u(n) < 2³²; invariant gives r² ≤ n. [R5a] fed automatically (no prove line): from the facts of lines 30, 34."
+  },
+  {
+   "line": 47,
+   "operand": null,
+   "kind": "BlockFact",
+   "goal": "$is_isqrt(ext_u(#r), ext_u($n)) at the taken edge",
+   "verdict": "proven",
+   "feed": {
+    "by": "auto",
+    "hyps": [
+     {
+      "fact": "u(ext_u($n)) < u(mul(add(ext_u($r), 1), add(ext_u($r), 1)))",
+      "line": 47,
+      "origin": "br_if taken edge (gt_u normalized to lt_u)"
+     },
+     {
+      "fact": "$sq_le(ext_u($r), ext_u($n))",
+      "line": 30,
+      "origin": "loop invariant"
+     }
+    ]
+   },
+   "why": "unfold $is_isqrt: the sq_le case is the invariant; the other conjunct is the edge fact, the same terms by value numbering. [R5a] fed automatically (no prove line): from the facts of lines 30, 47."
+  },
+  {
+   "line": 51,
+   "operand": 0,
+   "kind": "Refinement",
+   "goal": "u(#r + 1) ≤ 65535 (refined local $r)",
+   "verdict": "proven",
+   "feed": {
+    "by": "auto",
+    "hyps": [
+     {
+      "fact": "u($r) < u(65535)",
+      "line": 34,
+      "origin": "br_if fall-through"
+     }
+    ]
+   },
+   "why": "u(r) ≤ 65534, so i32.add does not wrap (q = 0 by intervals) and r+1 ≤ 65535. [R5a] fed automatically (no prove line): from the fact of line 34."
+  },
+  {
+   "line": 52,
+   "operand": null,
+   "kind": "BackEdge",
+   "goal": "$sq_le(ext_u(#r'), ext_u($n)), #r' = i32.add(#r, 1)",
+   "verdict": "proven",
+   "feed": {
+    "by": "auto",
+    "hyps": [
+     {
+      "fact": "u(mul(add(ext_u($r), 1), add(ext_u($r), 1))) ≤ u(ext_u($n))",
+      "line": 47,
+      "origin": "br_if fall-through"
+     }
+    ]
+   },
+   "why": "no wrap in i32.add (r ≤ 65534) nor in either i64 product (≤ 65535² < 2⁶⁴), so both sides expand to r² + 2r + 1 over the same monomial r². [R5a] fed automatically (no prove line): from the fact of line 47."
+  },
+  {
+   "line": 54,
+   "operand": null,
+   "kind": "BlockFact",
+   "goal": "$is_isqrt(…) at the block's fall-through",
+   "verdict": "proven",
+   "feed": {
+    "by": "dead",
+    "line": 52
+   },
+   "why": "R22: after `br $grow` the rest is dead; the fall-through edge into `end` is fed by False."
+  },
+  {
+   "line": 56,
+   "operand": 0,
+   "kind": "ResultRefinement",
+   "goal": "$is_isqrt(ext_u(#r), ext_u($n))",
+   "verdict": "proven",
+   "feed": {
+    "by": "lookup",
+    "facts": [
+     {
+      "line": 54,
+      "fact": "$is_isqrt(ext_u(#r), ext_u($n))",
+      "origin": "block exit fact at join (R16)"
+     }
+    ]
+   },
+   "why": "both edges bind $r to the loop-head φ, so the join keeps #r; the virtual slot ext_u(#r) is the same id in both atoms."
+  },
+  {
+   "line": 83,
+   "operand": null,
+   "kind": "False",
+   "goal": "False",
+   "verdict": "runtime-checked",
+   "feed": {
+    "by": "none"
+   },
+   "prove_error": {
+    "line": 83,
+    "text": "not implied by [¬$is_isqrt32(#q,$n) @82, $is_isqrt(ext_u(#q),ext_u($n)) @79]: the i32 product (r+1)·(r+1) may wrap (its wrap variable stays in the problem); countermodel r = 65535, n = 4294967295"
+   },
+   "hyps_tried": [
     {
-      "line": 28,
-      "operand": null,
-      "kind": "LocalInit",
-      "goal": "u(0) ≤ 65535",
-      "verdict": "proven",
-      "feed": {
-        "by": "eval"
-      },
-      "why": "R14 + R28: all-constant atom."
+     "line": 82,
+     "fact": "¬$is_isqrt32(#q, $n)"
     },
     {
-      "line": 31,
-      "operand": null,
-      "kind": "LoopEntry",
-      "goal": "$sq_le(ext_u(0), ext_u($n))",
-      "verdict": "proven",
-      "feed": {
-        "by": "prove",
-        "line": 30,
-        "hyps": []
-      },
-      "why": "unfold $sq_le: 0·0 = 0 ≤ ext_u(n). `prove 0` (no hypotheses)."
-    },
-    {
-      "line": 36,
-      "operand": null,
-      "kind": "BlockFact",
-      "goal": "$is_isqrt(ext_u(#r), ext_u($n)) at the taken edge (#r = loop-head φ)",
-      "verdict": "proven",
-      "feed": {
-        "by": "prove",
-        "line": 35,
-        "hyps": [
-          {
-            "line": 31,
-            "fact": "$sq_le(ext_u(#r), ext_u($n))",
-            "origin": "loop invariant (R17)"
-          },
-          {
-            "line": 31,
-            "fact": "u(#r) ≤ 65535",
-            "origin": "refined local re-entered at loop head (R8)"
-          },
-          {
-            "line": 36,
-            "fact": "u(#r) ≥ 65535",
-            "origin": "br_if taken edge (R20, extra hypothesis)"
-          }
-        ]
-      },
-      "why": "intervals pin u(r) = 65535 (§3.3), so r² and (r+1)² = 2³² are constants; ext_u(n) < 2³²; invariant gives r² ≤ n."
-    },
-    {
-      "line": 50,
-      "operand": null,
-      "kind": "BlockFact",
-      "goal": "$is_isqrt(ext_u(#r), ext_u($n)) at the taken edge",
-      "verdict": "proven",
-      "feed": {
-        "by": "prove",
-        "line": 49,
-        "hyps": [
-          {
-            "line": 36,
-            "fact": "u(#r) < 65535",
-            "origin": "br_if fall-through (R20)"
-          },
-          {
-            "line": 31,
-            "fact": "$sq_le(ext_u(#r), ext_u($n))",
-            "origin": "loop invariant"
-          },
-          {
-            "line": 50,
-            "fact": "u(ext_u($n)) < u((ext_u(#r)+1)·(ext_u(#r)+1))",
-            "origin": "br_if taken edge (gt_u normalized to lt_u)"
-          }
-        ]
-      },
-      "why": "unfold $is_isqrt: the sq_le case is the invariant; the other conjunct is the edge fact, the same terms by value numbering."
-    },
-    {
-      "line": 55,
-      "operand": 0,
-      "kind": "Refinement",
-      "goal": "u(#r + 1) ≤ 65535 (refined local $r)",
-      "verdict": "proven",
-      "feed": {
-        "by": "prove",
-        "line": 54,
-        "hyps": [
-          {
-            "line": 50,
-            "fact": "¬(u(ext_u(n)) < u((r+1)²))",
-            "origin": "br_if fall-through"
-          },
-          {
-            "line": 36,
-            "fact": "u(#r) < 65535",
-            "origin": "br_if fall-through"
-          }
-        ]
-      },
-      "why": "u(r) ≤ 65534, so i32.add does not wrap (q = 0 by intervals) and r+1 ≤ 65535."
-    },
-    {
-      "line": 57,
-      "operand": null,
-      "kind": "BackEdge",
-      "goal": "$sq_le(ext_u(#r'), ext_u($n)), #r' = i32.add(#r, 1)",
-      "verdict": "proven",
-      "feed": {
-        "by": "prove",
-        "line": 56,
-        "hyps": [
-          {
-            "line": 55,
-            "fact": "u(#r') ≤ 65535",
-            "origin": "prove at 54, entered at 55"
-          },
-          {
-            "line": 50,
-            "fact": "u((ext_u(r)+1)²) ≤ u(ext_u(n))",
-            "origin": "br_if fall-through"
-          },
-          {
-            "line": 36,
-            "fact": "u(#r) < 65535",
-            "origin": "br_if fall-through"
-          }
-        ]
-      },
-      "why": "no wrap in i32.add (r ≤ 65534) nor in either i64 product (≤ 65535² < 2⁶⁴), so both sides expand to r² + 2r + 1 over the same monomial r²."
-    },
-    {
-      "line": 59,
-      "operand": null,
-      "kind": "BlockFact",
-      "goal": "$is_isqrt(…) at the block's fall-through",
-      "verdict": "proven",
-      "feed": {
-        "by": "dead",
-        "line": 57
-      },
-      "why": "R22: after `br $grow` the rest is dead; the fall-through edge into `end` is fed by False."
-    },
-    {
-      "line": 61,
-      "operand": 0,
-      "kind": "ResultRefinement",
-      "goal": "$is_isqrt(ext_u(#r), ext_u($n))",
-      "verdict": "proven",
-      "feed": {
-        "by": "lookup",
-        "facts": [
-          {
-            "line": 59,
-            "fact": "$is_isqrt(ext_u(#r), ext_u($n))",
-            "origin": "block exit fact at join (R16)"
-          }
-        ]
-      },
-      "why": "both edges bind $r to the loop-head φ, so the join keeps #r; the virtual slot ext_u(#r) is the same id in both atoms."
-    },
-    {
-      "line": 89,
-      "operand": null,
-      "kind": "False",
-      "goal": "False",
-      "verdict": "runtime-checked",
-      "feed": {
-        "by": "none"
-      },
-      "prove_error": {
-        "line": 88,
-        "text": "not implied by [¬$is_isqrt32(#q,$n) @87, $is_isqrt(ext_u(#q),ext_u($n)) @84]: the i32 product (r+1)·(r+1) may wrap (its wrap variable stays in the problem); countermodel r = 65535, n = 4294967295"
-      },
-      "hyps_tried": [
-        {
-          "line": 87,
-          "fact": "¬$is_isqrt32(#q, $n)"
-        },
-        {
-          "line": 84,
-          "fact": "$is_isqrt(ext_u(#q), ext_u($n))"
-        }
-      ],
-      "after_runs": {
-        "verdict": "refuted",
-        "witness": {
-          "export": "harness:isqrt",
-          "args": [
-            -1
-          ]
-        }
-      },
-      "why": "the code is right and proven; the spec is wrong. $is_isqrt32 computes (r+1)² in i32, which is 2³² ≡ 0 at r = 65535, so for n ≥ 65535² = 4294836225 (unsigned) the check says 'n < 0' and fails. The fix is harness discipline §6.3: compute the check in i64."
+     "line": 79,
+     "fact": "$is_isqrt(ext_u(#q), ext_u($n))"
     }
-  ],
-  "runs": [
-    {
-      "export": "harness:isqrt",
-      "expect": "fails"
-    },
-    {
-      "export": "harness:isqrt",
-      "args": [
-        -1
-      ],
-      "expect": "unreachable"
-    },
-    {
-      "export": "harness:isqrt",
-      "args": [
-        -131071
-      ],
-      "expect": "unreachable"
-    },
-    {
-      "export": "harness:isqrt",
-      "args": [
-        -131072
-      ],
-      "expect": "ok"
+   ],
+   "after_runs": {
+    "verdict": "refuted",
+    "witness": {
+     "export": "harness:isqrt",
+     "args": [
+      -1
+     ]
     }
-  ]
+   },
+   "why": "the code is right and proven; the spec is wrong. $is_isqrt32 computes (r+1)² in i32, which is 2³² ≡ 0 at r = 65535, so for n ≥ 65535² = 4294836225 (unsigned) the check says 'n < 0' and fails. The fix is harness discipline §6.3: compute the check in i64.",
+   "strict_error": "reachable: needs False; nothing feeds it (could not decide (inexact step on wrap(mul($isqrt($n), $isqrt($n)))); add a lemma)"
+  }
+ ],
+ "runs": [
+  {
+   "export": "harness:isqrt",
+   "expect": "fails"
+  },
+  {
+   "export": "harness:isqrt",
+   "args": [
+    -1
+   ],
+   "expect": "unreachable"
+  },
+  {
+   "export": "harness:isqrt",
+   "args": [
+    -131071
+   ],
+   "expect": "unreachable"
+  },
+  {
+   "export": "harness:isqrt",
+   "args": [
+    -131072
+   ],
+   "expect": "ok"
+  }
+ ]
 }

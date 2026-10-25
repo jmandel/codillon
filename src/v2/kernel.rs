@@ -213,6 +213,8 @@ pub struct Pass<'a, 'm> {
     sets: Vec<(usize, TermId, TermId, u32)>,
     /// the line where a fact frays (R7, R11)
     fray: HashMap<FactId, u32>,
+    /// reachable `assume` lines (§4.1: not strict-clean)
+    assume_lines: Vec<u32>,
     /// R5a: solver cases enumerated by automatic feeding in this pass (research/24 §5)
     auto_calls: u32,
     /// feeds found to rest on contradictory facts (vericoding only): while all of a set's facts
@@ -985,6 +987,7 @@ impl<'a, 'm> Pass<'a, 'm> {
             sets: vec![],
             fray: HashMap::new(),
             auto_calls: 0,
+            assume_lines: vec![],
             contras: vec![],
             ghost,
             line: func.header_line,
@@ -1437,6 +1440,11 @@ impl<'a, 'm> Pass<'a, 'm> {
                 ));
             }
             Ins::Assume(e) => {
+                // §4.1: a function with a reachable `assume` is not strict-clean, whether or not
+                // a cup ends up resting on it (R5a may well prove its cups without it)
+                if self.dead.is_none() {
+                    self.assume_lines.push(line);
+                }
                 let b = self.cur_bind();
                 let a = self.inst_atom(e, &b, None);
                 self.enter(a, line, "assume", vec![Dep::Assume(line, false)]);
@@ -2671,6 +2679,7 @@ impl<'a, 'm> Pass<'a, 'm> {
             all_assumes.extend(assumes);
         }
         let strict_clean = self.line_errors.is_empty()
+            && self.assume_lines.is_empty()
             && self.cups.iter().all(|c| {
                 matches!(c.verdict, Verdict::Proven | Verdict::Assumed)
                     && c.depends_on_checks.is_empty()

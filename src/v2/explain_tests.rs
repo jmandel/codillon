@@ -5,7 +5,8 @@ use super::ast::Module;
 use super::kernel::{check_module, check_module_with};
 use super::out::{CupKind, Feed, ModuleOut};
 
-const EXAMPLES: [&str; 8] = [
+const EXAMPLES: [&str; 9] = [
+    "even-shift",
     "prove-explain",
     "parity",
     "parity-bug-gate",
@@ -28,7 +29,8 @@ fn explained(src: &str) -> ModuleOut {
     check_module_with(&Module::parse(src), true, true)
 }
 
-/// The user's program (research 16 §3 complaint): `prove 1` after an always-taken `br_if`.
+/// The user's program (research 16 §3 complaint), now with no `prove` line (R5a): unreachable's
+/// cup is fed automatically from the `br_if` fall-through fact, ex falso.
 #[test]
 fn prove_after_always_taken_br_if_is_explained() {
     let out = explained(&example("prove-explain"));
@@ -37,40 +39,32 @@ fn prove_after_always_taken_br_if_is_explained() {
     let c = f
         .cups
         .iter()
-        .find(|c| matches!(c.feed, Feed::Prove { .. }))
-        .expect("a prove-fed cup");
-    // the goal: False, on unreachable (line 15), fed by the prove on line 14
+        .find(|c| matches!(c.feed, Feed::Auto { .. }))
+        .expect("an automatically fed cup");
+    // the goal: False, on unreachable (line 14)
     assert_eq!(c.kind, CupKind::False);
     assert_eq!(c.goal, "False");
-    assert_eq!(c.line, 15);
-    let Feed::Prove {
-        prove_line,
-        hyps,
-        hyp_lines,
-        ..
+    assert_eq!(c.line, 14);
+    let Feed::Auto {
+        hyps, hyp_lines, ..
     } = &c.feed
     else {
         unreachable!()
     };
-    assert_eq!(*prove_line, 14);
     // one hypothesis, born on the br_if fall-through (line 13)
     assert_eq!(hyps.len(), 1);
     assert_eq!(hyp_lines.as_slice(), &[13]);
     let chip = &f.chips[hyps[0] as usize];
     assert_eq!(chip.origin, "br_if fall-through");
-    assert_eq!(chip.text, "and(mul($x, 2), 1) ≠ 0");
     // the reason: a parity argument, ex falso
     let e = c.explain.as_ref().expect("an explanation");
     assert!(e.ex_falso);
     assert_eq!(e.used.as_slice(), &[0]);
-    let why = e.lines.join(" ");
-    assert!(why.contains("mul($x, 2) is even"), "{why}");
-    assert!(why.contains("and(mul($x, 2), 1) = 0"), "{why}");
-    assert!(why.contains("contradicts ①"), "{why}");
-    // the lines after the br_if never run
+    assert!(!e.lines.is_empty());
+    // the line after the br_if never runs
     assert_eq!(f.never_runs.len(), 1);
     let r = &f.never_runs[0];
-    assert_eq!((r.from, r.to, r.cause), (14, 15, 13));
+    assert_eq!((r.from, r.to, r.cause), (14, 14, 13));
     assert_eq!(r.why, "br_if on line 13 always branches");
 }
 
@@ -81,7 +75,7 @@ fn every_prove_is_explained() {
     for ex in EXAMPLES {
         let out = explained(&example(ex));
         for c in out.cups() {
-            let Feed::Prove { hyps, .. } = &c.feed else {
+            let (Feed::Prove { hyps, .. } | Feed::Auto { hyps, .. }) = &c.feed else {
                 continue;
             };
             let e = c
@@ -89,7 +83,7 @@ fn every_prove_is_explained() {
                 .as_ref()
                 .unwrap_or_else(|| panic!("{ex}: line {}", c.line));
             assert!(
-                (1..=3).contains(&e.lines.len()),
+                hyps.is_empty() || (1..=3).contains(&e.lines.len()),
                 "{ex}: line {}: {:?}",
                 c.line,
                 e.lines

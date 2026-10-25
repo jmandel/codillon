@@ -1,4 +1,4 @@
-;; parity, seeded variant: missing proof -- the `prove 1` in $half (line 35) was deleted (now `nop`)
+;; parity, seeded missing fact: $half's parameter lost its type (line 31 says i32, not (i32 | $is_even)), so nothing says x is even and the result x>>1 cannot be shown to be half of x (x = 1 is a counterexample)
 (func $is_even (param $x i32) (result i32)
   local.get $x
   i32.const 1
@@ -28,11 +28,10 @@
     i32.eq
   end
 )
-(func $half (param $x (i32 | $is_even)) (result (i32 | $is_half $x))
+(func $half (param $x i32) (result (i32 | $is_half $x))
   local.get $x
   i32.const 1
   i32.shr_s
-  nop
 )
 (func $half_or_neg1 (export "half_or_neg1") (param $x i32) (result (i32 | $hon_ok $x))
   local.get $x
@@ -40,11 +39,9 @@
   i32.eqz
   if (result (i32 | $hon_ok $x))
     i32.const -1
-    prove 1
   else
     local.get $x
     call $half
-    prove 2
   end
 )
 (func $parity_ok (export "harness:half_or_neg1") (param $x i32)
@@ -53,6 +50,5 @@
   local.get $x
   call $hon_ok
   br_if 0
-  prove 2
   unreachable
 )

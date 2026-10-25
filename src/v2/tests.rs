@@ -3,13 +3,15 @@
 use super::ast::Module;
 use super::erase::erase_text;
 
-pub const EXAMPLES: [&str; 13] = [
+pub const EXAMPLES: [&str; 15] = [
+    "even-shift",
     "parity",
     "parity-missing-proof",
     "parity-bug-gate",
     "isqrt",
     "isqrt-harness-bug",
     "isqrt-wrong-cup",
+    "isqrt-missing-invariant",
     "gcd",
     "gcd-bug-guard",
     "gcd-vacuous",
@@ -719,9 +721,9 @@ fn runtime_checks_refute_the_oracles_witnesses() {
             let (r, _) = instrumented_run(&src, w["export"].as_str().unwrap(), &args);
             let line = c["line"].as_u64().unwrap() as u32;
             // oracle-diffs.md: in hashtable-bug-tombstone the run (1, 9) stops at the check on line
-            // 302 ($remove's exit) before it can reach the harness's unreachable on line 366
-            let line = if ex == "hashtable-bug-tombstone" && line == 366 {
-                302
+            // 292 ($remove's exit) before it can reach the harness's unreachable on line 355
+            let line = if ex == "hashtable-bug-tombstone" && line == 355 {
+                292
             } else {
                 line
             };
@@ -883,23 +885,23 @@ fn editor_examples_run_their_main() {
 #[test]
 fn stale_hint_and_fraying() {
     let out = check_module(&Module::parse(&testdata("hashtable-stale", "wat")), true);
-    let c = out.cups().find(|c| c.line == 320).unwrap();
+    let c = out.cups().find(|c| c.line == 309).unwrap();
     let d = c.diag.clone().unwrap();
-    assert!(d.contains("is about the old $i (set at line 314)"), "{d}");
-    let f = out.func_at(320).unwrap();
+    assert!(d.contains("is about the old $i (set at line 304)"), "{d}");
+    let f = out.func_at(309).unwrap();
     assert!(
         f.chips
             .iter()
-            .any(|ch| ch.line == 310 && ch.frayed_at == Some(314)),
+            .any(|ch| ch.line == 300 && ch.frayed_at == Some(304)),
         "no frayed chip"
     );
     // a store frays chips that carry the old epoch (hashtable $insert: $rep_ok at the loop head)
     let out = check_module(&Module::parse(&testdata("hashtable", "wat")), true);
-    let f = out.func_at(245).unwrap();
+    let f = out.func_at(237).unwrap();
     assert!(
         f.chips
             .iter()
-            .any(|ch| ch.line == 202 && ch.text.contains("rep_ok") && ch.frayed_at == Some(245))
+            .any(|ch| ch.line == 196 && ch.text.contains("rep_ok") && ch.frayed_at == Some(237))
     );
 }
 

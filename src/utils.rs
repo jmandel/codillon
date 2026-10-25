@@ -3431,15 +3431,17 @@ pub(crate) mod tests {
         let cases: &[(&str, Option<u32>)] = &[
             ("parity", None),
             ("parity-missing-proof", None),
-            ("parity-bug-gate", Some(46 + 4)),
+            ("parity-bug-gate", Some(44 + 4)),
             ("isqrt", None),
             ("isqrt-wrong-cup", None),
+            ("isqrt-missing-invariant", None),
+            ("even-shift", None),
             ("gcd", None),
-            ("gcd-bug-guard", Some(121 + 5)),
+            ("gcd-bug-guard", Some(118 + 5)),
             ("primality", None),
             ("hashtable", None),
-            ("hashtable-stale", Some(320 + 5)),
-            ("hashtable-bug-tombstone", Some(302 + 5)), // $main runs (1, 9): the missing tombstone
+            ("hashtable-stale", Some(309 + 5)),
+            ("hashtable-bug-tombstone", Some(292 + 5)), // $main runs (1, 9): the missing tombstone
         ];
         for (name, fail_line) in cases {
             let path = format!(

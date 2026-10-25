@@ -1,23 +1,124 @@
 {
-  "source": "parity-missing-proof.wat",
-  "mode": "gradual",
-  "summary": "Missing proof: $half's result cup has nothing to feed it. Strict mode reports an error; gradual mode runs a check; the code is correct, so no run refutes it.",
-  "cups": [
-    { "line": 36, "operand": 0, "kind": "ResultRefinement", "goal": "$is_half(shr_s($x, 1), $x)", "verdict": "runtime-checked",
-      "feed": { "by": "none" },
-      "strict_error": "result needs ⟨$is_half(shr_s($x,1), $x)⟩; nothing feeds it",
-      "why": "lookup finds only $is_even($x) (line 31); no prove line above." },
-    { "line": 44, "operand": 0, "kind": "BlockFact", "goal": "$hon_ok(-1, $x)", "verdict": "proven",
-      "feed": { "by": "prove", "line": 43, "hyps": [ { "line": 41, "fact": "¬$is_even($x)" } ] } },
-    { "line": 46, "operand": 0, "kind": "Refinement", "goal": "$is_even($x)", "verdict": "proven",
-      "feed": { "by": "lookup", "facts": [ { "line": 44, "fact": "$is_even($x)", "origin": "if else-arm" } ] } },
-    { "line": 48, "operand": 0, "kind": "BlockFact", "goal": "$hon_ok(#h, $x)", "verdict": "proven",
-      "feed": { "by": "prove", "line": 47, "hyps": [ { "line": 46, "fact": "$is_half(#h, $x)" }, { "line": 44, "fact": "$is_even($x)" } ] },
-      "why": "R13: $half's declared result refinement is entered regardless of $half's body (modular checking)." },
-    { "line": 49, "operand": 0, "kind": "ResultRefinement", "goal": "$hon_ok(#φ, $x)", "verdict": "proven",
-      "feed": { "by": "lookup", "facts": [ { "line": 48, "fact": "$hon_ok(#φ, $x)" } ] } },
-    { "line": 57, "operand": null, "kind": "False", "goal": "False", "verdict": "proven",
-      "feed": { "by": "prove", "line": 56, "hyps": [ { "line": 55, "fact": "¬$hon_ok(#r, $x)" }, { "line": 52, "fact": "$hon_ok(#r, $x)" } ] } }
-  ],
-  "runs": [ { "export": "harness:half_or_neg1", "expect": "pass" } ]
+ "source": "parity-missing-proof.wat",
+ "mode": "strict",
+ "summary": "Missing fact (seeded): $half's parameter is plain i32 (line 31), so nothing says x is even and $half's result refinement cannot be shown (x = 1 is a counterexample: 1>>1 = 0 and 0+0 ≠ 1). The cup is runtime-checked; every caller still relies on $half's declared contract, so the rest is proven, but $half and its callers are not VERIFIED. Runs pass: $half is only ever called with even x.",
+ "cups": [
+  {
+   "line": 35,
+   "operand": 0,
+   "kind": "ResultRefinement",
+   "goal": "$is_half(shr_s($x, 1), $x)",
+   "verdict": "runtime-checked",
+   "feed": {
+    "by": "none"
+   },
+   "why": "No fact about $x is in scope (its type was deleted), so R5a has nothing relevant; §3 alone does not prove $is_half(x>>1, x) for all x (x = 1). Restore `(i32 | $is_even)` on the parameter and R5a feeds the cup from it.",
+   "strict_error": "result needs ⟨$is_half(shr_s($x, 1), $x)⟩; nothing feeds it"
+  },
+  {
+   "line": 42,
+   "operand": 0,
+   "kind": "BlockFact",
+   "goal": "$hon_ok(-1, $x)",
+   "verdict": "proven",
+   "feed": {
+    "by": "auto",
+    "hyps": [
+     {
+      "fact": "¬$is_even($x)",
+      "line": 40,
+      "origin": "if then-arm (R18)"
+     }
+    ]
+   },
+   "why": "then-arm fall-through edge of the if's result refinement; $hon_ok unfolds to ite($is_even($x), …, -1 = -1); the hypothesis kills the first case. [R5a] fed automatically (no prove line): from the fact of line 40."
+  },
+  {
+   "line": 45,
+   "operand": 0,
+   "kind": "BlockFact",
+   "goal": "$hon_ok(#h, $x) where #h = $half($x)",
+   "verdict": "proven",
+   "feed": {
+    "by": "auto",
+    "hyps": [
+     {
+      "fact": "$is_half($half($x), $x)",
+      "line": 44,
+      "origin": "call result (R13)"
+     }
+    ]
+   },
+   "why": "unfold $hon_ok: ite($is_even($x), $is_half(#h, $x), …); first hypothesis decides the condition, second is the branch. [R5a] fed automatically (no prove line): from the fact of line 44."
+  },
+  {
+   "line": 46,
+   "operand": 0,
+   "kind": "ResultRefinement",
+   "goal": "$hon_ok(#φ, $x)",
+   "verdict": "proven",
+   "feed": {
+    "by": "lookup",
+    "facts": [
+     {
+      "line": 45,
+      "fact": "$hon_ok(#φ, $x)",
+      "origin": "if result refinement at join (R18)"
+     }
+    ]
+   },
+   "why": "#φ is the if's result value; the join enters the declared result refinement."
+  },
+  {
+   "line": 53,
+   "operand": null,
+   "kind": "False",
+   "goal": "False",
+   "verdict": "proven",
+   "feed": {
+    "by": "auto",
+    "hyps": [
+     {
+      "fact": "¬$hon_ok($half_or_neg1($x), $x)",
+      "line": 52,
+      "origin": "br_if fall-through (R20)"
+     }
+    ]
+   },
+   "why": "the two hypotheses are the same atom with opposite signs (and unfold identically). [R5a] fed automatically (no prove line): from the fact of line 52."
+  }
+ ],
+ "runs": [
+  {
+   "export": "harness:half_or_neg1",
+   "expect": "pass"
+  },
+  {
+   "export": "harness:half_or_neg1",
+   "args": [
+    3
+   ],
+   "expect": "ok"
+  },
+  {
+   "export": "harness:half_or_neg1",
+   "args": [
+    -4
+   ],
+   "expect": "ok"
+  },
+  {
+   "export": "harness:half_or_neg1",
+   "args": [
+    -2147483648
+   ],
+   "expect": "ok"
+  }
+ ],
+ "line_errors": [
+  {
+   "line": 35,
+   "text": "strict: result needs ⟨$is_half(shr_s($x, 1), $x)⟩; nothing feeds it"
+  }
+ ]
 }

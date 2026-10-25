@@ -80,31 +80,39 @@ fn user_example_needs_no_prove() {
     );
 }
 
-/// isqrt and primality with every routine `prove` line deleted: every cup keeps its verdict, and
-/// the cups the deleted lines fed are now fed automatically.
+/// isqrt and primality as shipped: no routine `prove` line (isqrt has none; primality keeps one
+/// commented override pair), and every function is still VERIFIED with no line error; the cups
+/// the deleted lines fed are fed automatically. Deleting primality's override too changes nothing.
 #[test]
 fn isqrt_and_primality_without_proves() {
-    for ex in ["isqrt", "primality"] {
+    let proves = |s: &str| {
+        s.lines()
+            .filter(|l| l.trim_start().starts_with("prove "))
+            .count()
+    };
+    for (ex, kept) in [("isqrt", 0), ("primality", 2)] {
         let src = testdata(ex);
-        let stripped = strip_proves(&src);
-        assert!(stripped.lines().count() < src.lines().count(), "{ex}");
-        let a = check_module(&Module::parse(&src), false);
-        let b = check_module(&Module::parse(&stripped), false);
-        let va: Vec<(&str, u8)> = a.cups().map(|c| (c.kind.name(), rank(c))).collect();
-        let vb: Vec<(&str, u8)> = b.cups().map(|c| (c.kind.name(), rank(c))).collect();
-        assert_eq!(va, vb, "{ex}");
-        assert!(
-            b.cups().any(|c| matches!(c.feed, Feed::Auto { .. })),
-            "{ex}"
-        );
-        for f in &b.funcs {
+        assert_eq!(proves(&src), kept, "{ex}");
+        for text in [src.clone(), strip_proves(&src)] {
+            let out = check_module(&Module::parse(&text), false);
             assert!(
-                f.line_errors.is_empty(),
-                "{ex} {}: {:?}",
-                f.name,
-                f.line_errors
+                out.cups()
+                    .filter(|c| matches!(c.feed, Feed::Auto { .. }))
+                    .count()
+                    >= 6,
+                "{ex}"
             );
-            assert_eq!(f.verified, func(&a, &f.name).verified, "{ex} {}", f.name);
+            for f in &out.funcs {
+                assert!(
+                    f.line_errors.is_empty(),
+                    "{ex} {}: {:?}",
+                    f.name,
+                    f.line_errors
+                );
+                assert!(f.verified, "{ex} {}", f.name);
+            }
+            let ranks: Vec<u8> = out.cups().map(rank).collect();
+            assert!(ranks.iter().all(|r| *r >= 3), "{ex}");
         }
     }
 }
@@ -463,4 +471,72 @@ fn auto_timing() {
             }
         }
     }
+}
+
+/// Dump the kernel's cups as JSON for the oracle tools (research/v2-examples):
+/// `EX_PATH=x.wat MODE=gradual cargo test --release --lib dump_cups_json -- --ignored`
+#[test]
+#[ignore]
+fn dump_cups_json() {
+    use serde_json::json;
+    let Ok(p) = std::env::var("EX_PATH") else {
+        return;
+    };
+    let gradual = std::env::var("MODE").as_deref() != Ok("strict");
+    let src = std::fs::read_to_string(&p).unwrap();
+    let out = check_module(&Module::parse(&src), gradual);
+    let mut cups = vec![];
+    for f in &out.funcs {
+        for c in &f.cups {
+            let hyps = |ids: &[u32], lines: &[u32]| -> Vec<serde_json::Value> {
+                ids.iter()
+                    .zip(lines)
+                    .map(|(id, l)| json!({"line": l, "fact": f.chips[*id as usize].text}))
+                    .collect()
+            };
+            let feed = match &c.feed {
+                Feed::Lookup { fact, origin_line } => json!({"by": "lookup",
+                    "facts": [{"line": origin_line, "fact": f.chips[*fact as usize].text}]}),
+                Feed::Prove {
+                    prove_line,
+                    hyps: h,
+                    hyp_lines,
+                    ..
+                } => {
+                    json!({"by": "prove", "line": prove_line, "hyps": hyps(h, hyp_lines)})
+                }
+                Feed::Auto {
+                    hyps: h, hyp_lines, ..
+                } => {
+                    json!({"by": "auto", "hyps": hyps(h, hyp_lines)})
+                }
+                Feed::Eval { .. } => json!({"by": "eval"}),
+                Feed::DeadCode { ended_at } => json!({"by": "dead", "line": ended_at}),
+                Feed::Unfed => json!({"by": "none"}),
+            };
+            cups.push(json!({
+                "func": f.name, "line": c.line, "operand": c.operand, "kind": c.kind.name(),
+                "goal": c.goal,
+                "verdict": if c.verdict == Verdict::Refuted { "refuted" } else { c.verdict.name() },
+                "feed": feed, "depends_on_checks": c.depends_on_checks.to_vec(),
+                "assumptions": c.assumptions.iter().map(|o| o.line).collect::<Vec<_>>(),
+                "diag": c.diag,
+            }));
+        }
+    }
+    let errs: Vec<_> = out
+        .funcs
+        .iter()
+        .flat_map(|f| f.line_errors.iter())
+        .chain(out.errors.iter())
+        .collect();
+    let funcs: Vec<_> = out
+        .funcs
+        .iter()
+        .map(|f| json!({"name": f.name, "verified": f.verified, "strict_clean": f.strict_clean}))
+        .collect();
+    println!(
+        "CUPS_JSON {}",
+        json!({"cups": cups, "line_errors": errs, "funcs": funcs})
+    );
 }

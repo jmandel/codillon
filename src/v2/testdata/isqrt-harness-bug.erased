@@ -27,12 +27,10 @@
 (func $isqrt (export "isqrt") (param $n i32) (result i32)
   (local $r i32)
   block $done
-    nop ;;~ prove 0
     loop $grow
       local.get $r
       i32.const 65535
       i32.ge_u
-      nop ;;~ prove 2
       br_if $done
       local.get $r
       i64.extend_i32_u
@@ -46,14 +44,11 @@
       local.get $n
       i64.extend_i32_u
       i64.gt_u
-      nop ;;~ prove 2
       br_if $done
       local.get $r
       i32.const 1
       i32.add
-      nop ;;~ prove 2
       local.set $r
-      nop ;;~ prove 3
       br $grow
     end
   end
@@ -85,6 +80,5 @@
   local.get $n
   call $is_isqrt32
   br_if 0
-  nop ;;~ prove 2
   unreachable
 )

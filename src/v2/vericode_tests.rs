@@ -31,20 +31,20 @@ fn ownership_follows_the_table() {
     assert_eq!(at(7), Owner::Student, "predicate body");
     assert_eq!(at(31), Owner::Student, "$isqrt header");
     assert_eq!(at(32), Owner::Llm, "refined local of the body");
-    assert_eq!(at(35), Owner::Llm, "prove line");
-    assert_eq!(at(64), Owner::Llm, "body");
-    assert_eq!(at(65), Owner::Student, "closing paren of a student header");
-    assert_eq!(at(67), Owner::Student, "harness body");
+    assert_eq!(at(34), Owner::Llm, "loop line of the body");
+    assert_eq!(at(59), Owner::Llm, "body");
+    assert_eq!(at(60), Owner::Student, "closing paren of a student header");
+    assert_eq!(at(62), Owner::Student, "harness body");
     // gcd: helpers of predicates are spec; the axiom is the instructor's
     let g = example("gcd");
     let o = st(&g).owners(&g);
     assert_eq!(o[8 - 1], Owner::Student, "$divides (called by a predicate)");
-    assert_eq!(o[108 - 1], Owner::Student, "axiom header");
-    assert_eq!(o[119 - 1], Owner::Llm, "$gcd body");
+    assert_eq!(o[106 - 1], Owner::Student, "axiom header");
+    assert_eq!(o[117 - 1], Owner::Llm, "$gcd body");
     // primality: $prime is the exported implementation although a lemma names it
     let p = example("primality");
     let o = st(&p).owners(&p);
-    assert_eq!(o[102 - 1], Owner::Llm, "$prime body");
+    assert_eq!(o[97 - 1], Owner::Llm, "$prime body");
 }
 
 #[test]
@@ -64,11 +64,11 @@ fn the_judge_enforces_the_boundary() {
     let w = apply_edits(
         &lines,
         &[Edit {
-            a: 39,
-            b: 39,
+            a: 38,
+            b: 38,
             with: vec![
+                "  i32.shr_s".into(),
                 "  assume (fact (call $is_half (i32.shr_s $x 1) $x))".into(),
-                "  prove 1".into(),
             ],
         }],
     )
@@ -120,13 +120,14 @@ fn the_judge_enforces_the_boundary() {
             .iter()
             .any(|r| r.msg.contains("$nowhere"))
     );
-    // not strict-clean: stays applied (not crossed), not accepted
+    // not strict-clean: stays applied (not crossed), not accepted. (Deleting a `prove` line no
+    // longer does this, R5a; a wrong shift amount does: x>>2 is not half of x.)
     let w = apply_edits(
         &lines,
         &[Edit {
-            a: 39,
-            b: 39,
-            with: vec![],
+            a: 37,
+            b: 37,
+            with: vec!["  i32.const 2".into()],
         }],
     )
     .unwrap();
@@ -229,7 +230,7 @@ fn mutation_testing_is_deterministic_and_finds_survivors() {
     let b = run_mutation("isqrt");
     assert_eq!(a, b);
     // the isqrt survivors include equivalent mutants the kernel still proves (65535 → 65536, …)
-    assert!(a.iter().any(|(m, f)| m.line == 37
+    assert!(a.iter().any(|(m, f)| m.line == 36
         && m.to == "i32.const 65536"
         && *f == Fate::Survived { proven: true }));
     // a vacuous harness kills nothing
@@ -539,9 +540,8 @@ fn b1_lemma_value_param_refinements_are_cups() {
     let g = example("gcd");
     let s = st(&g);
     let mut t = g.clone();
-    assert!(t[137].contains("unfold $gcd_ref $x $y") && t[138].contains("prove 3"));
-    t[137] = "  lemma $vac2 $x $a $b".into();
-    t[138] = "  nop".into();
+    assert!(t[133].contains("unfold $gcd_ref $x $y"));
+    t[133] = "  lemma $vac2 $x $a $b".into();
     t.push("(func $vac2 (export \"lemma:vac2\") (param $x (i32 | (i32.lt_u v 0))) (param $a i32) (param $b i32) (result (fact (i32.eq $x (call $gcd_ref $a $b))))".into());
     t.push("  prove 1".into());
     t.push("  unreachable".into());
@@ -553,12 +553,12 @@ fn b1_lemma_value_param_refinements_are_cups() {
     let cup = gcd
         .cups
         .iter()
-        .find(|c| c.line == 138 && matches!(c.kind, super::out::CupKind::Refinement { .. }))
+        .find(|c| c.line == 134 && matches!(c.kind, super::out::CupKind::Refinement { .. }))
         .expect("a Refinement cup on the lemma line");
     assert_eq!(cup.verdict, super::out::Verdict::RuntimeChecked, "{cup:?}");
     // A16: the same through the harness is a locked-line edit anyway
     let mut t = g.clone();
-    t[151] = "  lemma $vac $g".into();
+    t[145] = "  lemma $vac $g".into();
     t.push("(func $vac (export \"lemma:vac\") (param $g (i32 | (i32.lt_u v 0))) (result (fact (i32.const 0)))".into());
     t.push("  unreachable".into());
     t.push(")".into());
@@ -626,19 +626,19 @@ fn default_model_is_the_chosen_one() {
 fn a14_moving_a_student_line_is_a_violation() {
     let g = example("gcd");
     let mut base = g.clone();
-    assert!(base[122].trim() == "br_if $done");
-    base.insert(123, "      assume (fact (i32.ne $y 0))".into());
+    assert!(base[119].trim() == "br_if $done");
+    base.insert(120, "      assume (fact (i32.ne $y 0))".into());
     let s = st(&base);
     assert!(s.judge(&base).boundary.is_empty());
     // moved within the same block: still in place
     let mut t = base.clone();
-    let a = t.remove(123);
-    t.insert(124, a);
+    let a = t.remove(120);
+    t.insert(121, a);
     assert!(s.zone_violation(&t).is_none(), "{:?}", s.zone_violation(&t));
     // moved out of the loop, before it
     let mut t = base.clone();
-    let a = t.remove(123);
-    t.insert(118, a);
+    let a = t.remove(120);
+    t.insert(116, a);
     let v = s.zone_violation(&t).expect("a violation");
     assert!(v.msg.contains("out of its place"), "{v:?}");
     assert!(s.judge(&t).crossed());

@@ -1,0 +1,147 @@
+{
+ "source": "isqrt-missing-invariant.wat",
+ "mode": "strict",
+ "summary": "Missing invariant (seeded): `loop $grow` lost its fact sq_le(r, n) (line 30), so at the loop head nothing says r² ≤ n. Both exits of block $done owe is_isqrt(r, n) = r² ≤ n < (r+1)², and neither can show the first half: two runtime-checked cups, $isqrt not VERIFIED. The loop-entry and back-edge cups disappear with the invariant. The code is correct, so runs pass.",
+ "cups": [
+  {
+   "line": 28,
+   "operand": null,
+   "kind": "LocalInit",
+   "goal": "u(0) ≤ 65535",
+   "verdict": "proven",
+   "feed": {
+    "by": "eval"
+   },
+   "why": "R14 + R28: all-constant atom."
+  },
+  {
+   "line": 34,
+   "operand": null,
+   "kind": "BlockFact",
+   "goal": "$is_isqrt(ext_u(#r), ext_u($n)) at the taken edge (#r = loop-head φ)",
+   "verdict": "runtime-checked",
+   "feed": {
+    "by": "none"
+   },
+   "why": "First exit (u(r) ≥ 65535): the relevant facts are r ≤ 65535 (the local's type) and the edge fact; nothing says r² ≤ n, and with r = 65535 and n = 0 the first half of is_isqrt fails.",
+   "strict_error": "needs ⟨$is_isqrt(ext_u($r), ext_u($n))⟩; nothing feeds it (the 2 facts about these values allow u($n)=0)"
+  },
+  {
+   "line": 47,
+   "operand": null,
+   "kind": "BlockFact",
+   "goal": "$is_isqrt(ext_u(#r), ext_u($n)) at the taken edge",
+   "verdict": "runtime-checked",
+   "feed": {
+    "by": "none"
+   },
+   "why": "Second exit ((r+1)² > n): the edge fact gives the second half of is_isqrt, but nothing relates r² to n. §3 treats the monomial r² as its own unknown, so it can choose r² > n; the countermodel it prints (n = 0, r = 0) lists only the program values, not that unknown.",
+   "strict_error": "needs ⟨$is_isqrt(ext_u($r), ext_u($n))⟩; nothing feeds it (the 3 facts about these values allow u($n)=0, u($r)=0)"
+  },
+  {
+   "line": 51,
+   "operand": 0,
+   "kind": "Refinement",
+   "goal": "u(#r + 1) ≤ 65535 (refined local $r)",
+   "verdict": "proven",
+   "feed": {
+    "by": "auto",
+    "hyps": [
+     {
+      "fact": "u($r) < u(65535)",
+      "line": 34,
+      "origin": "br_if fall-through"
+     }
+    ]
+   },
+   "why": "u(r) ≤ 65534, so i32.add does not wrap (q = 0 by intervals) and r+1 ≤ 65535. [R5a] fed automatically (no prove line): from the fact of line 34."
+  },
+  {
+   "line": 54,
+   "operand": null,
+   "kind": "BlockFact",
+   "goal": "$is_isqrt(…) at the block's fall-through",
+   "verdict": "proven",
+   "feed": {
+    "by": "dead",
+    "line": 52
+   },
+   "why": "R22: after `br $grow` the rest is dead; the fall-through edge into `end` is fed by False."
+  },
+  {
+   "line": 56,
+   "operand": 0,
+   "kind": "ResultRefinement",
+   "goal": "$is_isqrt(ext_u(#r), ext_u($n))",
+   "verdict": "proven",
+   "feed": {
+    "by": "lookup",
+    "facts": [
+     {
+      "line": 54,
+      "fact": "$is_isqrt(ext_u(#r), ext_u($n))",
+      "origin": "block exit fact at join (R16)"
+     }
+    ]
+   },
+   "why": "both edges bind $r to the loop-head φ, so the join keeps #r; the virtual slot ext_u(#r) is the same id in both atoms.",
+   "depends_on_checks": [
+    34,
+    47
+   ]
+  },
+  {
+   "line": 65,
+   "operand": null,
+   "kind": "False",
+   "goal": "False",
+   "verdict": "proven",
+   "feed": {
+    "by": "auto",
+    "hyps": [
+     {
+      "fact": "¬$is_isqrt(ext_u($isqrt($n)), ext_u($n))",
+      "line": 64,
+      "origin": "br_if fall-through"
+     },
+     {
+      "fact": "$is_isqrt(ext_u($isqrt($n)), ext_u($n))",
+      "line": 59,
+      "origin": "call result (R13)"
+     }
+    ]
+   },
+   "why": "[R5a] fed automatically (no prove line): from the facts of lines 59, 64."
+  }
+ ],
+ "runs": [
+  {
+   "export": "harness:isqrt",
+   "expect": "pass"
+  },
+  {
+   "export": "harness:isqrt",
+   "args": [
+    -1
+   ],
+   "expect": "ok"
+  },
+  {
+   "export": "harness:isqrt",
+   "args": [
+    2147395600
+   ],
+   "expect": "ok"
+  }
+ ],
+ "line_errors": [
+  {
+   "line": 34,
+   "text": "strict: needs ⟨$is_isqrt(ext_u($r), ext_u($n))⟩; nothing feeds it (the 2 facts about these values allow u($n)=0)"
+  },
+  {
+   "line": 47,
+   "text": "strict: needs ⟨$is_isqrt(ext_u($r), ext_u($n))⟩; nothing feeds it (the 3 facts about these values allow u($n)=0, u($r)=0)"
+  }
+ ]
+}

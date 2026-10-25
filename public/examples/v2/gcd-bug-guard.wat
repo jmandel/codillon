@@ -1,4 +1,4 @@
-;; gcd, seeded bug G1: the loop guard tests $x instead of $y (line 116)
+;; gcd, seeded bug G1: the loop guard tests $x instead of $y (line 113)
 (func $main ;; runs $gcd_harness on no input passes this bug; (12, 8) stops at the runtime check on the divisor
   i32.const 12
   i32.const 8
@@ -54,7 +54,6 @@
       i64.add
       local.get $a
       local.get $b
-      prove 2
       call $no_cd_above
     end
   end
@@ -98,7 +97,6 @@
     local.get $a
     local.get $b
     i32.rem_u
-    prove 0
     call $gcd_ref
   end
 )
@@ -116,7 +114,6 @@
   local.get $b
   local.set $y
   block $done (fact (i32.eq (call $gcd_ref $x $y) (call $gcd_ref $a $b))) (fact (i32.eqz $y))
-    prove 0
     loop $euclid (fact (i32.eq (call $gcd_ref $x $y) (call $gcd_ref $a $b)))
       local.get $x
       i32.eqz
@@ -130,13 +127,11 @@
       local.set $x
       local.get $t
       local.set $y
-      prove 3
       br $euclid
     end
   end
   local.get $x
   unfold $gcd_ref $x $y
-  prove 3
 )
 (func $gcd_harness (export "harness:gcd") (param $a i32) (param $b i32)
   (local $g i32)
@@ -150,6 +145,5 @@
   call $is_gcd
   br_if 0
   lemma $gcd_ref_ok $g $a $b
-  prove 2
   unreachable
 )

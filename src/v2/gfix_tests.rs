@@ -578,18 +578,24 @@ fn a14b_a_move_within_the_block_is_judged_by_its_effect() {
         .map(String::from)
         .collect();
     let mut base = g.clone();
-    base.insert(123, "      assume (fact (i32.ne $y 0))".into());
+    base.insert(120, "      assume (fact (i32.ne $y 0))".into());
     let s = SessionStart::new(&base);
     let mut t = base.clone();
-    let a = t.remove(123);
-    t.insert(120, a);
+    let a = t.remove(120);
+    t.insert(117, a);
     let j = s.judge(&t);
     assert!(!j.crossed());
-    assert!(!j.accepted, "an assume in LLM code is never accepted");
+    assert!(
+        !j.accepted,
+        "an assume in LLM code is never accepted: {} {:?} {:?}",
+        j.summary(),
+        j.boundary,
+        j.strict
+    );
     // moved out of its loop: crossed
     let mut t = base.clone();
-    let a = t.remove(123);
-    t.insert(117, a);
+    let a = t.remove(120);
+    t.insert(115, a);
     let j = s.judge(&t);
     assert!(j.crossed(), "{}", j.summary());
 }

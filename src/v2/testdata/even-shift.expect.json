@@ -1,0 +1,76 @@
+{
+ "source": "even-shift.wat",
+ "mode": "gradual",
+ "summary": "An even x, shifted right by 1, times 2, minus x, is 0 — for shr_u and shr_s alike. No proof lines: each result cup is fed automatically (R5a) from the parameter's type, and the harness's argument and False cups are fed automatically too. The readability benchmark for the editor's proof accounts (research/24 §4).",
+ "cups": [
+  {
+   "line": 17,
+   "operand": 0,
+   "kind": "ResultRefinement",
+   "goal": "sub(mul(shr_u($x, 1), 2), $x) = 0",
+   "verdict": "proven",
+   "feed": {
+    "by": "auto",
+    "hyps": [
+     {
+      "fact": "$is_even($x)",
+      "line": 9
+     }
+    ]
+   },
+   "why": "R5a from x's type (line 9, $is_even unfolds to x&1 = 0): write x = 2a; x>>1 = h with 2h ≤ x ≤ 2h+1 forces h = a, so h·2 = x and the difference is 0; nothing wraps since 2h ≤ x < 2³²."
+  },
+  {
+   "line": 26,
+   "operand": 0,
+   "kind": "ResultRefinement",
+   "goal": "sub(mul(shr_s($x, 1), 2), $x) = 0",
+   "verdict": "proven",
+   "feed": {
+    "by": "auto",
+    "hyps": [
+     {
+      "fact": "$is_even($x)",
+      "line": 18
+     }
+    ]
+   },
+   "why": "As line 17 with the signed shift: shr_s of an even x is ⌊s(x)/2⌋, and twice it is x exactly (mod 2³²)."
+  },
+  {
+   "line": 31,
+   "operand": 0,
+   "kind": "Refinement",
+   "goal": "$is_even(shl($x, 1))",
+   "verdict": "proven",
+   "feed": {
+    "by": "auto",
+    "hyps": []
+   },
+   "why": "x<<1 is 2x mod 2³², always even: (2x)&1 = 0 with no hypothesis."
+  },
+  {
+   "line": 34,
+   "operand": null,
+   "kind": "False",
+   "goal": "False",
+   "verdict": "proven",
+   "feed": {
+    "by": "auto",
+    "hyps": [
+     {
+      "fact": "$back_u(shl($x, 1))",
+      "line": 33
+     }
+    ]
+   },
+   "why": "$back_u's result refinement says the value is 0 (line 32, call result), so the fall-through fact 'value ≠ 0' of br_if contradicts it: unreachable is fed ex falso and never runs."
+  }
+ ],
+ "runs": [
+  {
+   "export": "harness:back_u",
+   "expect": "pass"
+  }
+ ]
+}

@@ -1,295 +1,298 @@
 {
-  "source": "gcd-bug-guard.wat",
-  "mode": "gradual",
-  "summary": "G1: the guard tests $x. The div cup on rem_u is unfed (runtime-checked) and a run traps there; gcd(0,5) returns 0 and the harness reaches unreachable.",
-  "cups": [
-    {
-      "line": 11,
-      "operand": 1,
-      "kind": "DivByZero",
-      "goal": "$d ≠ 0",
-      "verdict": "proven",
-      "feed": {
-        "by": "lookup",
-        "facts": [
-          {
-            "line": 8,
-            "fact": "$d ≠ 0",
-            "origin": "if else-arm: ¬eq($d,0) (R4 rule 3)"
-          }
-        ]
-      }
-    },
-    {
-      "line": 53,
-      "operand": null,
-      "kind": "Measure",
-      "goal": "μ($d+1,$a,$b) < μ($d,$a,$b), μ = ext_u(a)+ext_u(b)+1−d",
-      "verdict": "proven",
-      "feed": {
-        "by": "prove",
-        "line": 52,
-        "hyps": [
-          {
-            "line": 46,
-            "fact": "¬$common($d,$a,$b)",
-            "origin": "inner if else-arm"
-          },
-          {
-            "line": 39,
-            "fact": "u($d) ≤ u(ext_u(a)+ext_u(b))",
-            "origin": "outer if else-arm (gt_u negated)"
-          }
-        ]
-      },
-      "why": "R31: the measure unfolds (non-recursive); with d ≤ a+b neither d+1 nor μ wraps (the q case-split cases are infeasible), so μ(d+1) = μ(d) − 1. Only the second hypothesis is needed."
-    },
-    {
-      "line": 95,
-      "operand": 1,
-      "kind": "DivByZero",
-      "goal": "$b ≠ 0",
-      "verdict": "proven",
-      "feed": {
-        "by": "lookup",
-        "facts": [
-          {
-            "line": 91,
-            "fact": "$b ≠ 0",
-            "origin": "if else-arm"
-          }
-        ]
-      }
-    },
-    {
-      "line": 97,
-      "operand": null,
-      "kind": "Measure",
-      "goal": "μ($b, $a rem_u $b) < μ($a,$b), μ = b",
-      "verdict": "proven",
-      "feed": {
-        "by": "prove",
-        "line": 96,
-        "hyps": []
-      },
-      "why": "μ unfolds to its second argument; the real slot rem_u(a,b) carries r+1 ≤ B (§3.2), so prove 0 suffices."
-    },
-    {
-      "line": 115,
-      "operand": null,
-      "kind": "LoopEntry",
-      "goal": "gcd_ref($a,$b) = gcd_ref($a,$b)  ($x,$y bound to the ids of $a,$b)",
-      "verdict": "proven",
-      "feed": {
-        "by": "prove",
-        "line": 114,
-        "hyps": []
-      },
-      "why": "local.set copies ids (R7), so both sides are the same opaque term."
-    },
-    {
-      "line": 118,
-      "operand": null,
-      "kind": "BlockFact",
-      "goal": "gcd_ref(#x,#y) = gcd_ref($a,$b)  [taken edge]",
-      "verdict": "proven",
-      "feed": {
-        "by": "lookup",
-        "facts": [
-          {
-            "line": 115,
-            "fact": "gcd_ref(#x,#y) = gcd_ref($a,$b)",
-            "origin": "loop invariant"
-          }
-        ]
-      },
-      "depends_on_checks": [
-        129
-      ]
-    },
-    {
-      "line": 118,
-      "operand": null,
-      "kind": "BlockFact",
-      "goal": "#y = 0  [taken edge]",
-      "verdict": "runtime-checked",
-      "feed": {
-        "by": "none"
-      },
-      "strict_error": "br_if $done needs ⟨#y = 0⟩; nothing feeds it",
-      "why": "the taken-edge fact is now eq(#x, 0)",
-      "after_runs": {
-        "verdict": "refuted",
-        "witness": {
-          "export": "gcd",
-          "args": [
-            0,
-            5
-          ]
-        }
-      }
-    },
-    {
-      "line": 121,
-      "operand": 1,
-      "kind": "DivByZero",
-      "goal": "#y ≠ 0",
-      "verdict": "runtime-checked",
-      "feed": {
-        "by": "none"
-      },
-      "strict_error": "needs ⟨#y ≠ 0⟩; nothing feeds it (the guard at line 118 proves ⟨#x ≠ 0⟩)",
-      "after_runs": {
-        "verdict": "refuted",
-        "witness": {
-          "export": "gcd",
-          "args": [
-            12,
-            8
-          ]
-        }
-      },
-      "why": "the classic 'fact fed to the wrong cup' as a code bug: the wire from the guard lands on the dividend's value, not the divisor's."
-    },
-    {
+ "source": "gcd-bug-guard.wat",
+ "mode": "gradual",
+ "summary": "G1: the guard tests $x. The div cup on rem_u is unfed (runtime-checked) and a run traps there; gcd(0,5) returns 0 and the harness reaches unreachable.",
+ "cups": [
+  {
+   "line": 11,
+   "operand": 1,
+   "kind": "DivByZero",
+   "goal": "$d ≠ 0",
+   "verdict": "proven",
+   "feed": {
+    "by": "lookup",
+    "facts": [
+     {
+      "line": 8,
+      "fact": "$d ≠ 0",
+      "origin": "if else-arm: ¬eq($d,0) (R4 rule 3)"
+     }
+    ]
+   }
+  },
+  {
+   "line": 52,
+   "operand": null,
+   "kind": "Measure",
+   "goal": "μ($d+1,$a,$b) < μ($d,$a,$b), μ = ext_u(a)+ext_u(b)+1−d",
+   "verdict": "proven",
+   "feed": {
+    "by": "auto",
+    "hyps": [
+     {
+      "fact": "u($d) ≤ u(add(ext_u($a), ext_u($b)))",
+      "line": 39,
+      "origin": "outer if else-arm (gt_u negated)"
+     }
+    ]
+   },
+   "why": "R31: the measure unfolds (non-recursive); with d ≤ a+b neither d+1 nor μ wraps (the q case-split cases are infeasible), so μ(d+1) = μ(d) − 1. Only the second hypothesis is needed. [R5a] fed automatically (no prove line): from the fact of line 39."
+  },
+  {
+   "line": 94,
+   "operand": 1,
+   "kind": "DivByZero",
+   "goal": "$b ≠ 0",
+   "verdict": "proven",
+   "feed": {
+    "by": "lookup",
+    "facts": [
+     {
+      "line": 90,
+      "fact": "$b ≠ 0",
+      "origin": "if else-arm"
+     }
+    ]
+   }
+  },
+  {
+   "line": 95,
+   "operand": null,
+   "kind": "Measure",
+   "goal": "μ($b, $a rem_u $b) < μ($a,$b), μ = b",
+   "verdict": "proven",
+   "feed": {
+    "by": "auto",
+    "hyps": []
+   },
+   "why": "μ unfolds to its second argument; the real slot rem_u(a,b) carries r+1 ≤ B (§3.2), so no hypothesis is needed. [R5a] fed automatically (no prove line): the goal holds with no hypothesis."
+  },
+  {
+   "line": 112,
+   "operand": null,
+   "kind": "LoopEntry",
+   "goal": "gcd_ref($a,$b) = gcd_ref($a,$b)  ($x,$y bound to the ids of $a,$b)",
+   "verdict": "proven",
+   "feed": {
+    "by": "auto",
+    "hyps": []
+   },
+   "why": "local.set copies ids (R7), so both sides are the same opaque term. [R5a] fed automatically (no prove line): the goal holds with no hypothesis."
+  },
+  {
+   "line": 115,
+   "operand": null,
+   "kind": "BlockFact",
+   "goal": "gcd_ref(#x,#y) = gcd_ref($a,$b)  [taken edge]",
+   "verdict": "proven",
+   "feed": {
+    "by": "lookup",
+    "facts": [
+     {
+      "line": 112,
+      "fact": "gcd_ref(#x,#y) = gcd_ref($a,$b)",
+      "origin": "loop invariant"
+     }
+    ]
+   },
+   "depends_on_checks": [
+    125
+   ]
+  },
+  {
+   "line": 115,
+   "operand": null,
+   "kind": "BlockFact",
+   "goal": "#y = 0  [taken edge]",
+   "verdict": "runtime-checked",
+   "feed": {
+    "by": "none"
+   },
+   "strict_error": "needs ⟨$y = 0⟩; nothing feeds it (the 3 facts about these values allow u($gcd_ref($a, $b))=0, u($gcd_ref($x, $y))=0, u($y)=1)",
+   "why": "the taken-edge fact is now eq(#x, 0)",
+   "after_runs": {
+    "verdict": "refuted",
+    "witness": {
+     "export": "gcd",
+     "args": [
+      0,
+      5
+     ]
+    }
+   }
+  },
+  {
+   "line": 118,
+   "operand": 1,
+   "kind": "DivByZero",
+   "goal": "#y ≠ 0",
+   "verdict": "runtime-checked",
+   "feed": {
+    "by": "none"
+   },
+   "strict_error": "needs ⟨$y ≠ 0⟩; nothing feeds it (the 3 facts about these values allow u($gcd_ref($a, $b))=0, u($gcd_ref($x, $y))=0, u($x)=1)",
+   "after_runs": {
+    "verdict": "refuted",
+    "witness": {
+     "export": "gcd",
+     "args": [
+      12,
+      8
+     ]
+    }
+   },
+   "why": "the classic 'fact fed to the wrong cup' as a code bug: the wire from the guard lands on the dividend's value, not the divisor's."
+  },
+  {
+   "line": 125,
+   "operand": null,
+   "kind": "BackEdge",
+   "goal": "gcd_ref(#y,#t) = gcd_ref($a,$b)",
+   "verdict": "runtime-checked",
+   "feed": {
+    "by": "none"
+   },
+   "prove_error": {
+    "line": 125,
+    "text": "not implied by [unfold gcd_ref(#x,#y) @120, ne(#x,0) @115, gcd_ref(#x,#y) = gcd_ref($a,$b) @112]: u(#y)=0 leaves the ite undecided"
+   },
+   "strict_error": "⟨$gcd_ref($x, $y) = ite(eqz($y), $x, $gcd_ref($y, rem_u($x, $y)))⟩ (line 120) is about the old $y (set at line 124); back-edge needs ⟨$gcd_ref($a, $b) = $gcd_ref($y, rem_u($x, $y))⟩; nothing feeds it (the 4 facts about these values allow u($gcd_ref($a, $b))=1, u($gcd_ref($x, $y))=1, u($gcd_ref($y, rem_u($x, $y)))=2, u($x)=1, u($y)=0)"
+  },
+  {
+   "line": 127,
+   "operand": null,
+   "kind": "BlockFact",
+   "goal": "both exit facts at the block's fall-through",
+   "verdict": "proven",
+   "feed": {
+    "by": "dead",
+    "line": 125
+   },
+   "why": "R22: dead after br $euclid."
+  },
+  {
+   "line": 127,
+   "operand": null,
+   "kind": "BlockFact",
+   "goal": "rem_u($x, $y) = 0",
+   "verdict": "proven",
+   "feed": {
+    "by": "dead",
+    "line": 125
+   },
+   "why": "R16 fall-through cup of block $done's second fact at its `end`: the loop body always ends in `br $euclid` (line 125), so the block is never left by falling through; the cup sits in dead code (R22). It was missing from the hand-derived oracle and is recorded here as the kernel reports it."
+  },
+  {
+   "line": 130,
+   "operand": 0,
+   "kind": "ResultRefinement",
+   "goal": "#x = gcd_ref($a,$b)",
+   "verdict": "proven",
+   "feed": {
+    "by": "auto",
+    "hyps": [
+     {
+      "fact": "$gcd_ref($x, $y) = ite(eqz($y), $x, $gcd_ref($y, rem_u($x, $y)))",
       "line": 129,
-      "operand": null,
-      "kind": "BackEdge",
-      "goal": "gcd_ref(#y,#t) = gcd_ref($a,$b)",
-      "verdict": "runtime-checked",
-      "feed": {
-        "by": "none"
-      },
-      "prove_error": {
-        "line": 128,
-        "text": "not implied by [unfold gcd_ref(#x,#y) @123, ne(#x,0) @118, gcd_ref(#x,#y) = gcd_ref($a,$b) @115]: u(#y)=0 leaves the ite undecided"
-      }
-    },
-    {
-      "line": 131,
-      "operand": null,
-      "kind": "BlockFact",
-      "goal": "both exit facts at the block's fall-through",
-      "verdict": "proven",
-      "feed": {
-        "by": "dead",
-        "line": 129
-      },
-      "why": "R22: dead after br $euclid."
-    },
-    {
+      "origin": "unfold (R30)"
+     },
+     {
+      "fact": "$y = 0",
+      "line": 127,
+      "origin": "block exit fact at join (R16)"
+     },
+     {
+      "fact": "$gcd_ref($a, $b) = $gcd_ref($x, $y)",
+      "line": 127,
+      "origin": "block exit fact at join (R16)"
+     }
+    ]
+   },
+   "why": "only the br_if edge reaches the join, so the bindings are the loop-head φ's; eq(#y,0) picks the first ite arm. The unfolding's rem_u(#x, 0) is a virtual slot; its range constraint is guarded (§3.2), so it is harmless. [R5a] fed automatically (no prove line): from the facts of lines 127, 129.",
+   "depends_on_checks": [
+    115,
+    125
+   ]
+  },
+  {
+   "line": 142,
+   "operand": null,
+   "kind": "FactParam",
+   "goal": "$g = gcd_ref($a,$b)",
+   "verdict": "proven",
+   "feed": {
+    "by": "lookup",
+    "facts": [
+     {
       "line": 135,
-      "operand": 0,
-      "kind": "ResultRefinement",
-      "goal": "#x = gcd_ref($a,$b)",
-      "verdict": "proven",
-      "feed": {
-        "by": "prove",
-        "line": 134,
-        "hyps": [
-          {
-            "line": 133,
-            "fact": "gcd_ref(#x,#y) = ite(#y = 0, #x, gcd_ref(#y, rem_u(#x,#y)))",
-            "origin": "unfold (R30)"
-          },
-          {
-            "line": 131,
-            "fact": "eq(#y, 0)",
-            "origin": "block exit fact at join (R16)"
-          },
-          {
-            "line": 131,
-            "fact": "gcd_ref(#x,#y) = gcd_ref($a,$b)",
-            "origin": "block exit fact at join (R16)"
-          }
-        ]
-      },
-      "why": "only the br_if edge reaches the join, so the bindings are the loop-head φ's; eq(#y,0) picks the first ite arm. The unfolding's rem_u(#x, 0) is a virtual slot; its range constraint is guarded (§3.2), so it is harmless.",
-      "depends_on_checks": [
-        118,
-        129
-      ]
-    },
+      "fact": "eq(#g, gcd_ref($a,$b))",
+      "origin": "call result refinement (R13)"
+     }
+    ]
+   }
+  },
+  {
+   "line": 143,
+   "operand": null,
+   "kind": "False",
+   "goal": "False",
+   "verdict": "assumed",
+   "feed": {
+    "by": "auto",
+    "hyps": [
+     {
+      "fact": "$is_gcd($gcd($a, $b), $a, $b)",
+      "line": 142,
+      "origin": "axiom gcd_ref_is_gcd (R33, instructor-supplied)"
+     },
+     {
+      "fact": "¬$is_gcd($gcd($a, $b), $a, $b)",
+      "line": 141,
+      "origin": "br_if fall-through"
+     }
+    ]
+   },
+   "why": "propositional contradiction; verdict assumed because one hypothesis comes from an axiom. [R5a] fed automatically (no prove line): from the facts of lines 141, 142.",
+   "assumptions": [
     {
-      "line": 147,
-      "operand": null,
-      "kind": "FactParam",
-      "goal": "$g = gcd_ref($a,$b)",
-      "verdict": "proven",
-      "feed": {
-        "by": "lookup",
-        "facts": [
-          {
-            "line": 140,
-            "fact": "eq(#g, gcd_ref($a,$b))",
-            "origin": "call result refinement (R13)"
-          }
-        ]
-      }
-    },
-    {
-      "line": 149,
-      "operand": null,
-      "kind": "False",
-      "goal": "False",
-      "verdict": "assumed",
-      "feed": {
-        "by": "prove",
-        "line": 148,
-        "hyps": [
-          {
-            "line": 147,
-            "fact": "$is_gcd($g,$a,$b)",
-            "origin": "axiom gcd_ref_is_gcd (R33, instructor-supplied)"
-          },
-          {
-            "line": 146,
-            "fact": "¬$is_gcd($g,$a,$b)",
-            "origin": "br_if fall-through"
-          }
-        ]
-      },
-      "why": "propositional contradiction; verdict assumed because one hypothesis comes from an axiom.",
-      "assumptions": [
-        {
-          "line": 103,
-          "axiom": "axiom:gcd_ref_is_gcd"
-        }
-      ]
+     "line": 101,
+     "axiom": "axiom:gcd_ref_is_gcd"
     }
-  ],
-  "axioms": [
-    {
-      "line": 103,
-      "name": "axiom:gcd_ref_is_gcd",
-      "supplied_by": "instructor",
-      "statement": "g = gcd_ref(a,b) ⇒ $is_gcd(g,a,b)"
-    }
-  ],
-  "runs": [
-    {
-      "export": "harness:gcd",
-      "expect": "fails",
-      "domain": [
-        0,
-        300
-      ]
-    },
-    {
-      "export": "harness:gcd",
-      "args": [
-        12,
-        8
-      ],
-      "expect": "div-by-zero"
-    },
-    {
-      "export": "harness:gcd",
-      "args": [
-        0,
-        5
-      ],
-      "expect": "unreachable"
-    }
-  ]
+   ]
+  }
+ ],
+ "axioms": [
+  {
+   "line": 101,
+   "name": "axiom:gcd_ref_is_gcd",
+   "supplied_by": "instructor",
+   "statement": "g = gcd_ref(a,b) ⇒ $is_gcd(g,a,b)"
+  }
+ ],
+ "runs": [
+  {
+   "export": "harness:gcd",
+   "expect": "fails",
+   "domain": [
+    0,
+    300
+   ]
+  },
+  {
+   "export": "harness:gcd",
+   "args": [
+    12,
+    8
+   ],
+   "expect": "div-by-zero"
+  },
+  {
+   "export": "harness:gcd",
+   "args": [
+    0,
+    5
+   ],
+   "expect": "unreachable"
+  }
+ ]
 }

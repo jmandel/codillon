@@ -16,7 +16,6 @@
   i32.and
   i32.const 2
   i32.shl
-  prove 0
   i32.load offset=65504
 )
 (func $is_key (param $k i32) (result i32)
@@ -60,7 +59,6 @@
       local.get $n
       i32.const 1
       i32.sub
-      prove 2
       call $chain_ok
     end
   end
@@ -88,7 +86,6 @@
       local.get $n
       i32.const 1
       i32.sub
-      prove 2
       call $no_dup
     end
   end
@@ -142,7 +139,6 @@
       local.get $n
       i32.const 1
       i32.sub
-      prove 2
       call $rep_from
     else
       i32.const 0
@@ -176,14 +172,12 @@
       local.tee $j
       i32.const 2
       i32.shl
-      prove 0
       i32.load offset=65504
       local.tee $v
       local.get $k
       i32.eq
       if
         local.get $j
-        prove 0
         return
       end
       local.get $v
@@ -218,7 +212,6 @@
       local.tee $j
       i32.const 2
       i32.shl
-      prove 0
       i32.load offset=65504
       local.tee $v
       local.get $k
@@ -246,7 +239,6 @@
         i32.const 2
         i32.shl
         local.get $k
-        prove 0
         i32.store offset=65504
         i32.const 1
         return
@@ -284,7 +276,6 @@
   i32.const 2
   i32.shl
   local.get $k
-  prove 0
   i32.store offset=65504
   i32.const 1
 )
@@ -302,7 +293,6 @@
   i32.const 2
   i32.shl
   i32.const -1
-  prove 2
   i32.store offset=65504
 )
 (func $table_harness (export "harness:table") (param $a i32) (param $b i32)
@@ -317,7 +307,6 @@
       i32.const 2
       i32.shl
       i32.const 0
-      prove 1
       i32.store offset=65504
       local.get $i
       i32.const 1
@@ -372,6 +361,5 @@
   end
   call $rep_ok
   br_if 0
-  prove 4
   unreachable
 )

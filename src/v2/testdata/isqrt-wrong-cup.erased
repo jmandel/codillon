@@ -1,4 +1,4 @@
-;; isqrt, seeded wrong proof: lines 54-55 swapped, so the `prove 2` meant for `local.set $r` now feeds the back-edge cup
+;; isqrt, seeded wrong proof: a `prove 1` override (line 51) hands the solver only the fall-through fact (r+1)² ≤ n, which cannot bound r+1 without a lemma; an explicit prove is final, so the cup stays unfed. Deleting the line lets the kernel find u(r) < 65535 itself.
 (func $sq_le (param $r i64) (param $n i64) (result i32)
   local.get $r
   local.get $r
@@ -27,12 +27,10 @@
 (func $isqrt (export "isqrt") (param $n i32) (result i32)
   (local $r i32)
   block $done
-    nop ;;~ prove 0
     loop $grow
       local.get $r
       i32.const 65535
       i32.ge_u
-      nop ;;~ prove 2
       br_if $done
       local.get $r
       i64.extend_i32_u
@@ -46,14 +44,12 @@
       local.get $n
       i64.extend_i32_u
       i64.gt_u
-      nop ;;~ prove 2
       br_if $done
       local.get $r
       i32.const 1
       i32.add
+      nop ;;~ prove 1 ;; override: names the wrong fact (the guard u(r) < 65535 is the one needed)
       local.set $r
-      nop ;;~ prove 2
-      nop ;;~ prove 3
       br $grow
     end
   end
@@ -67,6 +63,5 @@
   i64.extend_i32_u
   call $is_isqrt
   br_if 0
-  nop ;;~ prove 2
   unreachable
 )

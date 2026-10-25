@@ -36,7 +36,6 @@
   local.get $x
   i32.const 1
   i32.shr_s
-  prove 1
 )
 (func $half_or_neg1 (export "half_or_neg1") (param $x i32) (result (i32 | $hon_ok $x))
   local.get $x
@@ -44,11 +43,9 @@
   i32.eqz
   if (result (i32 | $hon_ok $x))
     i32.const -1
-    prove 1
   else
     local.get $x
     call $half
-    prove 2
   end
 )
 (func $parity_ok (export "harness:half_or_neg1") (param $x i32)
@@ -57,6 +54,5 @@
   local.get $x
   call $hon_ok
   br_if 0
-  prove 2
   unreachable
 )

@@ -1,6 +1,21 @@
 //! Reviewer probes (not part of the branch): adversarial submissions against the judge.
 use super::vericode::*;
 
+/// The probes edit gcd by fixed line indices, so they run on the text as it was before R5a
+/// (research/24) removed its `prove` lines: src/v2/testdata/frozen/gcd-with-proves.wat. `prove`
+/// is still valid syntax there; the probes test the judge, not the example.
+fn frozen(name: &str) -> Vec<String> {
+    let p = format!(
+        "{}/src/v2/testdata/frozen/{name}-with-proves.wat",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    std::fs::read_to_string(p)
+        .unwrap()
+        .lines()
+        .map(|s| s.to_string())
+        .collect()
+}
+
 fn example(name: &str) -> Vec<String> {
     let p = format!(
         "{}/public/examples/v2/{name}.wat",
@@ -35,7 +50,7 @@ fn report(tag: &str, s: &SessionStart, lines: &[String]) {
 
 #[test]
 fn fable_probes() {
-    let g = example("gcd");
+    let g = frozen("gcd");
     let s = SessionStart::new(&g);
     report("A0 unchanged gcd", &s, &g);
 
@@ -355,7 +370,7 @@ fn fable_adequacy() {
 
 #[test]
 fn fable_probes2() {
-    let g = example("gcd");
+    let g = frozen("gcd");
     let s = SessionStart::new(&g);
     // A20 a lemma that is also a harness: the LLM adds a harness that always reaches ⊥
     let mut t = g.clone();
