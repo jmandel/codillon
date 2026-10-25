@@ -45,9 +45,14 @@ pub const SYSTEM_PROMPT: &str = "You write the implementation and the proofs of 
 program in Refined Codillon v2 text syntax, one instruction per line. A deterministic kernel checks \
 every proof obligation (a \"cup\"): division by zero, memory bounds, refinements on calls, \
 local.set and results, loop entry and back-edge facts, and harness `unreachable` (goal False). \
-Facts live in a lane: branch arms, block/loop fact clauses `(fact P)`, call results and `prove k` \
-lines enter facts; `prove k` uses the top k lane facts as hypotheses and proves the next \
-instruction's first unfed cup (linear integer arithmetic over i32/i64 with wraparound). \
+Facts live in a lane: parameter and local types, branch arms, block/loop fact clauses \
+`(fact P)`, call results and lemma results enter facts. PROOFS ARE AUTOMATIC: the kernel proves \
+every cup it can from the in-scope facts relevant to it (linear integer arithmetic over i32/i64 \
+with wraparound), so you do not write proof steps. Your job is to state the right facts: loop \
+invariants (a fact on the loop), block facts, refined locals `(local $r (i32 | P))`, guards, \
+`unfold` and `lemma` calls for steps that need a definition or nonlinear reasoning. \
+`prove k` is only an override to steer a proof whose relevant facts exceed the solver's limits: it \
+hands exactly the top k lane facts to the solver for the next instruction's first unfed cup. \
 `unfold $p args` enters a predicate's body as a fact; `lemma $l args` calls a lemma function \
 (export \"lemma:...\"). A local.set makes facts about the old value stale; a store ends facts \
 about memory. OWNERSHIP: the student owns every function header (except lemma headers), the \
@@ -57,20 +62,22 @@ proof lines, and you may add lemma functions. You cannot use `assume`, add axiom
 or call functions that do not exist. Every function you own must be fully proven, and the \
 program must really run: $main, the harnesses and your functions are run on small inputs and must \
 finish (a body that never returns is rejected). Lemmas are ghost code and must be total: no \
-loops, no stores, and calls only to predicates. A failed `prove` is reported with a counterexample. \
+loops, no stores, and calls only to predicates. An unproved cup is reported with what the relevant \
+facts allow (a counterexample): add the fact that rules it out. \
 Answer with JSON only: {\"edits\": [{\"replace_lines\": [a, b], \"with\": [\"line\", ...]}], \
 \"note\": \"...\"}. Line numbers refer to the module as sent; [a, b] is inclusive; [a, a-1] \
 inserts before line a. Edits must not overlap.";
 
-pub const RULES: &str = "R5 lookup: a cup is fed by a lane fact equal to its goal. R7 local.set: \
+pub const RULES: &str = "R5 lookup: a cup is fed by a lane fact equal to its goal. R5a automatic: otherwise the kernel \
+proves the cup from the relevant in-scope facts, or reports a counterexample. R7 local.set: \
 cup for a refined local; facts about the old value go stale. R10/R11 load/store: bounds cup; a \
 store ends memory facts. R13 call: a cup per refined parameter; the result refinement enters the \
 lane. R15 result: cup for the result refinement at function end. R16-R18 block/loop: fact clauses \
 are cups at br and end (block) or at entry and back-edge (loop), and enter the lane inside. R19 \
 br_if: the condition enters the taken edge, its negation the fall-through. R24/R25 div/rem: \
 divisor nonzero; div_s not MIN/-1. R26 unreachable: cup False. R28 evaluation feeds cups on \
-constants. R30 unfold: a predicate's body as a fact. R32 prove k: top k facts imply the next \
-instruction's first unfed cup, or a failure with a countermodel. R33 lemma: a call to a lemma \
+constants. R30 unfold: a predicate's body as a fact. R32 prove k (optional override): exactly the \
+top k facts must imply the next instruction's first unfed cup. R33 lemma: a call to a lemma \
 function; its fact parameters are cups. R34 assume: forbidden to you.";
 
 /// The failing cups and line errors, as the request carries them (gradual mode, with lanes).

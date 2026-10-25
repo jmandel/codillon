@@ -59,7 +59,6 @@
   "      i64.add",
   "      local.get $a",
   "      local.get $b",
-  "      prove 2",
   "      call $no_cd_above",
   "    end",
   "  end",
@@ -103,7 +102,6 @@
   "    local.get $a",
   "    local.get $b",
   "    i32.rem_u",
-  "    prove 0",
   "    call $gcd_ref",
   "  end",
   ")",
@@ -127,21 +125,20 @@
   "  call $is_gcd",
   "  br_if 0",
   "  lemma $gcd_ref_ok $g $a $b",
-  "  prove 2",
   "  unreachable",
   ")"
  ],
  "turns": [
   {
-   "note": "Euclid's loop, no proofs.",
+   "note": "Euclid's loop, no facts.",
    "expect": "not-accepted",
    "response": {
-    "note": "Euclid's loop, no proofs.",
+    "note": "Euclid's loop, no facts.",
     "edits": [
      {
       "replace_lines": [
-       111,
-       111
+       109,
+       109
       ],
       "with": [
        "  (local $x i32)",
@@ -174,15 +171,15 @@
    }
   },
   {
-   "note": "Invariant gcd_ref(x, y) = gcd_ref(a, b) on the block and loop; prove lines, but no unfolding of gcd_ref.",
+   "note": "Invariant gcd_ref(x, y) = gcd_ref(a, b) on the block and the loop, but gcd_ref is never unfolded, so nothing relates gcd_ref(y, x mod y) to gcd_ref(x, y).",
    "expect": "not-accepted",
    "response": {
-    "note": "Invariant gcd_ref(x, y) = gcd_ref(a, b) on the block and loop; prove lines, but no unfolding of gcd_ref.",
+    "note": "Invariant gcd_ref(x, y) = gcd_ref(a, b) on the block and the loop, but gcd_ref is never unfolded, so nothing relates gcd_ref(y, x mod y) to gcd_ref(x, y).",
     "edits": [
      {
       "replace_lines": [
-       111,
-       134
+       109,
+       132
       ],
       "with": [
        "  (local $x i32)",
@@ -193,7 +190,6 @@
        "  local.get $b",
        "  local.set $y",
        "  block $done (fact (i32.eq (call $gcd_ref $x $y) (call $gcd_ref $a $b))) (fact (i32.eqz $y))",
-       "    prove 0",
        "    loop $euclid (fact (i32.eq (call $gcd_ref $x $y) (call $gcd_ref $a $b)))",
        "      local.get $y",
        "      i32.eqz",
@@ -206,27 +202,25 @@
        "      local.set $x",
        "      local.get $t",
        "      local.set $y",
-       "      prove 3",
        "      br $euclid",
        "    end",
        "  end",
-       "  local.get $x",
-       "  prove 3"
+       "  local.get $x"
       ]
      }
     ]
    }
   },
   {
-   "note": "Add an axiom for Euclid's step so the back-edge prove goes through.",
+   "note": "Add an axiom for Euclid's step so the back edge goes through.",
    "expect": "rejected",
    "response": {
-    "note": "Add an axiom for Euclid's step so the back-edge prove goes through.",
+    "note": "Add an axiom for Euclid's step so the back edge goes through.",
     "edits": [
      {
       "replace_lines": [
-       110,
-       109
+       108,
+       107
       ],
       "with": [
        "(func $gcd_step (export \"axiom:gcd_step\") (param $x i32) (param $y i32) (result (fact (i32.eq (call $gcd_ref $y (i32.rem_u $x $y)) (call $gcd_ref $x $y))))",
@@ -237,15 +231,15 @@
    }
   },
   {
-   "note": "No axiom: unfold gcd_ref at (x, y) before the rebinding, so the step is a fact in the lane.",
+   "note": "No axiom: unfold gcd_ref at (x, y) before the rebinding, and again at the exit, so each step is a fact in the lane; the kernel does the rest.",
    "expect": "accepted",
    "response": {
-    "note": "No axiom: unfold gcd_ref at (x, y) before the rebinding, so the step is a fact in the lane.",
+    "note": "No axiom: unfold gcd_ref at (x, y) before the rebinding, and again at the exit, so each step is a fact in the lane; the kernel does the rest.",
     "edits": [
      {
       "replace_lines": [
-       111,
-       137
+       109,
+       132
       ],
       "with": [
        "  (local $x i32)",
@@ -256,7 +250,6 @@
        "  local.get $b",
        "  local.set $y",
        "  block $done (fact (i32.eq (call $gcd_ref $x $y) (call $gcd_ref $a $b))) (fact (i32.eqz $y))",
-       "    prove 0",
        "    loop $euclid (fact (i32.eq (call $gcd_ref $x $y) (call $gcd_ref $a $b)))",
        "      local.get $y",
        "      i32.eqz",
@@ -270,13 +263,11 @@
        "      local.set $x",
        "      local.get $t",
        "      local.set $y",
-       "      prove 3",
        "      br $euclid",
        "    end",
        "  end",
        "  local.get $x",
-       "  unfold $gcd_ref $x $y",
-       "  prove 3"
+       "  unfold $gcd_ref $x $y"
       ]
      }
     ]

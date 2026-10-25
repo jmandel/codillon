@@ -49,16 +49,15 @@
   "  local.get $x",
   "  call $hon_ok",
   "  br_if 0",
-  "  prove 2",
   "  unreachable",
   ")"
  ],
  "turns": [
   {
-   "note": "Implementations without proofs: x >> 1 for half; the gate tests evenness.",
+   "note": "Implementations: x >> 1 for half; the gate tests evenness. The gate's if-block has a plain i32 result, so nothing says what it returns.",
    "expect": "not-accepted",
    "response": {
-    "note": "Implementations without proofs: x >> 1 for half; the gate tests evenness.",
+    "note": "Implementations: x >> 1 for half; the gate tests evenness. The gate's if-block has a plain i32 result, so nothing says what it returns.",
     "edits": [
      {
       "replace_lines": [
@@ -92,10 +91,10 @@
    }
   },
   {
-   "note": "Proofs for the gate; for half, assume the result is a half.",
+   "note": "Type the gate's if-block with the result refinement; for half, assume the result is a half.",
    "expect": "rejected",
    "response": {
-    "note": "Proofs for the gate; for half, assume the result is a half.",
+    "note": "Type the gate's if-block with the result refinement; for half, assume the result is a half.",
     "edits": [
      {
       "replace_lines": [
@@ -120,11 +119,9 @@
        "  i32.eqz",
        "  if (result (i32 | $hon_ok $x))",
        "    i32.const -1",
-       "    prove 1",
        "  else",
        "    local.get $x",
        "    call $half",
-       "    prove 2",
        "  end"
       ]
      }
@@ -132,10 +129,10 @@
    }
   },
   {
-   "note": "Without assume: one prove from the evenness of x; the gate's arms prove from the branch facts.",
+   "note": "No assume: half's result follows from x's type (x is even) by itself, and the gate's arms from the branch facts; no proof lines are needed.",
    "expect": "accepted",
    "response": {
-    "note": "Without assume: one prove from the evenness of x; the gate's arms prove from the branch facts.",
+    "note": "No assume: half's result follows from x's type (x is even) by itself, and the gate's arms from the branch facts; no proof lines are needed.",
     "edits": [
      {
       "replace_lines": [
@@ -145,8 +142,7 @@
       "with": [
        "  local.get $x",
        "  i32.const 1",
-       "  i32.shr_s",
-       "  prove 1"
+       "  i32.shr_s"
       ]
      },
      {
@@ -160,11 +156,9 @@
        "  i32.eqz",
        "  if (result (i32 | $hon_ok $x))",
        "    i32.const -1",
-       "    prove 1",
        "  else",
        "    local.get $x",
        "    call $half",
-       "    prove 2",
        "  end"
       ]
      }

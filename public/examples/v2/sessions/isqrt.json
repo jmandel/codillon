@@ -44,16 +44,15 @@
   "  i64.extend_i32_u",
   "  call $is_isqrt",
   "  br_if 0",
-  "  prove 2",
   "  unreachable",
   ")"
  ],
  "turns": [
   {
-   "note": "A first implementation: count r up while (r+1)² ≤ n, stopping at 65535. No proofs yet.",
+   "note": "A first implementation: count r up while (r+1)² ≤ n, stopping at 65535. No facts yet.",
    "expect": "not-accepted",
    "response": {
-    "note": "A first implementation: count r up while (r+1)² ≤ n, stopping at 65535. No proofs yet.",
+    "note": "A first implementation: count r up while (r+1)² ≤ n, stopping at 65535. No facts yet.",
     "edits": [
      {
       "replace_lines": [
@@ -113,10 +112,10 @@
    }
   },
   {
-   "note": "Keep the spec. Add the loop invariant sq_le(r, n), a refined local r ≤ 65535, block facts and prove lines.",
+   "note": "Keep the spec. Type the local r ≤ 65535 and give block $done the fact is_isqrt(r, n); the kernel proves the arithmetic.",
    "expect": "not-accepted",
    "response": {
-    "note": "Keep the spec. Add the loop invariant sq_le(r, n), a refined local r ≤ 65535, block facts and prove lines.",
+    "note": "Keep the spec. Type the local r ≤ 65535 and give block $done the fact is_isqrt(r, n); the kernel proves the arithmetic.",
     "edits": [
      {
       "replace_lines": [
@@ -126,12 +125,10 @@
       "with": [
        "  (local $r (i32 | (i32.le_u v 65535)))",
        "  block $done (fact (call $is_isqrt (i64.extend_i32_u $r) (i64.extend_i32_u $n)))",
-       "    prove 0",
-       "    loop $grow (fact (call $sq_le (i64.extend_i32_u $r) (i64.extend_i32_u $n)))",
+       "    loop $grow",
        "      local.get $r",
        "      i32.const 65535",
        "      i32.ge_u",
-       "      prove 2",
        "      br_if $done",
        "      local.get $r",
        "      i64.extend_i32_u",
@@ -145,14 +142,11 @@
        "      local.get $n",
        "      i64.extend_i32_u",
        "      i64.gt_u",
-       "      prove 2",
        "      br_if $done",
        "      local.get $r",
        "      i32.const 1",
        "      i32.add",
-       "      prove 1",
        "      local.set $r",
-       "      prove 3",
        "      br $grow",
        "    end",
        "  end",
@@ -163,25 +157,24 @@
    }
   },
   {
-   "note": "The prove before local.set $r fails; assume the loop invariant on the back edge instead.",
+   "note": "Neither exit can show r² ≤ n; assume it at the loop head.",
    "expect": "rejected",
    "response": {
-    "note": "The prove before local.set $r fails; assume the loop invariant on the back edge instead.",
+    "note": "Neither exit can show r² ≤ n; assume it at the loop head.",
     "edits": [
      {
       "replace_lines": [
        32,
-       64
+       59
       ],
       "with": [
        "  (local $r (i32 | (i32.le_u v 65535)))",
        "  block $done (fact (call $is_isqrt (i64.extend_i32_u $r) (i64.extend_i32_u $n)))",
-       "    prove 0",
-       "    loop $grow (fact (call $sq_le (i64.extend_i32_u $r) (i64.extend_i32_u $n)))",
+       "    loop $grow",
+       "      assume (fact (call $sq_le (i64.extend_i32_u $r) (i64.extend_i32_u $n)))",
        "      local.get $r",
        "      i32.const 65535",
        "      i32.ge_u",
-       "      prove 2",
        "      br_if $done",
        "      local.get $r",
        "      i64.extend_i32_u",
@@ -195,15 +188,11 @@
        "      local.get $n",
        "      i64.extend_i32_u",
        "      i64.gt_u",
-       "      prove 2",
        "      br_if $done",
        "      local.get $r",
        "      i32.const 1",
        "      i32.add",
-       "      prove 2",
        "      local.set $r",
-       "      assume (fact (call $sq_le (i64.extend_i32_u $r) (i64.extend_i32_u $n)))",
-       "      prove 1",
        "      br $grow",
        "    end",
        "  end",
@@ -214,25 +203,23 @@
    }
   },
   {
-   "note": "No assume: r + 1 ≤ 65535 needs two facts (r < 65535 from the guard and the refinement r ≤ 65535), not one.",
+   "note": "No assume: state r² ≤ n as the loop's invariant (a fact on loop $grow). Entry, back edge and both exits then follow automatically.",
    "expect": "accepted",
    "response": {
-    "note": "No assume: r + 1 ≤ 65535 needs two facts (r < 65535 from the guard and the refinement r ≤ 65535), not one.",
+    "note": "No assume: state r² ≤ n as the loop's invariant (a fact on loop $grow). Entry, back edge and both exits then follow automatically.",
     "edits": [
      {
       "replace_lines": [
        32,
-       64
+       59
       ],
       "with": [
        "  (local $r (i32 | (i32.le_u v 65535)))",
        "  block $done (fact (call $is_isqrt (i64.extend_i32_u $r) (i64.extend_i32_u $n)))",
-       "    prove 0",
        "    loop $grow (fact (call $sq_le (i64.extend_i32_u $r) (i64.extend_i32_u $n)))",
        "      local.get $r",
        "      i32.const 65535",
        "      i32.ge_u",
-       "      prove 2",
        "      br_if $done",
        "      local.get $r",
        "      i64.extend_i32_u",
@@ -246,14 +233,11 @@
        "      local.get $n",
        "      i64.extend_i32_u",
        "      i64.gt_u",
-       "      prove 2",
        "      br_if $done",
        "      local.get $r",
        "      i32.const 1",
        "      i32.add",
-       "      prove 2",
        "      local.set $r",
-       "      prove 3",
        "      br $grow",
        "    end",
        "  end",

@@ -2168,7 +2168,9 @@ impl<'a, 'm> Pass<'a, 'm> {
             let t = match same(edges.iter().map(|e| e.values[j]).collect()) {
                 Some(t) => t,
                 None => {
-                    let t = self.terms.leaf(fr.bt.results[j].ty, "#φ", None);
+                    let t = self
+                        .terms
+                        .leaf(fr.bt.results[j].ty, &format!("result@{line}"), None);
                     if nres == 1 {
                         self.birth(t, line, Capture::Top);
                     }
@@ -2457,7 +2459,7 @@ impl<'a, 'm> Pass<'a, 'm> {
         // with a single top-of-stack copy, and checks reading them are reported as unevaluable
         let np = bt.params.len();
         for (j, r) in bt.params.iter().enumerate() {
-            let t = self.terms.leaf(r.ty, "#φ", None);
+            let t = self.terms.leaf(r.ty, &format!("param@{line}"), None);
             self.stack.push(t);
             if j + 1 == np {
                 self.birth(t, line, Capture::Top);

@@ -467,13 +467,14 @@ fn live_loop_with_a_mock_transport() {
             .unwrap()
             .starts_with("rejected: edited locked line")
     );
-    // with lanes: the third request's failing prove has its hypotheses in line_errors
+    // with lanes: the fourth request's failing cups (no loop invariant yet) say what the
+    // relevant facts allow (R5a's countermodel), so the model sees which fact is missing
     assert!(
-        sent[3]["line_errors"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|e| e[1].as_str().unwrap().contains("hypotheses"))
+        sent[3]["cups"].as_array().unwrap().iter().any(|c| c["diag"]
+            .as_str()
+            .is_some_and(|d| d.contains("about these values allow"))),
+        "{:?}",
+        sent[3]["cups"]
     );
     let lanes = sent[3]["cups"]
         .as_array()
