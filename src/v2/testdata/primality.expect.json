@@ -377,46 +377,35 @@
    }
   },
   {
-   "line": 139,
+   "line": 135,
    "operand": null,
    "kind": "FactParam",
    "goal": "2 ≤ u($d+1)",
    "verdict": "assumed",
    "feed": {
-    "by": "prove",
+    "by": "auto",
     "hyps": [
-     {
-      "fact": "u($d) ≤ u(div_u($n, $d))",
-      "line": 136,
-      "origin": "$hq"
-     },
-     {
-      "fact": "u(2) ≤ u($d)",
-      "line": 135,
-      "origin": "$h1"
-     },
      {
       "fact": "u(div_u($n, $d)) ≤ u(shr_u($n, 1))",
       "line": 134,
       "origin": "axiom div_shrinks"
      },
      {
-      "fact": "$nd($n, 2, add($d, 1))",
-      "line": 133,
-      "origin": "axiom nd_extend"
+      "fact": "u($d) ≤ u(div_u($n, $d))",
+      "line": 121
      }
-    ],
-    "line": 137
+    ]
    },
    "assumptions": [
     {
      "line": 104,
      "axiom": "axiom:div_shrinks"
     }
-   ]
+   ],
+   "why": "[R5a] fed automatically (no prove line): from the facts of lines 121, 134."
   },
   {
-   "line": 139,
+   "line": 135,
    "operand": null,
    "kind": "FactParam",
    "goal": "$nd($n,2,$d+1)",
@@ -440,46 +429,35 @@
    ]
   },
   {
-   "line": 139,
+   "line": 135,
    "operand": null,
    "kind": "Measure",
    "goal": "μ($n,$d+1) < μ($n,$d), μ = n − d  (induction)",
    "verdict": "assumed",
    "feed": {
-    "by": "prove",
+    "by": "auto",
     "hyps": [
-     {
-      "fact": "u($d) ≤ u(div_u($n, $d))",
-      "line": 136,
-      "origin": "$hq"
-     },
-     {
-      "fact": "u(2) ≤ u($d)",
-      "line": 135,
-      "origin": "$h1"
-     },
      {
       "fact": "u(div_u($n, $d)) ≤ u(shr_u($n, 1))",
       "line": 134,
       "origin": "axiom div_shrinks"
      },
      {
-      "fact": "$nd($n, 2, add($d, 1))",
-      "line": 133,
-      "origin": "axiom nd_extend"
+      "fact": "u($d) ≤ u(div_u($n, $d))",
+      "line": 121
      }
-    ],
-    "line": 138
+    ]
    },
    "assumptions": [
     {
      "line": 104,
      "axiom": "axiom:div_shrinks"
     }
-   ]
+   ],
+   "why": "[R5a] fed automatically (no prove line): from the facts of lines 121, 134."
   },
   {
-   "line": 142,
+   "line": 138,
    "operand": null,
    "kind": "FactParam",
    "goal": "2 ≤ u($d)",
@@ -502,44 +480,47 @@
    "goal": "(eqz $no_divisor_from($n,$d)) = (eqz $nd($n,$d,$n))  [d does not divide n]",
    "verdict": "assumed",
    "feed": {
-    "by": "auto",
+    "by": "prove",
     "hyps": [
      {
+      "fact": "rem_u($n, $d) ≠ 0",
+      "line": 141,
+      "origin": "$hr re-cited"
+     },
+     {
+      "fact": "u($d) ≤ u(div_u($n, $d))",
+      "line": 140,
+      "origin": "$hq"
+     },
+     {
+      "fact": "u(2) ≤ u($d)",
+      "line": 139,
+      "origin": "$h1"
+     },
+     {
       "fact": "u(div_u($n, $d)) ≤ u(shr_u($n, 1))",
-      "line": 142,
+      "line": 138,
       "origin": "axiom"
      },
      {
       "fact": "$nd($n, $d, $n) = ite(ge_u($d, $n), 1, ite(lt_u($d, 2), $nd($n, add($d, 1), $n), ite(eqz(rem_u($n, $d)), 0, $nd($n, add($d, 1), $n))))",
-      "line": 141,
+      "line": 137,
       "origin": "R30"
      },
      {
       "fact": "$no_divisor_from($n, $d) = ite(lt_u($d, 2), 0, ite(gt_u($d, div_u($n, $d)), 1, ite(eqz(rem_u($n, $d)), 0, $no_divisor_from($n, add($d, 1)))))",
-      "line": 140,
+      "line": 136,
       "origin": "R30"
      },
      {
       "fact": "eqz($no_divisor_from($n, add($d, 1))) = eqz($nd($n, add($d, 1), $n))",
-      "line": 139,
+      "line": 135,
       "origin": "induction hypothesis (recursive lemma)"
-     },
-     {
-      "fact": "u(2) ≤ u(add($d, 1))",
-      "line": 139,
-      "origin": "induction hypothesis (recursive lemma)"
-     },
-     {
-      "fact": "u($d) ≤ u(div_u($n, $d))",
-      "line": 136
-     },
-     {
-      "fact": "u(2) ≤ u($d)",
-      "line": 135
      }
-    ]
+    ],
+    "line": 142
    },
-   "why": "both unfoldings step to d+1; the induction hypothesis closes it. [R5a] fed automatically (no prove line): from the facts of lines 135, 136, 139, 140, 141, 142.",
+   "why": "both unfoldings step to d+1; the induction hypothesis closes it.",
    "assumptions": [
     {
      "line": 104,

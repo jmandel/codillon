@@ -132,14 +132,14 @@
       local.set $hr
       lemma $nd_extend $n 2 $d
       lemma $div_shrinks $n $d
-      local.get $h1
-      local.get $hq
-      prove 4 ;; override (deliberate): the kernel proves both cups of the next line by itself, but its search over 19 facts costs about 20 ms here; naming the four facts above makes it instant
-      prove 4
       lemma $from_agrees $n (i64.add $d 1)
       unfold $no_divisor_from $n $d
       unfold $nd $n $d $n
       lemma $div_shrinks $n $d
+      local.get $h1
+      local.get $hq
+      local.get $hr
+      prove 7 ;; override (deliberate): R5a proves this block fact by itself, but its search over 19 facts costs about 20 ms; naming the top 7 facts (the three handles and the lemma results above) makes it instant
     end
   end
 )

@@ -81,7 +81,7 @@ fn user_example_needs_no_prove() {
 }
 
 /// isqrt and primality as shipped: no routine `prove` line (isqrt has none; primality keeps one
-/// commented override pair), and every function is still VERIFIED with no line error; the cups
+/// commented override), and every function is still VERIFIED with no line error; the cups
 /// the deleted lines fed are fed automatically. Deleting primality's override too changes nothing.
 #[test]
 fn isqrt_and_primality_without_proves() {
@@ -90,7 +90,7 @@ fn isqrt_and_primality_without_proves() {
             .filter(|l| l.trim_start().starts_with("prove "))
             .count()
     };
-    for (ex, kept) in [("isqrt", 0), ("primality", 2)] {
+    for (ex, kept) in [("isqrt", 0), ("primality", 1)] {
         let src = testdata(ex);
         assert_eq!(proves(&src), kept, "{ex}");
         for text in [src.clone(), strip_proves(&src)] {
