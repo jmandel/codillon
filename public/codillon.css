@@ -578,8 +578,14 @@ span.comment[data-commentary][data-tone="quiet"]::after {
     float: none;
     flex: 0 1 auto;
     min-width: 60px;
+    max-width: 38%;
     margin-left: auto;
     margin-top: 0;
+}
+
+/* both on one row: the label keeps to the left part, the commentary to the right */
+.line > span.comment[data-label][data-commentary]::before {
+    max-width: 58%;
 }
 
 /* the account of a line's proofs (what is needed, the facts used and where they came from,

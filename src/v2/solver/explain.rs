@@ -586,7 +586,13 @@ fn program_names(terms: &Terms) -> Vec<String> {
 /// A split in plain words: the hypothesis label and the negated-goal marker go.
 fn plain_split(s: &str) -> String {
     if let Some(r) = s.strip_prefix("¬goal: ") {
-        return r.to_string();
+        return plain_split(r);
+    }
+    if let Some(x) = s.strip_suffix(" does not wrap") {
+        return format!("computing {x} does not wrap around");
+    }
+    if let Some(x) = s.strip_suffix(" wraps") {
+        return format!("computing {x} wraps around");
     }
     match s.split_once(": ") {
         Some((l, r)) if l.chars().all(|c| !c.is_ascii()) => format!("{r} ({l})"),
@@ -629,6 +635,19 @@ fn plain_case(c: &Case, ex_falso: bool, who: &str) -> String {
         };
     }
     let close = plain_close(&c.close);
+    // a case made by a wrap that the ranges close: say so, not the arithmetic behind it
+    let wrap_case = c.splits.iter().any(|s| s.ends_with(" wraps"));
+    if wrap_case && (c.close.contains("but it ranges over") || c.close.contains("no value")) {
+        let n = c.splits.len();
+        let sp: Vec<String> = c.splits[n.saturating_sub(2)..]
+            .iter()
+            .map(|s| plain_split(s))
+            .collect();
+        return format!(
+            "If {}: impossible, the values' ranges rule it out.",
+            sp.join(" and ")
+        );
+    }
     if c.splits.is_empty() {
         return format!("{}{}.", close[..1].to_uppercase(), &close[1..]);
     }
