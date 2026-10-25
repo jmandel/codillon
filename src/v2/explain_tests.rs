@@ -184,3 +184,87 @@ fn decided_if_arms_never_run() {
 )";
     assert!(never(src).is_empty());
 }
+
+/// The account of the proof cup on `line` of an example, its lines joined.
+fn account(ex: &str, line: u32) -> String {
+    let out = explained(&example(ex));
+    let c = out
+        .cups()
+        .find(|c| c.line == line && c.explain.is_some())
+        .unwrap_or_else(|| panic!("{ex}: no explained cup on line {line}"));
+    c.explain.as_ref().unwrap().lines.join("\n")
+}
+
+/// A direct proof reads forward, from the fact to the goal (research/24 §8): the even-shift
+/// benchmark, derived from the procedure's own constraints.
+#[test]
+fn even_shift_account_reads_forward() {
+    let a = account("even-shift", 27);
+    for want in [
+        "x is even, so x = 2a.",
+        "x>>1 = h means 2h ≤ x ≤ 2h + 1.",
+        "So 2h ≤ 2a ≤ 2h + 1, which forces h = a.",
+        "So (x>>1)·2 − x = 2h − x = 2h − 2a = 0.",
+        "Nothing wraps: (x>>1)·2 = 2h stays below 2³²",
+        "would wrap only if 2h + 1 ≤ x, but 2h = x",
+    ] {
+        assert!(a.contains(want), "missing {want:?} in\n{a}");
+    }
+    assert!(!a.contains("If ") && !a.contains("fail"), "{a}");
+    // the signed variant names its other sign case
+    let s = account("even-shift", 36);
+    assert!(
+        s.contains("forces h = a") && s.contains("x is negative"),
+        "{s}"
+    );
+}
+
+#[test]
+fn parity_account_reads_forward() {
+    let a = account("parity", 39);
+    for want in [
+        "is_half(x >>ₛ 1, x) means s(x >>ₛ 1) + s(x >>ₛ 1) = s(x).",
+        "x is even, so x = 2a.",
+        "which forces h = a",
+        "The same argument covers the case x is negative.",
+    ] {
+        assert!(a.contains(want), "missing {want:?} in\n{a}");
+    }
+    assert!(!a.contains("cannot fail"), "{a}");
+}
+
+/// isqrt: a bound from a fact names the fact; conjuncts that are facts say so; a proof that
+/// only closes by refutation keeps its case account.
+#[test]
+fn isqrt_accounts() {
+    let a = account("isqrt", 55);
+    assert!(a.contains("r ≤ 65534 (①), so r + 1 ≤ 65535."), "{a}");
+    assert!(a.contains("r + 1 would wrap only if"), "{a}");
+    let b = account("isqrt", 51);
+    assert!(b.contains("is_isqrt(r, n) means sq_le(r, n) and"), "{b}");
+    assert!(b.contains("sq_le(r, n) holds (②)"), "{b}");
+    let c = account("isqrt", 38);
+    assert!(c.starts_with("If "), "{c}");
+}
+
+#[test]
+#[ignore]
+fn dump_accounts() {
+    for ex in EXAMPLES
+        .iter()
+        .chain(["isqrt-missing-invariant", "gcd-vacuous", "hashtable-stale"].iter())
+    {
+        let out = explained(&example(ex));
+        for c in out.cups() {
+            if let Some(e) = &c.explain {
+                println!(
+                    "== {ex} L{} goal {} ex_falso={} hyps={:?} used={:?}",
+                    c.line, c.goal, e.ex_falso, e.hyp_text, e.used
+                );
+                for l in &e.lines {
+                    println!("   {l}");
+                }
+            }
+        }
+    }
+}
