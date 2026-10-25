@@ -1,4 +1,4 @@
-;; parity, seeded missing fact: $half's parameter lost its type (line 31 says i32, not (i32 | $is_even)), so nothing says x is even and the result x>>1 cannot be shown to be half of x (x = 1 is a counterexample)
+;; parity, seeded missing fact: $half's parameter lost its type (line 34 says i32, not (i32 | $is_even)), so nothing says x is even and the result x>>1 cannot be shown to be half of x (x = 1 is a counterexample)
 (func $main ;; runs $parity_ok on a passing input
   i32.const 6
   call $parity_ok

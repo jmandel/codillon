@@ -209,6 +209,11 @@ impl V2State {
 
 /// The width of code text in Codillon's code font (for placing marks behind parts of a line).
 fn measure_code(text: &str) -> Option<f32> {
+    measure_in(text, "24pt MLMRoman12-Regular")
+}
+
+/// The width of `text` in a CSS font (canvas measurement).
+fn measure_in(text: &str, font: &str) -> Option<f32> {
     use wasm_bindgen::JsCast;
     thread_local! {
         static CTX: Option<web_sys::CanvasRenderingContext2d> = (|| {
@@ -227,7 +232,7 @@ fn measure_code(text: &str) -> Option<f32> {
     }
     CTX.with(|c| {
         let c = c.as_ref()?;
-        c.set_font("24pt MLMRoman12-Regular");
+        c.set_font(font);
         c.measure_text(text).ok().map(|m| m.width() as f32)
     })
 }
@@ -659,19 +664,52 @@ impl Editor {
         scene.under.insert_str(0, &washes);
         // lines whose code runs past the window: their commentary is pinned to the right edge
         // (the room is the code column's: the window less the vericoding panel, if any)
-        let room = web_sys::window()
+        let te_rect = web_sys::window()
             .and_then(|w| w.document())
             .and_then(|d| d.query_selector(".textentry").ok().flatten())
-            .map(|e| e.get_bounding_client_rect().right())
+            .map(|e| e.get_bounding_client_rect());
+        let right = te_rect
+            .as_ref()
+            .map(|r| r.right())
             .filter(|r| *r > 0.0)
-            .unwrap_or(1400.0) as f32
-            - 120.0;
+            .unwrap_or(1400.0) as f32;
+        let te_left = te_rect.as_ref().map_or(0.0, |r| r.left() as f32);
+        let room = right - 120.0;
+        // wide windows keep the accounts in a column at the right (no account covers code);
+        // the labels then stop short of it
+        let notes = notes_width(right, self.link.embed);
+        let label_right = right - notes.map_or(16.0, |w| w + 24.0);
+        let mut prev_below = false;
         for (i, l) in self.text().iter().enumerate() {
             let indent = l.info().indent.unwrap_or(0);
             let end =
                 crate::proof_view::code_x(indent) + measure_code(l.instr().get()).unwrap_or(0.0);
+            // a code comment shares the row with the label
+            let comment = l.comment().get();
+            let end_all = end
+                + if comment.trim().is_empty() {
+                    0.0
+                } else {
+                    measure_in(comment, "18pt MLMSansDemiCond10-Regular").unwrap_or(0.0) + 8.0
+                };
             if let Some(lp) = scene.lines.get_mut(i) {
                 lp.wide = end > room;
+                // the label right of the code wraps to two lines at most; if it would need
+                // more (or there is no room at all) it goes in the gap below the line
+                if let Some(t) = &lp.label {
+                    let w = measure_in(t, "13pt MLMSansDemiCond10-Regular").unwrap_or(0.0);
+                    let avail = label_right - end_all - 30.0;
+                    // a two-line label would meet the label in the gap above it: below too
+                    lp.label_below = lp.wide
+                        || avail < 140.0
+                        || w > 1.85 * avail
+                        || (prev_below && w > 0.95 * avail);
+                    lp.label_fit = (
+                        measure_in(t, "10pt MLMSansDemiCond10-Regular").unwrap_or(0.0) + 14.0,
+                        label_right - te_left,
+                    );
+                }
+                prev_below = lp.label.is_some() && lp.label_below;
             }
         }
         self.vc_decorate(&mut scene);
@@ -679,6 +717,7 @@ impl Editor {
         for (i, lp) in scene.lines.into_iter().enumerate() {
             self.line_mut(i).set_proof(lp);
         }
+        self.sync_notes(notes, &disp);
         // the drawing's cost, for the QA harness (window.codillonProofMs)
         if let (Some(p), Some(t0)) = (perf, t0)
             && let Some(w) = web_sys::window()
@@ -1724,6 +1763,32 @@ impl Editor {
         let _ =
             doc.add_event_listener_with_callback("selectionchange", cb.as_ref().unchecked_ref());
         cb.forget(); // lives as long as the page
+        // the accounts column: a hovered line shows its note; a resize re-measures the column
+        let hover = Closure::<dyn FnMut(web_sys::MouseEvent)>::new(|ev: web_sys::MouseEvent| {
+            let line = ev
+                .target()
+                .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
+                .and_then(|e| e.closest(".textentry > .line").ok().flatten())
+                .and_then(|e| {
+                    let p = e.parent_element()?;
+                    let rows = p.children();
+                    (0..rows.length()).find(|k| rows.item(*k).as_ref() == Some(&e))
+                })
+                .map(|k| k as usize);
+            focus_note("hover", line);
+        });
+        let _ = doc.add_event_listener_with_callback("mouseover", hover.as_ref().unchecked_ref());
+        hover.forget();
+        let e = self.holder();
+        let resize = Closure::<dyn FnMut()>::new(move || {
+            if let Ok(mut ed) = e.0.try_borrow_mut() {
+                ed.draw_proofs();
+            }
+        });
+        if let Some(w) = web_sys::window() {
+            let _ = w.add_event_listener_with_callback("resize", resize.as_ref().unchecked_ref());
+        }
+        resize.forget();
         // `#cursor=N` (a link or a screenshot): show line N's account as if the caret were there
         let hash = web_sys::window()
             .and_then(|w| w.location().hash().ok())
@@ -1740,6 +1805,7 @@ impl Editor {
                     if n >= 1 && n <= ed.text().len() {
                         ed.line_mut(n - 1).set_cursor(true);
                         ed.cursor_line = Some(n - 1);
+                        focus_note("cursor", Some(n - 1));
                     }
                 },
                 1500,
@@ -1770,6 +1836,7 @@ impl Editor {
             self.line_mut(n).set_cursor(true);
         }
         self.cursor_line = line;
+        focus_note("cursor", line);
     }
 
     /// "show all proofs": every line's proof account at once (body class `show-proofs`),
@@ -2080,8 +2147,194 @@ fn install_proofs_toggle_now() {
         if let Ok(Some(s)) = w.local_storage() {
             let _ = s.set_item(PROOFS_KEY, if on { "1" } else { "0" });
         }
+        layout_notes();
     });
     b.set_onclick(Some(click.as_ref().unchecked_ref()));
     click.forget();
     let _ = body.append_child(&b);
+}
+
+/// The accounts column's width (research/24 §4, polish): wide windows keep every account in a
+/// column at the right, aligned with its line, so no account covers code; None when the window
+/// is too narrow or the editor is embedded (the account then shows below the caret's line).
+fn notes_width(right: f32, embed: bool) -> Option<f32> {
+    (!embed && right >= 1150.0).then(|| (right * 0.34).clamp(380.0, 560.0))
+}
+
+/// One account as a note: a row per part (needs, using, why), each fact used on its own line.
+fn note_html(text: &str, line: u32) -> String {
+    use std::fmt::Write;
+    let mut rows: Vec<(&str, Vec<String>)> = vec![];
+    for l in text.lines() {
+        if l.starts_with("        ") {
+            if let Some(r) = rows.last_mut() {
+                r.1.push(l.trim().to_string());
+            }
+            continue;
+        }
+        let (k, rest) = [
+            ("needs", "needs "),
+            ("proves", "⊢ "),
+            ("using", "using "),
+            ("why", "why: "),
+        ]
+        .iter()
+        .find_map(|(k, p)| l.strip_prefix(p).map(|r| (*k, r)))
+        .unwrap_or(("", l));
+        let parts = if k == "using" {
+            // "① a — origin; ② b — origin": one fact per line
+            let mut v: Vec<String> = vec![];
+            for p in rest.split("; ") {
+                match v.last_mut() {
+                    Some(last)
+                        if !p.starts_with(['①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧', '⑨', '⑩']) =>
+                    {
+                        last.push_str("; ");
+                        last.push_str(p);
+                    }
+                    _ => v.push(p.to_string()),
+                }
+            }
+            v
+        } else {
+            vec![rest.to_string()]
+        };
+        rows.push((k, parts));
+    }
+    let mut out = format!("<div class=\"pv-tag\">line {line}</div>");
+    for (i, (k, parts)) in rows.iter().enumerate() {
+        let sep = if i > 0 && matches!(*k, "needs" | "proves") {
+            " pv-sep"
+        } else {
+            ""
+        };
+        let _ = write!(
+            out,
+            "<div class=\"pv-row{sep}\"><span class=\"pv-k\">{k}</span><div class=\"pv-v\">"
+        );
+        for p in parts {
+            let _ = write!(out, "<div>{}</div>", crate::proof_view::esc(p));
+        }
+        out.push_str("</div></div>");
+    }
+    out
+}
+
+/// Place the visible notes: each at its line, pushed down below the one before it (all of
+/// them under "show all proofs", else only the caret's and the hovered line's).
+fn layout_notes() {
+    use wasm_bindgen::JsCast;
+    let Some(doc) = web_sys::window().and_then(|w| w.document()) else {
+        return;
+    };
+    let Some(b) = doc.get_element_by_id("pv-notes") else {
+        return;
+    };
+    let all = doc
+        .body()
+        .is_some_and(|b| b.class_list().contains("show-proofs"));
+    let notes = b.children();
+    let mut bottom = f64::MIN;
+    for k in 0..notes.length() {
+        let Some(n) = notes
+            .item(k)
+            .and_then(|e| e.dyn_into::<web_sys::HtmlElement>().ok())
+        else {
+            continue;
+        };
+        let cl = n.class_list();
+        if !(all || cl.contains("cursor") || cl.contains("hover")) {
+            continue;
+        }
+        let y: f64 = n
+            .get_attribute("data-y")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0.0);
+        let top = if all { y.max(bottom + 6.0) } else { y };
+        let _ = n.style().set_property("top", &format!("{top:.0}px"));
+        bottom = top + n.offset_height() as f64;
+    }
+}
+
+/// Mark the note of editor line `line` with `class` ("cursor" or "hover"), unmarking the rest.
+fn focus_note(class: &str, line: Option<usize>) {
+    let Some(doc) = web_sys::window().and_then(|w| w.document()) else {
+        return;
+    };
+    let Some(b) = doc.get_element_by_id("pv-notes") else {
+        return;
+    };
+    let notes = b.children();
+    let want = line.map(|l| l.to_string());
+    for k in 0..notes.length() {
+        if let Some(n) = notes.item(k) {
+            let on = want.is_some() && n.get_attribute("data-line") == want;
+            let _ = n.class_list().toggle_with_force(class, on);
+        }
+    }
+    layout_notes();
+}
+
+impl Editor {
+    /// Rebuild the accounts column from the lines' accounts (None: no column).
+    fn sync_notes(&self, width: Option<f32>, disp: &dyn Fn(u32) -> u32) {
+        use wasm_bindgen::JsCast;
+        let Some(w) = web_sys::window() else { return };
+        let Some(doc) = w.document() else { return };
+        let Some(body) = doc.body() else { return };
+        let notes = match doc.get_element_by_id("pv-notes") {
+            Some(e) => e,
+            None => {
+                let Ok(e) = doc.create_element("div") else {
+                    return;
+                };
+                e.set_id("pv-notes");
+                let _ = body.append_child(&e);
+                e
+            }
+        };
+        notes.set_inner_html("");
+        let Some(width) = width else {
+            let _ = body.class_list().remove_1("notes-col");
+            return;
+        };
+        let _ = body.class_list().add_1("notes-col");
+        let _ = body
+            .style()
+            .set_property("--notes-w", &format!("{width:.0}px"));
+        let Some(te) = doc.query_selector(".textentry").ok().flatten() else {
+            return;
+        };
+        let r = te.get_bounding_client_rect();
+        let (sx, sy) = (w.scroll_x().unwrap_or(0.0), w.scroll_y().unwrap_or(0.0));
+        if let Ok(n) = notes.clone().dyn_into::<web_sys::HtmlElement>() {
+            let st = n.style();
+            let _ = st.set_property("left", &format!("{:.0}px", r.right() + sx - width as f64));
+            let _ = st.set_property("top", &format!("{:.0}px", r.top() + sy));
+            let _ = st.set_property("width", &format!("{width:.0}px"));
+        }
+        let rows = te.children();
+        for (i, l) in self.text().iter().enumerate() {
+            let Some(t) = &l.info().proof.explain else {
+                continue;
+            };
+            let y = rows
+                .item(i as u32)
+                .map(|e| e.get_bounding_client_rect().top() - r.top())
+                .unwrap_or((i * LINE_SPACING) as f64);
+            let Ok(n) = doc.create_element("div") else {
+                continue;
+            };
+            n.set_class_name(if self.cursor_line == Some(i) {
+                "pv-note cursor"
+            } else {
+                "pv-note"
+            });
+            let _ = n.set_attribute("data-line", &i.to_string());
+            let _ = n.set_attribute("data-y", &format!("{:.0}", y + 2.0));
+            n.set_inner_html(&note_html(t, disp(i as u32 + 1)));
+            let _ = notes.append_child(&n);
+        }
+        layout_notes();
+    }
 }

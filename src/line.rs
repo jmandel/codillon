@@ -405,6 +405,11 @@ impl CodeLine {
             } else {
                 ""
             }
+            + if self.info.proof.label_below && self.info.proof.label.is_some() {
+                " label-below"
+            } else {
+                ""
+            }
             + if self.cursor { " cursor-line" } else { "" };
 
         use BrowserAnimation::*;
@@ -560,6 +565,10 @@ impl CodeLine {
         // what the line's proof cups need and the facts it gives: always on, quiet, right of
         // the code, left of any commentary (both share the row and shrink, never overlapping)
         match &self.info.proof.label {
+            Some(_) if self.info.proof.label_below => {
+                comment.remove_attribute("data-label");
+                comment.remove_attribute("data-label-all");
+            }
             Some(t) => {
                 comment.set_attribute("data-label", t);
                 // "show all proofs": the label and the reason in brief, under it
@@ -583,14 +592,37 @@ impl CodeLine {
         let left = 70.0 + (indent_px(4 + self.info.indent.unwrap_or(0)) + LANE_PX) as f64;
         let acct = &mut self.contents.get_mut().1.1.0;
         match &self.info.proof.explain {
-            Some(t) => {
-                acct.set_attribute("data-why", t);
-                acct.set_attribute("style", &format!("left: {left:.0}px;"));
+            Some(t) => acct.set_attribute("data-why", t),
+            None => acct.remove_attribute("data-why"),
+        }
+        // a label that does not fit right of the code: in the gap below the line, in full
+        match (&self.info.proof.label, self.info.proof.label_below) {
+            (Some(t), true) => {
+                acct.set_attribute("data-label-below", t);
+                match &self.info.proof.brief {
+                    Some(b) => acct.set_attribute("data-label-below-all", &format!("{t} — {b}")),
+                    None => acct.set_attribute("data-label-below-all", t),
+                }
             }
-            None => {
-                acct.remove_attribute("data-why");
-                acct.remove_attribute("style");
+            _ => {
+                acct.remove_attribute("data-label-below");
+                acct.remove_attribute("data-label-below-all");
             }
+        }
+        if self.info.proof.label_below {
+            // the label starts under the code, shifted left (not past the lane) when it would
+            // otherwise run past its room
+            let (w, room) = self.info.proof.label_fit;
+            let dx = (room as f64 - w as f64 - left).min(0.0).max(110.0 - left);
+            let max = room as f64 - left - dx;
+            acct.set_attribute(
+                "style",
+                &format!("left: {left:.0}px; --lbl-dx: {dx:.0}px; --lbl-max: {max:.0}px;"),
+            );
+        } else if self.info.proof.explain.is_some() {
+            acct.set_attribute("style", &format!("left: {left:.0}px;"));
+        } else {
+            acct.remove_attribute("style");
         }
         let instr = &mut self.contents.get_mut().0;
         match &self.info.proof.title {
@@ -812,7 +844,7 @@ impl CodeLine {
                 .approach((indent_px(4 + val) + LANE_PX) as f64);
             let moved = self.info.indent != Some(val);
             self.info.indent = Some(val);
-            if moved && self.info.proof.explain.is_some() {
+            if moved && (self.info.proof.explain.is_some() || self.info.proof.label_below) {
                 self.conform();
             }
             return AnimationRequest(true);
@@ -830,7 +862,7 @@ impl CodeLine {
                 self.animation_state.indent.value().unwrap()
             ),
         );
-        if self.info.proof.explain.is_some() {
+        if self.info.proof.explain.is_some() || self.info.proof.label_below {
             self.conform();
         }
         AnimationRequest(false)

@@ -570,7 +570,7 @@ span.comment[data-commentary][data-tone="quiet"]::after {
     font-family: 'MLMSansDemiCond10-Regular';
     font-style: normal;
     font-size: 13pt;
-    line-height: 17px;
+    line-height: 19px; /* room for the underscores of names like is_even */
     color: #4d4680;
 }
 
@@ -619,6 +619,10 @@ span.comment[data-commentary][data-tone="quiet"]::after {
     box-shadow: 0 1px 4px rgba(72, 61, 139, 0.18);
 }
 
+html.embed .line > span.debug[data-why]::before {
+    max-width: 78ch; /* the frame is zoomed to fit: the window's width says nothing here */
+}
+
 .line.cursor-line > span.debug[data-why]::before,
 .line.has-account:hover > span.debug[data-why]::before {
     display: block;
@@ -627,9 +631,132 @@ span.comment[data-commentary][data-tone="quiet"]::after {
 body.show-proofs .line > span.comment[data-label]::before {
     content: attr(data-label-all);
     white-space: pre-line;
-    -webkit-line-clamp: 3;
+    -webkit-line-clamp: 2; /* two lines fit the row; the full reason is the line's account */
     font-size: 12pt;
+    line-height: 18px;
+}
+
+/* a label that does not fit right of the code (a wide line, a long code comment, a long label)
+   sits in the gap below the line, in full, from the code's left edge (on the line's account
+   span, so a code comment never hides it) */
+.line > span.debug[data-label-below] {
+    position: absolute;
+    top: 44px;
+    z-index: 3;
+    pointer-events: none;
+}
+
+.line > span.debug[data-label-below]::after {
+    content: attr(data-label-below);
+    position: absolute;
+    top: -11px;
+    left: var(--lbl-dx, 0px);
+    width: max-content;
+    max-width: var(--lbl-max, calc(100vw - 330px));
+    white-space: normal;
+    font-family: 'MLMSansDemiCond10-Regular';
+    font-style: normal;
+    font-size: 10pt;
     line-height: 15px;
+    color: #4d4680;
+    background: rgba(255, 255, 240, 0.88);
+    padding: 0 5px 0 6px;
+    border-left: 2px solid #c9c2ea;
+}
+
+body.show-proofs:not(.notes-col) .line > span.debug[data-label-below]::after {
+    content: attr(data-label-below-all);
+}
+
+/* the caret's account under a line whose label is below it: under the label */
+.line.label-below > span.debug[data-why]::before {
+    margin-top: 6px;
+}
+
+/* the accounts column (wide windows): each account is a note at the right, aligned with its
+   line and pushed down below the note before it, so none covers code or another note; the
+   labels and the commentary keep to the left of it */
+#pv-notes {
+    position: absolute;
+    z-index: 4;
+    pointer-events: none;
+}
+
+.pv-note {
+    display: none;
+    position: absolute;
+    left: 0;
+    right: 8px;
+    box-sizing: border-box;
+    padding: 4px 10px 6px 10px;
+    font-family: 'MLMSansDemiCond10-Regular';
+    font-size: 12.5pt;
+    line-height: 1.3;
+    color: #2f2960;
+    background: #fffff0;
+    border: 1px solid #d6d0f0;
+    border-left: 3px solid #8f84d6;
+    border-radius: 3px;
+    box-shadow: 0 1px 4px rgba(72, 61, 139, 0.15);
+    white-space: normal;
+    overflow-wrap: anywhere;
+}
+
+body.show-proofs .pv-note,
+.pv-note.cursor,
+.pv-note.hover {
+    display: block;
+}
+
+.pv-note.cursor,
+.pv-note.hover {
+    border-left-color: #483D8B;
+    z-index: 1;
+}
+
+.pv-note .pv-tag {
+    font-size: 9.5pt;
+    letter-spacing: 0.05em;
+    color: #7a7596;
+}
+
+.pv-note .pv-row {
+    display: grid;
+    grid-template-columns: 3.7em 1fr;
+    column-gap: 6px;
+    margin-top: 3px;
+}
+
+.pv-note .pv-row.pv-sep {
+    margin-top: 7px;
+    padding-top: 5px;
+    border-top: 1px dashed #d6d0f0;
+}
+
+.pv-note .pv-k {
+    color: #8a82bd;
+    font-size: 10.5pt;
+    padding-top: 2px;
+}
+
+.pv-note .pv-v > div + div {
+    margin-top: 2px;
+}
+
+body.notes-col .line > span.debug[data-why]::before {
+    display: none !important;
+}
+
+body.notes-col .line > span.comment {
+    margin-right: calc(var(--notes-w) + 16px);
+}
+
+body.notes-col .line.wide-line > span.comment[data-commentary] {
+    right: calc(var(--notes-w) + 16px);
+}
+
+body.notes-col.show-proofs .line > span.comment[data-label]::before {
+    content: attr(data-label);
 }
 
 .proofs-toggle {

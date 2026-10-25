@@ -59,6 +59,14 @@ pub struct LineProof {
     /// always on, right of the code (research/24 §4): what each proof cup on the line needs and
     /// where it came from, and the facts the line gives (`gives (x·2)&1 ≠ 0 · needs x ≠ 0 ✓ line 8`)
     pub label: Option<String>,
+    /// the label does not fit right of the code (a wide line, a long code comment, a long
+    /// label): it goes in the gap below the line instead, in full (set by the editor, which
+    /// knows the window)
+    pub label_below: bool,
+    /// for a label below: its width at the gap's font size and the right edge of the room for
+    /// it, in the line's coordinates (the label shifts left of the code, over the lane, rather
+    /// than wrap or run under the accounts column)
+    pub label_fit: (f32, f32),
     /// the reason in brief (at most two sentences), shown under the label for every line when
     /// "show all proofs" is on
     pub brief: Option<String>,

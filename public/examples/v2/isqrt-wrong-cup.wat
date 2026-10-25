@@ -1,4 +1,4 @@
-;; isqrt, seeded wrong proof: a `prove 1` override (line 51) hands the solver only the fall-through fact (r+1)² ≤ n, which cannot bound r+1 without a lemma; an explicit prove is final, so the cup stays unfed. Deleting the line lets the kernel find u(r) < 65535 itself.
+;; isqrt, seeded wrong proof: a `prove 1` override (line 54) hands the solver only the fall-through fact (r+1)² ≤ n, which cannot bound r+1 without a lemma; an explicit prove is final, so the cup stays unfed. Deleting the line lets the kernel find u(r) < 65535 itself.
 (func $main ;; runs $isqrt_harness on a passing input
   i32.const 17
   call $isqrt_harness

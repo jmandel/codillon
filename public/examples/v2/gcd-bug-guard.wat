@@ -1,4 +1,4 @@
-;; gcd, seeded bug G1: the loop guard tests $x instead of $y (line 113)
+;; gcd, seeded bug G1: the loop guard tests $x instead of $y (line 117)
 (func $main ;; runs $gcd_harness on no input passes this bug; (12, 8) stops at the runtime check on the divisor
   i32.const 12
   i32.const 8

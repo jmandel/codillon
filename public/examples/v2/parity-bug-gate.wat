@@ -1,4 +1,4 @@
-;; parity, seeded bug P1 (code bug): the gate is inverted -- line 39 `i32.eqz` became `nop`
+;; parity, seeded bug P1 (code bug): the gate is inverted -- line 42 `i32.eqz` became `nop`
 (func $main ;; runs $parity_ok on no input passes this bug; 3 stops at the runtime check on $half's precondition
   i32.const 3
   call $parity_ok

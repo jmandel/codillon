@@ -1,4 +1,4 @@
-;; isqrt, seeded missing invariant: the loop's fact (sq_le r n) was deleted (line 30), so nothing says r² ≤ n at the loop head and neither exit can show the block fact is_isqrt(r, n)
+;; isqrt, seeded missing invariant: the loop's fact (sq_le r n) was deleted (line 33), so nothing says r² ≤ n at the loop head and neither exit can show the block fact is_isqrt(r, n)
 (func $main ;; runs $isqrt_harness on a passing input
   i32.const 17
   call $isqrt_harness
