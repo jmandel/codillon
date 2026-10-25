@@ -37,6 +37,7 @@ use std::{
     collections::{HashMap, HashSet},
     rc::{Rc, Weak},
 };
+use wasm_bindgen::JsCast;
 use wasm_bindgen::{closure::Closure, prelude::ScopedClosure};
 use web_sys::{BeforeUnloadEvent, HtmlDivElement, console::log_1};
 
@@ -135,6 +136,8 @@ struct Editor {
     /// vericoding mode (design 16 §7), when on
     vc: Option<vericode_ui::VcState>,
     vc_touch: u64,
+    /// the line the caret is on (its proof account is shown below it)
+    cursor_line: Option<usize>,
     previous_instrumented_binary_hash: u64,
     worker_running: bool,
     pending_save: Option<Closure<dyn Fn()>>,
@@ -1608,6 +1611,7 @@ impl Editor {
             main_params: vec![],
             v2: None,
             vc: None,
+            cursor_line: None,
             vc_touch: 0,
             previous_instrumented_binary_hash: 0,
             worker_running: false,
@@ -1697,11 +1701,60 @@ impl Editor {
             .set_onhashchange(move || e.borrow_mut().load_from_location(false));
 
         self.vc_install_toggle();
+        self.install_proofs_toggle();
+        self.install_cursor_tracking();
         self.load_from_location(true);
 
         let height = LINE_SPACING * self.text().len();
         self.image_mut()
             .set_attribute("height", &height.to_string());
+    }
+
+    /// The caret's line shows its proof account (research/24 §4): follow `selectionchange`.
+    fn install_cursor_tracking(&mut self) {
+        let Some(doc) = web_sys::window().and_then(|w| w.document()) else {
+            return;
+        };
+        let e = self.holder();
+        let cb = Closure::<dyn FnMut()>::new(move || {
+            if let Ok(mut ed) = e.0.try_borrow_mut() {
+                ed.mark_cursor_line();
+            }
+        });
+        let _ =
+            doc.add_event_listener_with_callback("selectionchange", cb.as_ref().unchecked_ref());
+        cb.forget(); // lives as long as the page
+    }
+
+    fn mark_cursor_line(&mut self) {
+        let sel = get_selection();
+        let line = if sel.anchor_node().is_some() {
+            self.get_lines_and_positions(&sel)
+                .ok()
+                .map(|p| p.start_line)
+        } else {
+            None
+        };
+        if line == self.cursor_line {
+            return;
+        }
+        if let Some(old) = self.cursor_line
+            && old < self.text().len()
+        {
+            self.line_mut(old).set_cursor(false);
+        }
+        if let Some(n) = line
+            && n < self.text().len()
+        {
+            self.line_mut(n).set_cursor(true);
+        }
+        self.cursor_line = line;
+    }
+
+    /// "show all proofs": every line's proof account at once (body class `show-proofs`),
+    /// remembered per viewer; `#proofs=all` turns it on for a link.
+    fn install_proofs_toggle(&mut self) {
+        vericode_ui::set_timeout(install_proofs_toggle_now, 0);
     }
 
     // Load the program named by the URL fragment (#ex= or #src=), or else (at startup)
@@ -1972,4 +2025,42 @@ mod browser_tests {
         assert!(editor.image().is_fraction_at_pos(editor.line(2).id()));
         Ok(())
     }
+}
+
+const PROOFS_KEY: &str = "codillon-show-proofs";
+
+fn install_proofs_toggle_now() {
+    let Some(w) = web_sys::window() else { return };
+    let Some(doc) = w.document() else { return };
+    let Some(body) = doc.body() else { return };
+    let from_link = w.location().hash().is_ok_and(|h| h.contains("proofs=all"));
+    let remembered = w
+        .local_storage()
+        .ok()
+        .flatten()
+        .and_then(|s| s.get_item(PROOFS_KEY).ok().flatten())
+        .is_some_and(|v| v == "1");
+    if from_link || remembered {
+        let _ = body.class_list().add_1("show-proofs");
+    }
+    let Ok(b) = doc.create_element("button") else {
+        return;
+    };
+    let b: web_sys::HtmlElement = b.unchecked_into();
+    b.set_class_name("proofs-toggle");
+    b.set_inner_text("show all proofs");
+    b.set_title("show every line's proof account (what it needs, the facts used, why)");
+    let click = Closure::<dyn FnMut()>::new(move || {
+        let Some(w) = web_sys::window() else { return };
+        let Some(body) = w.document().and_then(|d| d.body()) else {
+            return;
+        };
+        let on = body.class_list().toggle("show-proofs").unwrap_or(false);
+        if let Ok(Some(s)) = w.local_storage() {
+            let _ = s.set_item(PROOFS_KEY, if on { "1" } else { "0" });
+        }
+    });
+    b.set_onclick(Some(click.as_ref().unchecked_ref()));
+    click.forget();
+    let _ = body.append_child(&b);
 }

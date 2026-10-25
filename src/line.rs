@@ -175,6 +175,8 @@ enum BrowserAnimation {
 
 pub struct CodeLine {
     contents: LinePara,
+    /// the caret is on this line (its proof account is shown)
+    cursor: bool,
     info: LineInfo,
     animation_state: AnimationState,
 }
@@ -397,7 +399,13 @@ impl CodeLine {
                 " never-runs"
             } else {
                 ""
-            };
+            }
+            + if self.info.proof.explain.is_some() {
+                " has-account"
+            } else {
+                ""
+            }
+            + if self.cursor { " cursor-line" } else { "" };
 
         use BrowserAnimation::*;
         fn ab(x: bool) -> &'static str {
@@ -483,6 +491,7 @@ impl CodeLine {
             ),
             info: LineInfo::default(),
             animation_state: Default::default(),
+            cursor: false,
         };
 
         ret.contents.get_mut().0.set_attribute("class", "instr");
@@ -548,16 +557,40 @@ impl CodeLine {
                 comment.remove_attribute("title");
             }
         }
-        // a prove line's account (goal, hypotheses, reason): quiet, right of the code, left of
-        // any commentary (both share the row and shrink, so they never overlap)
-        match &self.info.proof.explain {
-            Some(t) => comment.set_attribute("data-explain", t),
-            None => comment.remove_attribute("data-explain"),
+        // what the line's proof cups need and the facts it gives: always on, quiet, right of
+        // the code, left of any commentary (both share the row and shrink, never overlapping)
+        match &self.info.proof.label {
+            Some(t) => {
+                comment.set_attribute("data-label", t);
+                // "show all proofs": the label and the reason in brief, under it
+                match &self.info.proof.brief {
+                    Some(b) => comment.set_attribute("data-label-all", &format!("{t}\n{b}")),
+                    None => comment.set_attribute("data-label-all", t),
+                }
+            }
+            None => {
+                comment.remove_attribute("data-label");
+                comment.remove_attribute("data-label-all");
+            }
         }
         match vtone {
             Some(t) => comment.set_attribute("data-tone", t),
             None if quiet.is_some() => comment.set_attribute("data-tone", "quiet"),
             None => comment.remove_attribute("data-tone"),
+        }
+        // the account of the line's proofs, in the gap below the line, starting under the code
+        // (shown for the cursor line, on hover, and under "show all proofs")
+        let left = 70.0 + (indent_px(4 + self.info.indent.unwrap_or(0)) + LANE_PX) as f64;
+        let acct = &mut self.contents.get_mut().1.1.0;
+        match &self.info.proof.explain {
+            Some(t) => {
+                acct.set_attribute("data-why", t);
+                acct.set_attribute("style", &format!("left: {left:.0}px;"));
+            }
+            None => {
+                acct.remove_attribute("data-why");
+                acct.remove_attribute("style");
+            }
         }
         let instr = &mut self.contents.get_mut().0;
         match &self.info.proof.title {
@@ -777,7 +810,11 @@ impl CodeLine {
             self.animation_state
                 .indent
                 .approach((indent_px(4 + val) + LANE_PX) as f64);
+            let moved = self.info.indent != Some(val);
             self.info.indent = Some(val);
+            if moved && self.info.proof.explain.is_some() {
+                self.conform();
+            }
             return AnimationRequest(true);
         }
 
@@ -793,6 +830,9 @@ impl CodeLine {
                 self.animation_state.indent.value().unwrap()
             ),
         );
+        if self.info.proof.explain.is_some() {
+            self.conform();
+        }
         AnimationRequest(false)
     }
 
@@ -850,6 +890,14 @@ impl CodeLine {
                 .set_attribute("data-debug", text);
         } else {
             self.contents.get_mut().1.1.0.remove_attribute("data-debug");
+        }
+    }
+
+    /// Mark this line as the caret's line (its proof account shows below it).
+    pub fn set_cursor(&mut self, on: bool) {
+        if self.cursor != on {
+            self.cursor = on;
+            self.conform();
         }
     }
 

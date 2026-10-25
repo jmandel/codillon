@@ -174,6 +174,9 @@ pub struct ProveExplain {
     pub ex_falso: bool,
     /// at most three short lines: the case split, the bounds or parity argument, what is contradicted
     pub lines: Vec<String>,
+    /// each hypothesis given, as a student reads it: a predicate fact with its meaning,
+    /// `x is even (x&1 = 0)` (parallel to the feed's `hyps`)
+    pub hyp_text: Vec<String>,
 }
 
 /// Body lines the kernel shows can never run, because a branch condition is decided by the

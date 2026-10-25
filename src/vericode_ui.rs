@@ -175,7 +175,7 @@ pub fn later(f: impl FnOnce() + 'static) {
     set_timeout(f, 0);
 }
 
-fn set_timeout(f: impl FnOnce() + 'static, ms: i32) {
+pub(crate) fn set_timeout(f: impl FnOnce() + 'static, ms: i32) {
     if let Some(w) = web_sys::window() {
         let cb = Closure::once_into_js(f);
         let _ = w.set_timeout_with_callback_and_timeout_and_arguments_0(cb.unchecked_ref(), ms);

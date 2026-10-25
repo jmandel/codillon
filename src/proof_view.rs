@@ -56,8 +56,15 @@ pub struct LineProof {
     /// vericoding commentary: (text, tone) with tone "lock" (a refused edit), "reject" (a
     /// rejected submission, darkred) or "mutant" (a surviving mutant)
     pub vnote: Option<(String, &'static str)>,
-    /// a `prove` line's account, one short line each: the goal it feeds, the hypotheses it uses,
-    /// why it holds (drawn right of the code, quiet)
+    /// always on, right of the code (research/24 §4): what each proof cup on the line needs and
+    /// where it came from, and the facts the line gives (`gives (x·2)&1 ≠ 0 · needs x ≠ 0 ✓ line 8`)
+    pub label: Option<String>,
+    /// the reason in brief (at most two sentences), shown under the label for every line when
+    /// "show all proofs" is on
+    pub brief: Option<String>,
+    /// the account of the line's proofs, one sentence per line: what is needed, the facts used
+    /// and where they came from, why it holds. Shown below the line for the cursor line, on
+    /// hover, and for every line under "show all proofs"
     pub explain: Option<String>,
     /// the kernel shows this line can never run (a decided branch): drawn lightly greyed
     pub never: bool,
@@ -335,21 +342,27 @@ pub fn clause_wash(line_idx: usize, indent: u16, x0: f32, x1: f32) -> String {
 pub fn renumber(text: &str, disp: &dyn Fn(u32) -> u32) -> String {
     thread_local! {
         static RE: regex::Regex =
-            regex::Regex::new(r"(@|\blines? )(\d+(?:(?:, | and )\d+)*)").unwrap();
+            regex::Regex::new(r"(\w?)(@|\blines? )(\d+(?:(?:, | and )\d+)*)").unwrap();
         static NUM: regex::Regex = regex::Regex::new(r"\d+").unwrap();
     }
     RE.with(|re| {
         re.replace_all(text, |c: &regex::Captures| {
             let nums = NUM.with(|n| {
-                n.replace_all(&c[2], |d: &regex::Captures| {
+                n.replace_all(&c[3], |d: &regex::Captures| {
                     d[0].parse::<u32>()
                         .map(|v| disp(v).to_string())
                         .unwrap_or_else(|_| d[0].to_string())
                 })
                 .into_owned()
             });
-            let lead = if &c[1] == "@" { "line " } else { &c[1] };
-            format!("{lead}{nums}")
+            // `i@12` is a version name (the value i had from line 12): it keeps its `@`;
+            // a bare `@22` after a fact names the line it came from
+            let lead = match (&c[1], &c[2]) {
+                ("", "@") => "line ",
+                (_, "@") => "@",
+                (_, l) => l,
+            };
+            format!("{}{lead}{nums}", &c[1])
         })
         .into_owned()
     })
@@ -428,8 +441,12 @@ impl Ctx<'_> {
 /// Per-line output beyond hover text and commentary (kernel lines, renumbered in `build`).
 #[derive(Default)]
 struct Extra {
-    /// a prove line's account (goal, hypotheses, reason), one entry per drawn line
+    /// a line's account (goal, hypotheses, reason), one entry per drawn line
     explains: HashMap<u32, Vec<String>>,
+    /// a line's always-on label parts
+    labels: HashMap<u32, Vec<String>>,
+    /// a line's brief reasons
+    briefs: HashMap<u32, Vec<String>>,
     /// lines that never run
     never: std::collections::HashSet<u32>,
     /// the facts on the lane at each row (drawn chips whose ribbon covers it)
@@ -534,6 +551,161 @@ fn prove_block(f: &FuncOut, ctx: &Ctx, goals: &[usize], hyps: &[(String, String)
         } else {
             format!("        {l}")
         });
+    }
+    out
+}
+
+/// The cup's facts contradict each other (it is fed ex falso).
+fn ex_falso(c: &CupOut) -> bool {
+    c.explain.as_ref().is_some_and(|e| e.ex_falso)
+}
+
+fn lines_word(ls: &[u32]) -> String {
+    let mut v = ls.to_vec();
+    v.sort_unstable();
+    v.dedup();
+    format!(
+        "line{} {}",
+        if v.len() > 1 { "s" } else { "" },
+        join_lines(&v, &|x| x)
+    )
+}
+
+/// The always-on label of one proof cup: what it needs and how it is met.
+fn cup_label(c: &CupOut) -> String {
+    let g = clip(&c.goal, 56);
+    let how = match &c.feed {
+        _ if c.verdict == Verdict::Refuted => "✗ false".to_string(),
+        Feed::Lookup { origin_line, .. } => format!("✓ fact of line {origin_line}"),
+        Feed::Auto { hyp_lines, .. } if ex_falso(c) => format!(
+            "⊥ the facts of {} contradict each other: this line never runs",
+            lines_word(hyp_lines)
+        ),
+        Feed::Auto { hyp_lines, .. } if hyp_lines.is_empty() => "✓ true for every value".into(),
+        Feed::Auto { hyp_lines, .. } => format!("✓ from {}", lines_word(hyp_lines)),
+        Feed::Prove { prove_line, .. } if ex_falso(c) => {
+            format!("⊥ by the prove on line {prove_line}: its facts contradict each other")
+        }
+        Feed::Prove { prove_line, .. } => format!("✓ by the prove on line {prove_line}"),
+        Feed::Eval { .. } => "✓ evaluated".into(),
+        Feed::DeadCode { .. } => "— never runs".into(),
+        Feed::Unfed if c.ghost => "✗ not proved".into(),
+        Feed::Unfed => "⏱ not proved: checked when run".into(),
+    };
+    let mut s = format!("needs {g} {how}");
+    if c.verdict == Verdict::Assumed {
+        let ls: Vec<u32> = c.assumptions.iter().map(|o| o.line).collect();
+        let _ = write!(s, " (assuming {})", lines_word(&ls));
+    }
+    if !c.depends_on_checks.is_empty() && c.verdict != Verdict::RuntimeChecked {
+        let _ = write!(
+            s,
+            " (relative to the check{} on {})",
+            if c.depends_on_checks.len() > 1 {
+                "s"
+            } else {
+                ""
+            },
+            lines_word(&c.depends_on_checks)
+        );
+    }
+    s
+}
+
+/// The reason in brief, for "show all proofs": the solver's account for a found proof, the
+/// matched fact for a lookup, what is missing for an unproved cup.
+fn cup_brief(c: &CupOut) -> Option<String> {
+    Some(match &c.feed {
+        Feed::Auto { .. } | Feed::Prove { .. } => {
+            let e = c.explain.as_ref()?;
+            let why = e.lines.join(" ");
+            if e.ex_falso {
+                format!("Never runs: its facts contradict each other. {why}")
+            } else if why.is_empty() {
+                return None;
+            } else {
+                why
+            }
+        }
+        Feed::Unfed => match &c.diag {
+            Some(d) => format!("Not proved: {d}"),
+            None => "Not proved: no fact in scope implies it.".into(),
+        },
+        _ => return None,
+    })
+}
+
+/// The account of one proof cup, below its line: what it needs, the facts used and where they
+/// came from, and why it holds (for an automatically fed cup: the kernel found this proof).
+fn cup_account(f: &FuncOut, ctx: &Ctx, c: &CupOut) -> Vec<String> {
+    let what = consumer_desc(c, ctx.op(c.line));
+    let what = what.strip_prefix("feeds ").unwrap_or(&what);
+    let mut out = vec![format!("needs {} — {what}", c.goal)];
+    match &c.feed {
+        Feed::Auto {
+            hyps, hyp_lines, ..
+        } => {
+            let e = c.explain.clone().unwrap_or_default();
+            if hyps.is_empty() {
+                out.push("using no facts: it holds for every value (found automatically)".into());
+            } else {
+                let parts: Vec<String> = hyps
+                    .iter()
+                    .zip(hyp_lines)
+                    .enumerate()
+                    .map(|(j, (h, l))| {
+                        let ch = f.chips.get(*h as usize);
+                        let t = e
+                            .hyp_text
+                            .get(j)
+                            .cloned()
+                            .or_else(|| ch.map(|c| c.text.clone()))
+                            .unwrap_or_else(|| "?".into());
+                        let o = origin_desc(ch.map(|c| c.origin).unwrap_or("fact"), *l);
+                        format!("{} {t} — {o}", circled(j))
+                    })
+                    .collect();
+                out.push(format!("using {} (found automatically)", parts.join("; ")));
+            }
+            if e.ex_falso {
+                out.push("these facts cannot all hold together, so this line never runs".into());
+            }
+            for (i, l) in e.lines.iter().enumerate() {
+                out.push(if i == 0 {
+                    format!("why: {l}")
+                } else {
+                    format!("        {l}")
+                });
+            }
+        }
+        Feed::Lookup { fact, origin_line } => {
+            let o = f
+                .chips
+                .get(*fact as usize)
+                .map(|c| c.origin)
+                .unwrap_or("fact");
+            out.push(format!(
+                "exactly the fact {} — {}",
+                f.chips
+                    .get(*fact as usize)
+                    .map(|c| c.text.as_str())
+                    .unwrap_or("?"),
+                origin_desc(o, *origin_line)
+            ));
+        }
+        Feed::Prove { prove_line, .. } => out.push(format!(
+            "proved by the prove on line {prove_line} (its account is there)"
+        )),
+        Feed::Eval { .. } => {
+            out.push("true: every value in it is a constant, and it evaluates to true".into())
+        }
+        Feed::DeadCode { ended_at } => out.push(format!(
+            "this line never runs (the arm ended at line {ended_at}), so there is nothing to prove"
+        )),
+        Feed::Unfed => out.push(match &c.diag {
+            Some(d) => format!("not proved: {d}"),
+            None => "not proved: no fact in scope implies it".into(),
+        }),
     }
     out
 }
@@ -666,6 +838,18 @@ pub fn build(
     for (l, v) in extra.explains {
         if let Some(lp) = scene.lines.get_mut(l.saturating_sub(1) as usize) {
             lp.explain = Some(renumber(&v.join("\n"), disp));
+        }
+    }
+    for (l, mut v) in extra.briefs {
+        v.dedup();
+        if let Some(lp) = scene.lines.get_mut(l.saturating_sub(1) as usize) {
+            lp.brief = Some(renumber(&v.join(" "), disp));
+        }
+    }
+    for (l, mut v) in extra.labels {
+        v.dedup();
+        if let Some(lp) = scene.lines.get_mut(l.saturating_sub(1) as usize) {
+            lp.label = Some(renumber(&v.join("  ·  "), disp));
         }
     }
     for l in extra.never {
@@ -1010,14 +1194,14 @@ fn build_func(
             .collect();
         let block = prove_block(f, ctx, goals, &hyp_desc);
         titles.entry(*pl).or_default().push(block.join("\n"));
-        extra.explains.insert(
-            *pl,
-            block
-                .iter()
-                .take(4)
-                .map(|l| clip(l, EXPLAIN_CHARS))
-                .collect(),
-        );
+        if let Some(g) = goals.first() {
+            extra.labels.entry(*pl).or_default().push(format!(
+                "prove {k}: proves {} for line {}",
+                clip(&f.cups[*g].goal, 56),
+                f.cups[*g].line
+            ));
+        }
+        extra.explains.insert(*pl, block.clone());
     }
 
     // failed proves: sockets for the hypotheses taken, wired from their chips, rimmed darkred
@@ -1114,6 +1298,23 @@ fn build_func(
             text: ch.text.clone(),
             origin: ch.origin,
         });
+    }
+
+    // every drawn chip says what it is, on its own line (research/24 §4)
+    for c in &chips {
+        extra.labels.entry(c.line).or_default().push(format!(
+            "gives {}{}",
+            clip(&c.text, 56),
+            match c.origin {
+                "br_if fall-through" => " if not taken",
+                "br_if taken edge" => " if taken",
+                "if then-arm" => " in the then-arm",
+                "if else-arm" => " in the else-arm",
+                "loop invariant" => " (loop invariant)",
+                "entry (parameter refinement)" | "entry (fact parameter)" => " (parameter)",
+                _ => "",
+            }
+        ));
     }
 
     // the lane, readable on hover: each drawn chip's proposition on every row its ribbon covers
@@ -1324,7 +1525,7 @@ fn build_func(
                 star: !c.depends_on_checks.is_empty()
                     && matches!(c.verdict, Verdict::Proven | Verdict::Assumed),
                 eval: matches!(c.feed, Feed::Eval { .. }),
-                false_cup: c.kind == CupKind::False,
+                false_cup: c.kind == CupKind::False || ex_falso(c),
                 label: None,
             },
         );
@@ -1342,6 +1543,17 @@ fn build_func(
             verdict_word(c, failed_here),
             how(c, disp)
         ));
+        extra.labels.entry(c.line).or_default().push(cup_label(c));
+        if let Some(b) = cup_brief(c) {
+            extra.briefs.entry(c.line).or_default().push(b);
+        }
+        if !proves.contains_key(&c.line) {
+            extra
+                .explains
+                .entry(c.line)
+                .or_default()
+                .extend(cup_account(f, ctx, c));
+        }
         if failed_here
             && let Some(d) = &c.diag
             && let Some(h) = d.split("; ").find(|x| x.contains(" is about the old "))
@@ -1423,6 +1635,8 @@ mod tests {
             renumber("the prove at line 47 failed: [a @45]; lines 3, 4 and 9", &d),
             "the prove at line 46 failed: [a line 44]; lines 2, 3 and 8"
         );
+        // a version name keeps its `@` (review B2)
+        assert_eq!(renumber("u(i@12) < 8", &d), "u(i@11) < 8");
     }
 
     /// The user's program: `prove 1` after an always-taken `br_if` says what it proves, from
@@ -1445,30 +1659,42 @@ mod tests {
             })
             .collect();
         let s = build(&out, &geom, None, &|k| k);
+        // no prove line any more (R5a): the account sits on the unreachable line (14)
         let block = s.lines[13]
             .explain
             .clone()
-            .expect("an account on the prove line");
+            .expect("an account on the unreachable line");
         let rows: Vec<&str> = block.lines().collect();
-        assert_eq!(rows[0], "⊢ False — feeds unreachable (line 15)");
+        assert_eq!(rows[0], "needs False — unreachable (line 14)");
         assert_eq!(
             rows[1],
-            "using ① and(mul($x, 2), 1) ≠ 0 — br_if on line 13 not taken"
+            "using ① (x·2)&1 ≠ 0 — br_if on line 13 not taken (found automatically)"
         );
         assert_eq!(
             rows[2],
-            "your hypotheses contradict each other: this line can never run"
+            "these facts cannot all hold together, so this line never runs"
         );
-        assert!(rows[3].starts_with("why: mul($x, 2) is even"), "{block}");
-        assert!(s.lines[13].never && s.lines[14].never && !s.lines[12].never);
+        assert!(rows[3].starts_with("why: "), "{block}");
+        // always on: the br_if line says what it gives, the unreachable line what it needs, in words
         assert_eq!(
-            s.lines[14].quiet.as_deref(),
+            s.lines[12].label.as_deref(),
+            Some("gives (x·2)&1 ≠ 0 if not taken")
+        );
+        let l = s.lines[13].label.clone().unwrap();
+        assert!(
+            l.starts_with("needs False ⊥") && l.contains("never runs"),
+            "{l}"
+        );
+        assert!(s.lines[13].never && !s.lines[12].never);
+        assert_eq!(
+            s.lines[13].quiet.as_deref(),
             Some("never runs: br_if on line 13 always branches")
         );
         assert!(
-            s.lines[12].lane.as_deref().is_some_and(
-                |l| l.contains("⟨and(mul($x, 2), 1) ≠ 0⟩ — br_if on line 13 not taken")
-            )
+            s.lines[12]
+                .lane
+                .as_deref()
+                .is_some_and(|l| l.contains("⟨(x·2)&1 ≠ 0⟩ — br_if on line 13 not taken"))
         );
     }
 

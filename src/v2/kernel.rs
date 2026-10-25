@@ -2822,12 +2822,45 @@ impl<'a, 'm> Pass<'a, 'm> {
                     .unwrap_or_else(|| format!("({})", j + 1))
             })
             .collect();
+        let hyp_text: Vec<String> = hyps.iter().map(|a| self.fact_words(a)).collect();
         let (terms, mut env) = self.solver_env();
         let e = super::solver::explain(terms, &mut env, hyps, goal, &labels);
         super::out::ProveExplain {
             used: e.used.iter().map(|j| *j as u8).collect(),
             ex_falso: e.ex_falso,
             lines: e.lines,
+            hyp_text,
+        }
+    }
+
+    /// A fact in words: a call of a non-recursive predicate reads as its name and its unfolded
+    /// meaning (`x is even (x&1 = 0)`); anything else in infix.
+    fn fact_words(&mut self, a: &Atom) -> String {
+        let plain = self.terms.show_atom(a);
+        let Atom::Bool { t, neg: false } = a else {
+            return plain;
+        };
+        let Key::Call(fi, args, _) = self.terms.key(*t).clone() else {
+            return plain;
+        };
+        let body = {
+            let (terms, mut env) = self.solver_env();
+            env.unfold(terms, *t)
+        };
+        let name = self
+            .terms
+            .fnames
+            .get(fi as usize)
+            .cloned()
+            .unwrap_or_default();
+        let name = name.trim_start_matches('$');
+        let head = match (name.strip_prefix("is_"), args.as_slice()) {
+            (Some(w), [x]) => format!("{} is {}", self.terms.show(*x), w.replace('_', " ")),
+            _ => plain,
+        };
+        match body {
+            Some(b) => format!("{head} ({})", self.terms.show_cond(b)),
+            None => head,
         }
     }
 
