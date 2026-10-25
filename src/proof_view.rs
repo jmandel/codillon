@@ -639,6 +639,12 @@ fn cup_label(f: &FuncOut, c: &CupOut) -> String {
         Feed::Prove { prove_line, .. } => format!("✓ by the prove on line {prove_line}"),
         Feed::Eval { .. } => "✓ evaluated".into(),
         Feed::DeadCode { .. } => "— never runs".into(),
+        // a counterexample the kernel checked by evaluation, when it is an input of the function
+        Feed::Unfed if c.cex.as_ref().is_some_and(|x| x.inputs) => format!(
+            "{} not proved — fails for {}",
+            if c.ghost { "✗" } else { "⏱" },
+            c.cex.as_ref().map(|x| x.vals_text()).unwrap_or_default()
+        ),
         Feed::Unfed if c.ghost => "✗ not proved".into(),
         Feed::Unfed => "⏱ not proved: checked when run".into(),
     };
@@ -681,10 +687,19 @@ fn cup_brief(c: &CupOut) -> Option<String> {
                 why
             }
         }
-        Feed::Unfed => match &c.diag {
-            Some(d) => format!("Not proved: {d}"),
-            None => "Not proved: no fact in scope implies it.".into(),
-        },
+        Feed::Unfed => {
+            let why = c
+                .cex
+                .as_ref()
+                .and_then(|x| x.why.as_ref())
+                .map(|w| format!(". {w}."))
+                .unwrap_or_default();
+            match &c.diag {
+                Some(d) => format!("Not proved: {d}{why}"),
+                None if why.is_empty() => "Not proved: no fact in scope implies it.".into(),
+                None => format!("Not proved: no fact in scope implies it{why}"),
+            }
+        }
         _ => return None,
     })
 }
@@ -774,10 +789,16 @@ fn cup_account(f: &FuncOut, ctx: &Ctx, c: &CupOut) -> Vec<String> {
         Feed::DeadCode { ended_at } => out.push(format!(
             "this line never runs (the arm ended at line {ended_at}), so there is nothing to prove"
         )),
-        Feed::Unfed => out.push(match &c.diag {
-            Some(d) => format!("not proved: {d}"),
-            None => "not proved: no fact in scope implies it".into(),
-        }),
+        Feed::Unfed => {
+            out.push(match &c.diag {
+                Some(d) => format!("not proved: {d}"),
+                None => "not proved: no fact in scope implies it".into(),
+            });
+            // the wrap behind a counterexample, in one plain sentence
+            if let Some(w) = c.cex.as_ref().and_then(|x| x.why.as_ref()) {
+                out.push(format!("why: {w}"));
+            }
+        }
     }
     out
 }
@@ -1788,6 +1809,70 @@ mod tests {
                 .lane
                 .as_deref()
                 .is_some_and(|l| l.contains("⟨(x·2)&1 ≠ 0⟩ — br_if on line 13 not taken"))
+        );
+    }
+
+    /// double-halve: the unproved unreachable cup's label names the checked counterexample and
+    /// keeps the runtime-check mark; its account says why in one sentence (the wrap).
+    #[test]
+    fn double_halve_label_and_account() {
+        let p = format!(
+            "{}/public/examples/v2/double-halve.wat",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let src = std::fs::read_to_string(&p).unwrap();
+        let out =
+            crate::v2::kernel::check_module_with(&crate::v2::ast::Module::parse(&src), true, true);
+        let geom: Vec<LineGeom> = src
+            .lines()
+            .map(|t| LineGeom {
+                indent: Some(1),
+                frac_right: None,
+                op: op_name(t.trim()),
+            })
+            .collect();
+        let s = build(&out, &geom, None, &|k| k);
+        // $f's unreachable is line 19
+        assert_eq!(
+            s.lines[18].label.as_deref(),
+            Some("needs False ⏱ not proved — fails for x = 1073741824")
+        );
+        let block = s.lines[18].explain.clone().expect("an account");
+        assert!(
+            block.contains("it fails for x = 1073741824: x·2 wraps to −2147483648"),
+            "{block}"
+        );
+        assert!(
+            block.contains("why: x·2 wraps past 2³¹ when x ≥ 2³⁰"),
+            "{block}"
+        );
+        // parity-missing-proof keeps its counterexample, x = 1, in its label too
+        let p = format!(
+            "{}/public/examples/v2/parity-missing-proof.wat",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let src = std::fs::read_to_string(&p).unwrap();
+        let out =
+            crate::v2::kernel::check_module_with(&crate::v2::ast::Module::parse(&src), true, true);
+        let geom: Vec<LineGeom> = src
+            .lines()
+            .map(|t| LineGeom {
+                indent: Some(1),
+                frac_right: None,
+                op: op_name(t.trim()),
+            })
+            .collect();
+        let s = build(&out, &geom, None, &|k| k);
+        assert!(
+            s.lines
+                .iter()
+                .filter_map(|l| l.label.as_deref())
+                .any(|l| l.ends_with("⏱ not proved — fails for x = 1")),
+            "{:?}",
+            s.lines
+                .iter()
+                .filter_map(|l| l.label.as_deref())
+                .collect::<Vec<_>>()
         );
     }
 

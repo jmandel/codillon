@@ -162,6 +162,43 @@ pub struct CupOut {
     pub lane: Vec<(u32, String)>,
     /// for a cup fed by a `prove`: why the solver accepted it (editor only; see `check_module_with`)
     pub explain: Option<ProveExplain>,
+    /// for an unfed cup: values, checked by concrete evaluation, under which its facts hold and
+    /// its goal fails (never the solver's unchecked model)
+    pub cex: Option<Cex>,
+}
+
+/// A counterexample the kernel checked by evaluating the cup's facts and goal (kernel/cex.rs).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Cex {
+    /// each free value (parameter, local version, call result, …) and its value, signed for
+    /// display: `x = 1073741824`
+    pub vals: Vec<(String, i128)>,
+    /// every value is a parameter of the function: the values are an input it fails for
+    pub inputs: bool,
+    /// intermediate values that wrap under these values: `x·2 wraps to −2147483648`
+    pub wraps: Vec<String>,
+    /// one plain sentence on the wrap behind the failure: `x·2 wraps past 2³¹ when x ≥ 2³⁰`
+    pub why: Option<String>,
+}
+
+impl Cex {
+    /// `x = 1073741824, y = −1`
+    pub fn vals_text(&self) -> String {
+        self.vals
+            .iter()
+            .map(|(n, v)| format!("{n} = {}", signed_text(*v)))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+/// An integer with a typographic minus.
+pub fn signed_text(v: i128) -> String {
+    if v < 0 {
+        format!("−{}", v.unsigned_abs())
+    } else {
+        v.to_string()
+    }
 }
 
 /// Why a `prove` succeeded, for the editor (design 16 §3.3: "shown on hover of the `prove`").

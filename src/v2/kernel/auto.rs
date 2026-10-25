@@ -20,8 +20,9 @@ pub(super) enum AutoOutcome {
         used: Vec<Entry>,
         wraps: Vec<String>,
     },
-    /// not fed: a short reason for the cup's diagnostic (None: nothing worth adding)
-    Failed(Option<String>),
+    /// not fed: a short reason for the cup's diagnostic (None: nothing worth adding), and the
+    /// counterexample it shows, checked by evaluation
+    Failed(Option<String>, Option<Cex>),
 }
 
 impl<'a, 'm> Pass<'a, 'm> {
@@ -197,14 +198,14 @@ impl<'a, 'm> Pass<'a, 'm> {
                     found = Some((st, wraps));
                     break;
                 }
-                o if r == max_ring => first_fail = Some(o),
+                o if r == max_ring => first_fail = Some((o, st)),
                 _ => {}
             }
         }
         // after a cap (or an inexact step): the 8 closest facts, by ring, ties to the most recent
         let mut near_fail = None;
         if found.is_none()
-            && matches!(first_fail, Some(Outcome::Cap(_) | Outcome::Inexact(_)))
+            && matches!(first_fail, Some((Outcome::Cap(_) | Outcome::Inexact(_), _)))
             && n > FALLBACK
         {
             let mut order: Vec<usize> = (0..n).collect();
@@ -215,11 +216,11 @@ impl<'a, 'm> Pass<'a, 'm> {
             let near: Vec<Entry> = pick.iter().map(|&i| rel[i].0).collect();
             match self.auto_solve(&near, goal) {
                 Outcome::Valid { wraps } => found = Some((near, wraps)),
-                o => near_fail = Some((o, ring)),
+                o => near_fail = Some((o, ring, near)),
             }
         }
         let Some((mut hyps, mut wraps)) = found else {
-            return AutoOutcome::Failed(auto_failure(n, first_fail, near_fail));
+            return self.auto_failure(n, goal, first_fail, near_fail);
         };
         // minimize: drop facts resting on assumptions or checks first, then oldest first; a drop
         // is kept only when §3 still answers Valid (Cap, Inexact or NotImplied keep the fact)
@@ -252,45 +253,86 @@ impl<'a, 'm> Pass<'a, 'm> {
     }
 }
 
-fn model_text(m: &[(String, i128)]) -> String {
-    m.iter()
-        .map(|(v, x)| format!("{v} = {x}"))
-        .collect::<Vec<_>>()
-        .join(", ")
-}
+impl<'a, 'm> Pass<'a, 'm> {
+    /// A countermodel from §3, checked by evaluation (kernel/cex.rs) against the facts it came from.
+    pub(super) fn checked_model(
+        &mut self,
+        hyps: &[Entry],
+        goal: &Atom,
+        model: &[(TermId, i128)],
+    ) -> Found {
+        let atoms: Vec<Atom> = hyps
+            .iter()
+            .map(|e| self.facts[e.fact as usize].atom.clone())
+            .collect();
+        self.countermodel(&atoms, goal, model)
+    }
 
-/// The diagnostic of a failed R5a attempt (design 16 §3.7).
-fn auto_failure(n: usize, first: Option<Outcome>, near: Option<(Outcome, u32)>) -> Option<String> {
-    let facts = |n: usize| {
-        if n == 1 {
-            "the one fact".to_string()
-        } else {
-            format!("the {n} facts")
+    /// The diagnostic of a failed R5a attempt (design 16 §3.7): a countermodel only when
+    /// evaluation confirms it.
+    fn auto_failure(
+        &mut self,
+        n: usize,
+        goal: &Atom,
+        first: Option<(Outcome, Vec<Entry>)>,
+        near: Option<(Outcome, u32, Vec<Entry>)>,
+    ) -> AutoOutcome {
+        let facts = |n: usize| {
+            if n == 1 {
+                "the one fact".to_string()
+            } else {
+                format!("the {n} facts")
+            }
+        };
+        let Some((first, hyps)) = first else {
+            return AutoOutcome::Failed(None, None);
+        };
+        match first {
+            Outcome::Cap(c) => {
+                let near = match near {
+                    Some((Outcome::NotImplied(_, m), ring, near)) => {
+                        match self.checked_model(&near, goal, &m) {
+                            Found::Cex(x) => Some((ring, x)),
+                            _ => None,
+                        }
+                    }
+                    _ => None,
+                };
+                let text = match &near {
+                    Some((ring, x)) => format!(
+                        "{} about these values exceed the solver's limits ({c}); the 8 closest (up to ring {ring}) allow {}; choose facts with prove k",
+                        facts(n),
+                        x.vals_text()
+                    ),
+                    None => format!(
+                        "{} about these values exceed the solver's limits ({c}); choose facts with prove k",
+                        facts(n)
+                    ),
+                };
+                AutoOutcome::Failed(Some(text), near.map(|x| x.1))
+            }
+            Outcome::Inexact(s) => AutoOutcome::Failed(Some(s), None),
+            Outcome::NotImplied(_, m) => {
+                let found = self.checked_model(&hyps, goal, &m);
+                let allow = if n == 0 {
+                    String::new()
+                } else {
+                    format!(
+                        "{} about these values allow{}",
+                        facts(n),
+                        if n == 1 { "s" } else { "" }
+                    )
+                };
+                let text = found.text(&allow);
+                AutoOutcome::Failed(
+                    text,
+                    match found {
+                        Found::Cex(x) => Some(x),
+                        _ => None,
+                    },
+                )
+            }
+            Outcome::Valid { .. } => AutoOutcome::Failed(None, None),
         }
-    };
-    match first? {
-        Outcome::Cap(c) => Some(match near {
-            Some((Outcome::NotImplied(m), ring)) if !m.is_empty() => format!(
-                "{} about these values exceed the solver's limits ({c}); the 8 closest (up to ring {ring}) allow {}; choose facts with prove k",
-                facts(n),
-                model_text(&m)
-            ),
-            _ => format!(
-                "{} about these values exceed the solver's limits ({c}); choose facts with prove k",
-                facts(n)
-            ),
-        }),
-        Outcome::Inexact(s) => Some(s),
-        // no fact about these values: the solver's countermodel shows a failing input
-        Outcome::NotImplied(m) if n == 0 && !m.is_empty() => {
-            Some(format!("it fails for {}", model_text(&m)))
-        }
-        Outcome::NotImplied(m) if n > 0 && !m.is_empty() => Some(format!(
-            "{} about these values allow{} {}",
-            facts(n),
-            if n == 1 { "s" } else { "" },
-            model_text(&m)
-        )),
-        _ => None,
     }
 }

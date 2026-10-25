@@ -406,3 +406,118 @@ fn accounts_name_the_definitions_they_unfold() {
         assert!(e.unfolded.iter().any(|u| u == f), "{:?}", e.unfolded);
     }
 }
+
+/// The user's program: (x·2) /ₛ 2 = x is false (x·2 wraps for x ≥ 2³⁰). The unreachable cup
+/// shows a real counterexample, never the solver's relaxation (`x = 0, x·2 /ₛ 2 = 1`).
+const DOUBLE_HALVE: &str = "(func $f (param $x i32)
+  local.get $x
+  i32.const 2
+  i32.mul
+  i32.const 2
+  i32.div_s
+  local.get $x
+  i32.eq
+  br_if 0
+  unreachable
+)";
+
+#[test]
+fn double_halve_shows_a_real_counterexample() {
+    let out = explained(DOUBLE_HALVE);
+    let c = out.cups().find(|c| c.kind == CupKind::False).unwrap();
+    assert_eq!(c.feed, Feed::Unfed);
+    let d = c.diag.clone().unwrap();
+    assert!(
+        !d.contains("= 1)") && !d.contains("/ₛ 2 ="),
+        "spurious model: {d}"
+    );
+    assert!(
+        d.contains("it fails for x = 1073741824: x·2 wraps to −2147483648"),
+        "{d}"
+    );
+    let x = c.cex.clone().expect("a checked counterexample");
+    assert!(x.inputs);
+    assert_eq!(x.vals, vec![("x".to_string(), 1 << 30)]);
+    assert_eq!(x.why.as_deref(), Some("x·2 wraps past 2³¹ when x ≥ 2³⁰"));
+}
+
+/// A failing `prove` reports the same checked counterexample.
+#[test]
+fn double_halve_prove_reports_a_real_counterexample() {
+    let src = DOUBLE_HALVE.replace("  unreachable", "  prove 1\n  unreachable");
+    let out = explained(&src);
+    let errs: Vec<&String> = out
+        .funcs
+        .iter()
+        .flat_map(|f| f.line_errors.iter().map(|e| &e.1))
+        .collect();
+    assert!(
+        errs.iter().any(|e| e.contains("not implied by")
+            && e.contains(": x = 1073741824 (x·2 wraps to −2147483648)")),
+        "{errs:?}"
+    );
+}
+
+/// The example: $f fails as above; $f_fixed, whose x is in [−2³⁰, 2³⁰), verifies.
+#[test]
+fn double_halve_example_and_its_fix() {
+    let out = explained(&example("double-halve"));
+    let f = out.funcs.iter().find(|f| f.name == "$f").unwrap();
+    assert!(!f.verified);
+    assert!(f.cups.iter().any(|c| {
+        c.cex
+            .as_ref()
+            .is_some_and(|x| x.vals_text() == "x = 1073741824")
+    }));
+    let g = out.funcs.iter().find(|f| f.name == "$f_fixed").unwrap();
+    assert!(g.verified, "{:?}", g.cups);
+    // $main's call of $f_fixed(21) meets the precondition
+    let m = out.funcs.iter().find(|f| f.name == "$main").unwrap();
+    assert!(m.cups.iter().all(|c| c.feed != Feed::Unfed), "{:?}", m.cups);
+}
+
+/// A countermodel the evaluation refutes is not shown, and when no boundary value fails the
+/// goal either, the diagnostic says so: x ^ 0x5a5a5a5a = 0x12345678 only for x = 0x486e0c22.
+#[test]
+fn an_unchecked_model_is_never_shown() {
+    let src = "(func $g (param $x i32)
+  local.get $x
+  i32.const 0x5a5a5a5a
+  i32.xor
+  i32.const 0x12345678
+  i32.ne
+  br_if 0
+  unreachable
+)";
+    let out = explained(src);
+    let c = out.cups().find(|c| c.kind == CupKind::False).unwrap();
+    let d = c.diag.clone().unwrap();
+    assert!(c.cex.is_none(), "{d}");
+    assert!(
+        d.contains("no counterexample found among the boundary values tried"),
+        "{d}"
+    );
+    assert!(!d.contains("x = "), "{d}");
+}
+
+/// No example's diagnostic shows a value for an intermediate term (`x·2 /ₛ 2 = 1`, a
+/// memory-reading `rep_from(0, 8)@ε3 = 1`): a shown model names free values only.
+#[test]
+fn shown_countermodels_name_only_free_values() {
+    for ex in [
+        "parity-missing-proof",
+        "parity-bug-gate",
+        "hashtable-stale",
+        "gcd-bug-guard",
+        "isqrt-missing-invariant",
+        "double-halve",
+    ] {
+        let out = explained(&example(ex));
+        for c in out.cups() {
+            let Some(d) = &c.diag else { continue };
+            // a model by intermediate term (`x·2 /ₛ 2 = 1`, `rep_from(0, 8)@ε3 = 1`) is gone
+            assert!(!d.contains(")@ε") || !d.contains("allow"), "{ex}: {d}");
+            assert!(!d.contains("/ₛ 2 ="), "{ex}: {d}");
+        }
+    }
+}

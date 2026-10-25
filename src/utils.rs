@@ -3436,6 +3436,7 @@ pub(crate) mod tests {
             ("isqrt-wrong-cup", None),
             ("isqrt-missing-invariant", None),
             ("even-shift", None),
+            ("double-halve", None),
             ("gcd", None),
             ("gcd-bug-guard", Some(118 + 5)),
             ("primality", None),

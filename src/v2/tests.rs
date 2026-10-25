@@ -361,7 +361,7 @@ mod solver_units {
         // x < x + 1 is false at x = 2^32 − 1 (the wrap stays in the problem)
         let x1 = t.op(IOp::Add, ValTy::I32, &[x, one]);
         match prove(&mut t, &[], &lt(x, x1)) {
-            Outcome::NotImplied(m) => assert!(m.contains(&("x".into(), 4294967295)), "{m:?}"),
+            Outcome::NotImplied(m, _) => assert!(m.contains(&("x".into(), 4294967295)), "{m:?}"),
             r => panic!("{r:?}"),
         }
         // …but holds when the interval pre-pass removes the wrap: u(x) < 8
@@ -421,7 +421,7 @@ mod solver_units {
         ));
         // a countermodel names program values
         match prove(&mut t, &[ne], &lt(y, x)) {
-            Outcome::NotImplied(m) => assert!(!m.is_empty()),
+            Outcome::NotImplied(m, _) => assert!(!m.is_empty()),
             r => panic!("{r:?}"),
         }
         // parity: and(x, 1) = 0 ⇒ x ≠ 1
@@ -1078,7 +1078,7 @@ mod fuzz {
         let goal = t.atom_of(g, true);
         match Solver::new(&mut t, &mut NoEnv).prove(&hyps, &goal) {
             Outcome::Valid { .. } => "valid".into(),
-            Outcome::NotImplied(m) => format!("notimplied {m:?}"),
+            Outcome::NotImplied(m, _) => format!("notimplied {m:?}"),
             Outcome::Cap(c) => format!("cap {c}"),
             Outcome::Inexact(c) => format!("inexact {c}"),
         }
@@ -1112,6 +1112,137 @@ mod fuzz {
             valid >= 20,
             "too few valid cases to mean anything: {valid}/{n}"
         );
+    }
+
+    /// A random goal over `div_s` / `rem_s` by a constant (and the ops around them).
+    fn sdiv_goal(r: &mut Rng) -> E {
+        const DIVS: [u64; 10] = [
+            2,
+            3,
+            7,
+            16,
+            0xFFFF_FFFF,
+            0xFFFF_FFFE,
+            0xFFFF_FFFD,
+            0xFFFF_FFF9,
+            0x8000_0000,
+            0x4000_0000,
+        ];
+        let side = |r: &mut Rng| {
+            let a = if r.unit() < 0.5 {
+                term(r, 1)
+            } else {
+                E::Op(
+                    r.pick(&[Mul, Add, Sub]),
+                    Box::new(E::X),
+                    Box::new(E::C(r.pick(&CONSTS))),
+                )
+            };
+            let d = E::Op(
+                r.pick(&[DivS, RemS]),
+                Box::new(a),
+                Box::new(E::C(r.pick(&DIVS))),
+            );
+            if r.unit() < 0.3 {
+                E::Op(
+                    r.pick(&[DivS, RemS]),
+                    Box::new(d),
+                    Box::new(E::C(r.pick(&DIVS))),
+                )
+            } else {
+                d
+            }
+        };
+        let a = side(r);
+        let b = if r.unit() < 0.5 { side(r) } else { term(r, 1) };
+        E::Op(r.pick(&CMP), Box::new(a), Box::new(b))
+    }
+
+    /// `decide` with x, y in the signed window [c, c + 16).
+    fn decide_window(e: &E, c: i32) -> String {
+        let mut t = Terms::new(vec![]);
+        let x = t.leaf(ValTy::I32, "$x", None);
+        let y = t.leaf(ValTy::I32, "$y", None);
+        let lo = t.konst(ValTy::I32, c as u32 as u64);
+        let hi = t.konst(ValTy::I32, (c as i64 + 15) as i32 as u32 as u64);
+        let hyps = vec![
+            Atom::cmp(Rel::Le, true, lo, x),
+            Atom::cmp(Rel::Le, true, x, hi),
+            Atom::cmp(Rel::Le, true, lo, y),
+            Atom::cmp(Rel::Le, true, y, hi),
+        ];
+        let g = build(&mut t, e, x, y);
+        let goal = t.atom_of(g, true);
+        match Solver::new(&mut t, &mut NoEnv).prove(&hyps, &goal) {
+            Outcome::Valid { .. } => "valid".into(),
+            Outcome::NotImplied(m, _) => format!("notimplied {m:?}"),
+            Outcome::Cap(c) => format!("cap {c}"),
+            Outcome::Inexact(c) => format!("inexact {c}"),
+        }
+    }
+
+    /// Soundness of the `div_s` / `rem_s` model (truncation toward zero, sign splits, INT_MIN
+    /// and −1): `prove` never says Valid when some x, y in a 16-wide signed window falsifies the
+    /// goal, over windows at 0, ±2³⁰, the extremes and a random one.
+    #[test]
+    fn div_s_rem_s_are_sound_on_random_problems() {
+        let (mut valid, mut n) = (0, 0);
+        for seed in [0xd1f5_0001u64, 0xd1f5_0002, 0xd1f5_0003] {
+            let mut r = Rng(seed);
+            for _ in 0..200 {
+                let g = sdiv_goal(&mut r);
+                let c: i32 = match r.next() % 6 {
+                    0 => -8,
+                    1 => 0x3fff_fff8,
+                    2 => -0x4000_0008,
+                    3 => i32::MIN,
+                    4 => i32::MAX - 15,
+                    _ => r.next() as i32,
+                };
+                let c = c.min(i32::MAX - 15);
+                let w = |k: i32| (c as i64 + k as i64) as u32 as u64;
+                let truth =
+                    (0..16).all(|i| (0..16).all(|j| ev(&g, w(i), w(j)).is_some_and(|v| v != 0)));
+                let a = decide_window(&g, c);
+                assert_eq!(a, decide_window(&g, c), "nondeterministic on {g:?}");
+                if a == "valid" {
+                    assert!(truth, "UNSOUND: Valid but false in [{c}, {c}+16): {g:?}");
+                    valid += 1;
+                }
+                n += 1;
+            }
+        }
+        assert!(valid >= 20, "too few valid cases: {valid}/{n}");
+    }
+
+    /// (x·2) /ₛ 2 = x: false (x·2 wraps for x ≥ 2³⁰), and its countermodel is a real input;
+    /// true for x in [−2³⁰, 2³⁰).
+    #[test]
+    fn double_halve_in_the_solver() {
+        let e = E::Op(
+            Eq,
+            Box::new(E::Op(
+                DivS,
+                Box::new(E::Op(Mul, Box::new(E::X), Box::new(E::C(2)))),
+                Box::new(E::C(2)),
+            )),
+            Box::new(E::X),
+        );
+        let mut t = Terms::new(vec![]);
+        let x = t.leaf(ValTy::I32, "$x", None);
+        let g = build(&mut t, &e, x, x);
+        let goal = t.atom_of(g, true);
+        match Solver::new(&mut t, &mut NoEnv).prove(&[], &goal) {
+            Outcome::NotImplied(_, m) => {
+                let v = m.iter().find(|(v, _)| *v == x).expect("a value for x").1 as u64;
+                assert_eq!(ev(&e, v, v), Some(0), "spurious countermodel x = {v}");
+            }
+            o => panic!("{o:?}"),
+        }
+        assert_eq!(decide_window(&e, 0x3fff_fff0), "valid");
+        assert_eq!(decide_window(&e, -0x4000_0000), "valid");
+        assert_ne!(decide_window(&e, 0x3fff_fff8), "valid");
+        assert_ne!(decide_window(&e, -0x4000_0008), "valid");
     }
 
     /// The fuzz harness's own finds (B1 hang on x·y, B2 x − 1 < x, B5 virtual rem_u by zero).

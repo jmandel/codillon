@@ -3,7 +3,7 @@
 use super::ast::{BlockKind, BlockType, Decl, Expr, IOp, Ins, LocalKind, Module, Refined, ValTy};
 use super::eval::{EvalErr, Interp, value_locals};
 use super::info::FnInfo;
-use super::out::{Birth, Capture, CupKind, CupOut, Feed, FuncOut, Origin, Verdict, Witness};
+use super::out::{Birth, Capture, Cex, CupKind, CupOut, Feed, FuncOut, Origin, Verdict, Witness};
 use super::solver::{Env, Outcome, Solver};
 use super::symex::{call_term, symex};
 use super::term::{Atom, Key, NO_EPOCH, TermId, Terms};
@@ -11,7 +11,9 @@ use smallvec::SmallVec;
 use std::collections::{BTreeSet, HashMap};
 
 mod auto;
+mod cex;
 use auto::AutoOutcome;
+use cex::Found;
 
 pub type FactId = u32;
 pub type CupId = u32;
@@ -558,6 +560,7 @@ impl<'a, 'm> Pass<'a, 'm> {
             guard: None,
             lane: vec![],
             explain: None,
+            cex: None,
         });
         self.cup_deps.push(vec![]);
         (self.cups.len() - 1) as CupId
@@ -677,17 +680,28 @@ impl<'a, 'm> Pass<'a, 'm> {
                 other => {
                     let hl = self.hyp_list(&hyps);
                     let msg = match other {
-                        Outcome::NotImplied(m) => {
-                            let cm: Vec<String> =
-                                m.iter().map(|(n, v)| format!("{n} = {v}")).collect();
-                            format!(
-                                "not implied by {hl}: {}",
-                                if cm.is_empty() {
-                                    "no constraint on the inputs".into()
-                                } else {
-                                    cm.join(", ")
+                        Outcome::NotImplied(_, m) => {
+                            // a countermodel only when evaluation confirms it (kernel/cex.rs)
+                            let found = self.countermodel(&atoms, &r.atom, &m);
+                            let text = match &found {
+                                Found::Cex(x) => {
+                                    let mut t = x.vals_text();
+                                    if !x.wraps.is_empty() {
+                                        t = format!("{t} ({})", x.wraps.join(", "));
+                                    }
+                                    t
                                 }
-                            )
+                                Found::Nothing => {
+                                    "no counterexample found among the boundary values tried".into()
+                                }
+                                Found::Unevaluable => "no counterexample shown (its values \
+                                     cannot all be evaluated)"
+                                    .into(),
+                            };
+                            if let Found::Cex(x) = found {
+                                self.cups[c].cex = Some(x);
+                            }
+                            format!("not implied by {hl}: {text}")
                         }
                         Outcome::Inexact(s) | Outcome::Cap(s) => format!("{s}; hypotheses {hl}"),
                         Outcome::Valid { .. } => unreachable!(),
@@ -734,7 +748,8 @@ impl<'a, 'm> Pass<'a, 'm> {
                     let f = self.new_fact(r.atom.clone(), line, "auto", vec![Dep::Cup(c as CupId)]);
                     produced.push((i, f));
                 }
-                AutoOutcome::Failed(why) => {
+                AutoOutcome::Failed(why, cex) => {
+                    self.cups[c].cex = cex;
                     if let Some(w) = why {
                         self.cups[c].diag = Some(match self.cups[c].diag.take() {
                             Some(d) => format!("{d}; {w}"),

@@ -14,7 +14,7 @@ use super::vericode::Owner;
 /// Interpreter call depth while adequacy runs (inputs whose run needs more are left out).
 const ADEQ_DEPTH: u32 = 150;
 
-const EDGES: [i64; 16] = [
+pub(crate) const EDGES: [i64; 16] = [
     0,
     1,
     2,
@@ -41,7 +41,7 @@ fn xorshift(s: &mut u64) -> u64 {
 }
 
 /// Constants of the module (spec boundaries such as 65535), as extra edge values.
-fn module_consts(m: &Module) -> Vec<i64> {
+pub(crate) fn module_consts(m: &Module) -> Vec<i64> {
     let mut v: Vec<i64> = vec![];
     for f in &m.funcs {
         for (_, ins) in &f.body {

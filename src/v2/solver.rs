@@ -27,8 +27,14 @@ pub trait Env {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Outcome {
-    Valid { wraps: Vec<String> },
-    NotImplied(Vec<(String, i128)>),
+    Valid {
+        wraps: Vec<String>,
+    },
+    /// a satisfying assignment of the facts and the negated goal *in the procedure's model*:
+    /// rendered (name, unsigned value), and by term. Opaque terms (`xor`, loads, …) take values
+    /// here that their arguments may not produce, so a caller checks it by evaluation before
+    /// showing it as a counterexample (kernel/cex.rs).
+    NotImplied(Vec<(String, i128)>, Vec<(TermId, i128)>),
     Cap(String),
     Inexact(String),
 }
@@ -212,6 +218,8 @@ pub struct Solver<'a> {
     var_of: HashMap<VarDesc, VarId>,
     memo: HashMap<TermId, Tr>,
     memo_s: HashMap<TermId, Tr>,
+    /// per term with a signed reading in this run: is that reading negative (when known)?
+    neg_s: HashMap<TermId, bool>,
     cons: Vec<Con>,
     choices: Vec<bool>,
     pos: usize,
@@ -236,6 +244,7 @@ impl<'a> Solver<'a> {
             var_of: HashMap::new(),
             memo: HashMap::new(),
             memo_s: HashMap::new(),
+            neg_s: HashMap::new(),
             cons: vec![],
             choices: vec![],
             pos: 0,
@@ -251,6 +260,7 @@ impl<'a> Solver<'a> {
         self.var_of.clear();
         self.memo.clear();
         self.memo_s.clear();
+        self.neg_s.clear();
         self.cons.clear();
         self.pos = 0;
         self.depth = 0;
@@ -632,6 +642,25 @@ impl<'a> Solver<'a> {
                 };
                 self.wrap(t, exact, lo, hi, w, false)
             }
+            // a boolean combination of two comparisons: each is split to 0 or 1, then folded
+            And | Or | Xor if self.terms.is_cmp(args[0]) && self.terms.is_cmp(args[1]) => {
+                let (a, b) = (self.tr(args[0])?, self.tr(args[1])?);
+                match (a.lin.as_const(), b.lin.as_const()) {
+                    (Some(x), Some(y)) => {
+                        let v = match op {
+                            And => x & y,
+                            Or => x | y,
+                            _ => x ^ y,
+                        };
+                        Ok(Tr {
+                            lin: Lin::konst(v),
+                            lo: v,
+                            hi: v,
+                        })
+                    }
+                    _ => self.opaque(t),
+                }
+            }
             DivU | ShrU | RemU | And => {
                 let c = match (op, konst(self, args[0]), konst(self, args[1])) {
                     (ShrU, _, Some(k)) => Some((pow2((k as u32) % w), args[0])),
@@ -751,25 +780,28 @@ impl<'a> Solver<'a> {
                 let pd = d.lin.scale(p)?;
                 self.le(&pd, &s.lin)?;
                 self.le(&s.lin, &pd.add_c(p - 1)?)?;
-                if d.lo >= 0 {
-                    return Ok(d);
-                }
-                if d.hi < 0 {
-                    return Ok(Tr {
-                        lin: d.lin.add_c(wv)?,
-                        lo: d.lo + wv,
-                        hi: d.hi + wv,
-                    });
-                }
-                if self.choose()? {
-                    self.le0(d.lin.add_c(1)?)?;
-                    let lin = d.lin.add_c(wv)?;
-                    let (lo, hi) = self.range(&lin)?;
-                    Ok(Tr { lin, lo, hi })
-                } else {
-                    self.le0(d.lin.scale(-1)?)?;
-                    let (lo, hi) = self.range(&d.lin)?;
-                    Ok(Tr { lin: d.lin, lo, hi })
+                self.unsign(d, wv)
+            }
+            DivS | RemS => {
+                let Some(c) = konst(self, args[1]) else {
+                    return self.opaque(t);
+                };
+                let cs = if c >= wv / 2 { c - wv } else { c };
+                self.tr_div_s(t, op, args[0], cs, wv)
+            }
+            // a comparison of constants is a constant (no split)
+            o if o.is_cmp() && args.iter().all(|a| self.terms.is_const(*a)) => {
+                let vals: Vec<u64> = args
+                    .iter()
+                    .filter_map(|a| self.terms.as_const(*a))
+                    .collect();
+                match super::eval::eval_iop(o, wty, &vals) {
+                    Ok(v) => Ok(Tr {
+                        lin: Lin::konst(v as i128),
+                        lo: v as i128,
+                        hi: v as i128,
+                    }),
+                    Err(_) => self.opaque(t),
                 }
             }
             o if o.is_cmp() => {
@@ -787,6 +819,114 @@ impl<'a> Solver<'a> {
         }
     }
 
+    /// A signed value in [−2ʷ, 2ʷ) as its unsigned reading: itself or itself + 2ʷ, split on its
+    /// sign when its range allows both.
+    fn unsign(&mut self, d: Tr, wv: i128) -> R<Tr> {
+        if d.lo >= 0 {
+            return Ok(d);
+        }
+        if d.hi < 0 {
+            return Ok(Tr {
+                lin: d.lin.add_c(wv)?,
+                lo: d.lo + wv,
+                hi: d.hi + wv,
+            });
+        }
+        if self.choose()? {
+            self.le0(d.lin.add_c(1)?)?;
+            let lin = d.lin.add_c(wv)?;
+            let (lo, hi) = self.range(&lin)?;
+            Ok(Tr { lin, lo, hi })
+        } else {
+            self.le0(d.lin.scale(-1)?)?;
+            let (lo, hi) = self.range(&d.lin)?;
+            Ok(Tr { lin: d.lin, lo, hi })
+        }
+    }
+
+    /// `div_s(a, c)` / `rem_s(a, c)` by a constant `c` (signed reading `cs`, nonzero): the
+    /// quotient truncates toward zero. With `m = |cs|` and `S = s(a)`, a fresh `D = trunc(S/m)`
+    /// has `m·D ≤ S ≤ m·D + m − 1` when `S ≥ 0` and `m·D − m + 1 ≤ S ≤ m·D` when `S < 0` (a
+    /// split on the sign of S); the quotient is `sign(cs)·D` and the remainder `S − m·D`, which
+    /// has the sign of S. INT_MIN / −1 traps (its DivOverflow cup, or `defined`, covers it); its
+    /// value here, 2ʷ⁻¹, is the wrapped one.
+    fn tr_div_s(&mut self, t: TermId, op: IOp, a: TermId, cs: i128, wv: i128) -> R<Tr> {
+        let zero = Tr {
+            lin: Lin::konst(0),
+            lo: 0,
+            hi: 0,
+        };
+        match (op, cs) {
+            (_, 0) => return self.opaque(t),
+            (IOp::DivS, 1) => return self.tr(a),
+            (IOp::RemS, 1 | -1) => return Ok(zero),
+            _ => {}
+        }
+        let m = cs.abs();
+        let s = self.signed(a)?;
+        // the sign of S: from its range, or from the split its signed reading made
+        let neg = if s.lo >= 0 {
+            false
+        } else if s.hi < 0 {
+            true
+        } else if let Some(&n) = self.neg_s.get(&a) {
+            n
+        } else {
+            let n = self.choose()?;
+            self.t_split(|st| {
+                let w = if n { "negative" } else { "non-negative" };
+                format!("{} is {w}", st.terms.show(a))
+            });
+            if n {
+                self.le0(s.lin.add_c(1)?)?;
+            } else {
+                self.le0(s.lin.scale(-1)?)?;
+            }
+            n
+        };
+        let (slo, shi) = if neg {
+            (s.lo, s.hi.min(-1))
+        } else {
+            (s.lo.max(0), s.hi)
+        };
+        // ⌈x/m⌉ = −⌊−x/m⌋
+        let (dlo, dhi) = if neg {
+            (-fdiv(-slo, m), -fdiv(-shi, m))
+        } else {
+            (fdiv(slo, m), fdiv(shi, m))
+        };
+        let d = self.var_tr(VarDesc::SDiv(t), dlo, dhi)?;
+        let md = d.lin.scale(m)?;
+        if neg {
+            self.le(&md.add_c(-(m - 1))?, &s.lin)?;
+            self.le(&s.lin, &md)?;
+        } else {
+            self.le(&md, &s.lin)?;
+            self.le(&s.lin, &md.add_c(m - 1)?)?;
+        }
+        let v = if op == IOp::DivS {
+            if cs > 0 {
+                d
+            } else {
+                Tr {
+                    lin: d.lin.scale(-1)?,
+                    lo: -d.hi,
+                    hi: -d.lo,
+                }
+            }
+        } else {
+            let lin = s.lin.minus(&md)?;
+            let (lo, hi) = self.range(&lin)?;
+            let (lo, hi) = if neg {
+                (lo.max(-(m - 1)), hi.min(0))
+            } else {
+                (lo.max(0), hi.min(m - 1))
+            };
+            Tr { lin, lo, hi }
+        };
+        self.unsign(v, wv)
+    }
+
     /// The signed reading S(t) = A − 2ʷ·σ (§3.2).
     fn signed(&mut self, t: TermId) -> R<Tr> {
         if let Some(x) = self.memo_s.get(&t) {
@@ -795,6 +935,13 @@ impl<'a> Solver<'a> {
         let w = width(self.terms.ty(t));
         let a = self.tr(t)?;
         let half = pow2(w - 1);
+        let neg = if a.hi < half {
+            Some(false)
+        } else if a.lo >= half {
+            Some(true)
+        } else {
+            None
+        };
         let r = if a.hi < half {
             a
         } else if a.lo >= half {
@@ -804,17 +951,22 @@ impl<'a> Solver<'a> {
                 hi: a.hi - pow2(w),
             }
         } else if self.choose()? {
+            self.neg_s.insert(t, true);
             self.t_split(|s| format!("{} is negative", s.terms.show(t)));
             self.le(&Lin::konst(half), &a.lin)?;
             let lin = a.lin.add_c(-pow2(w))?;
             let (lo, hi) = self.range(&lin)?;
             Tr { lin, lo, hi }
         } else {
+            self.neg_s.insert(t, false);
             self.t_split(|s| format!("{} is non-negative", s.terms.show(t)));
             self.le(&a.lin, &Lin::konst(half - 1))?;
             let (lo, hi) = self.range(&a.lin)?;
             Tr { lin: a.lin, lo, hi }
         };
+        if let Some(n) = neg {
+            self.neg_s.insert(t, n);
+        }
         self.memo_s.insert(t, r.clone());
         Ok(r)
     }
@@ -1084,7 +1236,12 @@ impl<'a> Solver<'a> {
                 Ok(()) => match self.omega() {
                     Err(Stop::Cap(c)) => return Outcome::Cap(c),
                     Err(Stop::Infeasible) | Ok(Fm::Unsat) => self.t_end_case(),
-                    Ok(Fm::Sat(model)) => return Outcome::NotImplied(self.render_model(&model)),
+                    Ok(Fm::Sat(model)) => {
+                        return Outcome::NotImplied(
+                            self.render_model(&model),
+                            self.model_terms(&model),
+                        );
+                    }
                     Ok(Fm::Inexact(v)) => {
                         if inexact.is_none() {
                             inexact = Some(self.render_var(v));
@@ -1177,6 +1334,24 @@ impl<'a> Solver<'a> {
         }
         out.sort();
         out.dedup();
+        out
+    }
+
+    /// The countermodel by term: each opaque term's value, and the values the pre-pass pinned.
+    fn model_terms(&self, m: &[(VarId, i128)]) -> Vec<(TermId, i128)> {
+        let mut out: Vec<(TermId, i128)> = m
+            .iter()
+            .filter_map(|(v, x)| match self.vars[*v as usize].desc {
+                VarDesc::Term(t) | VarDesc::Res(t) => Some((t, *x)),
+                _ => None,
+            })
+            .collect();
+        for (t, (lo, hi)) in &self.bounds {
+            if lo == hi && !self.terms.is_const(*t) && !out.iter().any(|(u, _)| u == t) {
+                out.push((*t, *lo));
+            }
+        }
+        out.sort();
         out
     }
 
